@@ -1,0 +1,24 @@
+# 비밀 / 자격증명
+.env
+
+# 가상환경
+.venv/
+__pycache__/
+*.pyc
+
+# 브라우저 세션 (로그인 유지)
+.auth/
+
+# 진행상황 / 산출물
+state.json
+downloads/
+logs/
+
+# 정찰 산출물 (스크린샷·DOM 덤프·개인 LMS 데이터)
+recon_shots/
+
+# 로컬 툴 설정
+.claude/
+
+# 테스트 캐시
+.pytest_cache/
