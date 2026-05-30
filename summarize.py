@@ -82,6 +82,47 @@ def seconds_to_timestamp(sec: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def normalize_ts_seconds(sec, duration) -> int:
+    """Gemini 의 'MM:SS:00' 오형식 타임스탬프를 매체 길이로 교정한다.
+
+    2시간짜리 강의에서 1시간 미만 시점을 "09:21"(9분21초) 대신 "09:21:00"으로
+    적으면 timestamp_to_seconds 가 9시간21분(33660초)으로 파싱 → 전체 길이 초과.
+    원래 의도는 'h→분, m→초' 한 칸씩 밀린 것이므로 필드를 되돌려 복원한다.
+
+    교정 조건(보수적): 길이를 알고, raw 초가 길이를 60초 넘게 초과하며,
+    시프트 결과가 길이 이내일 때만 적용. 그 외엔 그대로(끝자락 근사·정상값 보호).
+    """
+    sec = int(sec)
+    if not duration or sec <= float(duration):
+        return sec
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    shifted = h * 60 + m          # 09:21:00 → 9*60+21 = 561
+    if sec - float(duration) > 60 and shifted <= float(duration):
+        return shifted
+    return sec
+
+
+def normalize_markdown_timestamps(markdown: str, duration) -> str:
+    """노트 본문의 [HH:MM:SS]/[MM:SS] 마커를 normalize_ts_seconds 기준으로 교정.
+
+    오형식(예: '[09:21:00]' = 9h21m)을 매체 길이로 판별해 '[00:09:21]'로 치환한다.
+    교정이 필요 없는 마커는 그대로 둔다(멱등). duration 이 없으면 원문 반환.
+    """
+    if not markdown or not duration:
+        return markdown
+
+    def _fix(m):
+        ts = m.group(1)
+        raw = timestamp_to_seconds(ts)
+        norm = normalize_ts_seconds(raw, duration)
+        if norm == raw:
+            return m.group(0)
+        return f"[{seconds_to_timestamp(norm)}]"
+
+    return _TS_RE.sub(_fix, markdown)
+
+
 def note_filename(subject: str, seq: int, name: str) -> str:
     """'{과목} {seq}강 - {차시명}.md' (안전한 파일명)."""
     return f"{sanitize(subject)} {seq}강 - {sanitize(name)}.md"
@@ -202,10 +243,15 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
     return text
 
 
-def save_summary(markdown: str, out_dir, subject, seq, name) -> dict:
-    """요약 .md + 타임스탬프 사이드카 .timestamps.json 저장. 경로 dict 반환."""
+def save_summary(markdown: str, out_dir, subject, seq, name, duration=None) -> dict:
+    """요약 .md + 타임스탬프 사이드카 .timestamps.json 저장. 경로 dict 반환.
+
+    duration(매체 길이, 초)을 주면 Gemini 의 'MM:SS:00' 오형식 마커를 미리 교정해
+    저장한다(노트 본문·timestamps.json 모두 올바른 시각으로 통일).
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    markdown = normalize_markdown_timestamps(markdown, duration)
     md_path = out_dir / note_filename(subject, seq, name)
     md_path.write_text(markdown, encoding="utf-8")
 

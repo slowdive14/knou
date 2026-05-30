@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from main import (  # noqa: E402
+    filter_unwatched,
     lecture_done,
     lecture_key,
     mark_stage,
@@ -155,3 +156,29 @@ def test_pending_lectures_excludes_done():
     keys = [lecture_key(c, l["seq"]) for c, l in pending]
     assert "이산수학|1" not in keys          # 완료됨 → 제외
     assert "이산수학|2" in keys and "운영체제|1" in keys
+
+
+# ---- filter_unwatched (미시청만) ------------------------------------------
+WATCH_PAIRS = [
+    ("이산수학", {"seq": 1, "name": "개요", "video_done": True}),
+    ("이산수학", {"seq": 2, "name": "집합", "video_done": False}),
+    ("운영체제", {"seq": 1, "name": "OS개요", "video_done": False}),
+]
+
+
+def test_filter_unwatched_excludes_watched():
+    out = filter_unwatched(WATCH_PAIRS)
+    keys = [lecture_key(c, l["seq"]) for c, l in out]
+    assert "이산수학|1" not in keys          # video_done=True → 제외
+    assert keys == ["이산수학|2", "운영체제|1"]
+
+
+def test_filter_unwatched_missing_key_is_unwatched():
+    # video_done 키가 없으면 보수적으로 '미시청' 취급(요약 대상 포함)
+    out = filter_unwatched([("X", {"seq": 1, "name": "n"})])
+    assert len(out) == 1
+
+
+def test_filter_unwatched_all_done_empty():
+    pairs = [("이산수학", {"seq": 1, "video_done": True})]
+    assert filter_unwatched(pairs) == []

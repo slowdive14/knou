@@ -12,12 +12,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from capture import (  # noqa: E402
+    _plan_renormalize,
     build_ffmpeg_cmd,
     build_vision_prompt,
     candidate_seconds,
     capture_filename,
+    clip_timeline,
     embed_captures,
+    locate_clip,
     needs_capture,
+    normalize_ts_seconds,
     orphan_captures,
     parse_vision_choice,
     pick_clip_by_duration,
@@ -237,3 +241,128 @@ def test_build_vision_prompt_has_label_and_rules():
     assert "추상화" in p          # 개념 라벨 포함
     assert "JSON" in p            # 구조화 출력 지시
     assert "-1" in p              # 매칭 없음 규칙
+
+
+# ---- normalize_ts_seconds (Gemini 'MM:SS:00' 오형식 교정) ------------------
+# 2시간짜리 강의에서 1시간 미만 시점을 'MM:SS:00'으로 잘못 적어
+# timestamp_to_seconds 가 MM시간 SS분으로 파싱 → 전체길이 초과.
+# MP3 길이를 알면 '필드 시프트'(h→분, m→초)로 원래 시점 복원.
+def test_normalize_ts_seconds_misformatted():
+    # "09:21:00" → 9*3600+21*60 = 33660 → 실제 9분21초 = 561
+    assert normalize_ts_seconds(33660, 7209) == 561
+
+
+def test_normalize_ts_seconds_misformatted_large():
+    # "57:59:00" → 57*3600+59*60 = 208740 → 57분59초 = 3479
+    assert normalize_ts_seconds(208740, 7209) == 3479
+
+
+def test_normalize_ts_seconds_valid_hour_unchanged():
+    # "01:00:00" = 3600s 는 전체길이 이내 → 진짜 1시간 시점, 교정 안 함
+    assert normalize_ts_seconds(3600, 7209) == 3600
+
+
+def test_normalize_ts_seconds_small_excess_unchanged():
+    # 전체길이를 60초 이내로 살짝 넘으면(끝자락 근사) 교정하지 않음
+    assert normalize_ts_seconds(7260, 7209) == 7260
+
+
+def test_normalize_ts_seconds_no_duration_unchanged():
+    assert normalize_ts_seconds(33660, 0) == 33660
+    assert normalize_ts_seconds(33660, None) == 33660
+
+
+def test_normalize_ts_seconds_below_duration_unchanged():
+    assert normalize_ts_seconds(290, 2490) == 290
+
+
+# ---- clip_timeline (MP3=클립 연결 → 누적 타임라인) -------------------------
+CLIPS13 = [
+    {"idx": 0, "title": "들어가기", "duration": 536.0, "hlsUrl": "u0"},
+    {"idx": 1, "title": "학습하기", "duration": 6322.0, "hlsUrl": "u1"},
+    {"idx": 2, "title": "정리하기", "duration": 352.0, "hlsUrl": "u2"},
+]
+
+
+def test_clip_timeline_cumulative_bounds():
+    tl = clip_timeline(CLIPS13)
+    starts_ends = [(s, e) for s, e, _ in tl]
+    assert starts_ends == [(0.0, 536.0), (536.0, 6858.0), (6858.0, 7210.0)]
+    assert [c["title"] for _, _, c in tl] == ["들어가기", "학습하기", "정리하기"]
+
+
+def test_clip_timeline_skips_invalid_duration():
+    clips = [
+        {"title": "a", "duration": 100.0},
+        {"title": "b", "duration": None},      # 길이 측정 실패 → 제외
+        {"title": "c", "duration": 0},         # 0 → 제외
+        {"title": "d", "duration": 50.0},
+    ]
+    tl = clip_timeline(clips)
+    assert [(s, e, c["title"]) for s, e, c in tl] == [
+        (0.0, 100.0, "a"), (100.0, 150.0, "d")]
+
+
+def test_clip_timeline_empty():
+    assert clip_timeline([]) == []
+
+
+# ---- locate_clip (MP3 절대초 → (클립, 클립내 오프셋)) ----------------------
+def test_locate_clip_into_middle_clip():
+    clip, off = locate_clip(CLIPS13, 3600)
+    assert clip["title"] == "학습하기"
+    assert off == 3600 - 536           # 3064
+
+
+def test_locate_clip_first_clip():
+    clip, off = locate_clip(CLIPS13, 100)
+    assert clip["title"] == "들어가기" and off == 100
+
+
+def test_locate_clip_boundary_start_of_clip():
+    # 경계: 정확히 클립 시작초는 그 클립의 오프셋 0
+    clip, off = locate_clip(CLIPS13, 536)
+    assert clip["title"] == "학습하기" and off == 0
+
+
+def test_locate_clip_last_clip():
+    clip, off = locate_clip(CLIPS13, 7000)
+    assert clip["title"] == "정리하기" and off == 7000 - 6858
+
+
+def test_locate_clip_out_of_range_none():
+    assert locate_clip(CLIPS13, 99999) is None
+
+
+# ---- _plan_renormalize (기존 노트 오형식 마커/임베드/파일명 교정 계획) -----
+def test_plan_renormalize_rewrites_marker_embed_and_rename():
+    md = ("### 나눗셈 🎬 [09:21:00]\n"
+          "![[이산수학_13강_09-21-00.jpg]]\n"
+          "본문\n")
+    new_md, renames = _plan_renormalize(md, "이산수학", 13, 7209)
+    assert "[00:09:21]" in new_md and "[09:21:00]" not in new_md
+    assert "![[이산수학_13강_00-09-21.jpg]]" in new_md
+    assert "![[이산수학_13강_09-21-00.jpg]]" not in new_md
+    assert renames == [("이산수학_13강_09-21-00.jpg", "이산수학_13강_00-09-21.jpg")]
+    assert "본문" in new_md
+
+
+def test_plan_renormalize_keeps_valid_unchanged():
+    md = ("### 소수 🎬 [01:05:00]\n"
+          "![[이산수학_13강_01-05-00.jpg]]\n")
+    new_md, renames = _plan_renormalize(md, "이산수학", 13, 7209)
+    assert new_md == md and renames == []
+
+
+def test_plan_renormalize_marker_without_embed():
+    # 임베드가 없으면(캡처 실패) 마커만 교정, rename 없음
+    md = "### x 🎬 [11:15:00]\n다음 줄은 임베드가 아님\n"
+    new_md, renames = _plan_renormalize(md, "이산수학", 13, 7209)
+    assert "[00:11:15]" in new_md
+    assert renames == []
+
+
+def test_plan_renormalize_no_duration_noop():
+    md = "### x 🎬 [09:21:00]\n![[이산수학_13강_09-21-00.jpg]]\n"
+    new_md, renames = _plan_renormalize(md, "이산수학", 13, None)
+    assert new_md == md and renames == []

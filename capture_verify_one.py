@@ -10,6 +10,7 @@ Gemini 비전에 보내 '개념과 맞는 슬라이드'를 고르게 하고, 그
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from auth import ensure_logged_in
 from capture import capture_lecture_verified, needs_capture
 from config import load_config
 from discover import fetch_lectures, list_courses
+from download import build_filename
 from recon import launch_context
 from summarize import note_filename
 
@@ -35,12 +37,20 @@ TARGET_NAME = "이산수학의 개요"
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="비전 검증판 캡처 단일 차시 재검증(기본: 이산수학 1강)")
+    ap.add_argument("--course", default=TARGET_COURSE)
+    ap.add_argument("--seq", type=int, default=TARGET_SEQ)
+    ap.add_argument("--name", default=TARGET_NAME)
+    args = ap.parse_args()
+    course_name, seq, name = args.course, args.seq, args.name
+
     cfg = load_config()
-    mp3 = cfg.downloads_dir / "이산수학_1강.mp3"
-    note = cfg.summary_dir / note_filename(TARGET_COURSE, TARGET_SEQ, TARGET_NAME)
+    mp3 = cfg.downloads_dir / build_filename(course_name, seq, "mp3")
+    note = cfg.summary_dir / note_filename(course_name, seq, name)
     ts_json = note.with_suffix(".timestamps.json")
 
-    print(f"대상: {TARGET_COURSE} {TARGET_SEQ}강 '{TARGET_NAME}'", flush=True)
+    print(f"대상: {course_name} {seq}강 '{name}'", flush=True)
     print(f"  MP3 : {mp3} ({'있음' if mp3.exists() else '없음'})", flush=True)
     print(f"  노트: {note} ({'있음' if note.exists() else '없음'})", flush=True)
     print(f"  TS  : {ts_json} ({'있음' if ts_json.exists() else '없음'})", flush=True)
@@ -57,12 +67,12 @@ def main() -> None:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ensure_logged_in(page, cfg)
 
-        course = next(c for c in list_courses(page) if c.name == TARGET_COURSE)
-        lec = next(l for l in fetch_lectures(page, course) if l.seq == TARGET_SEQ)
+        course = next(c for c in list_courses(page) if c.name == course_name)
+        lec = next(l for l in fetch_lectures(page, course) if l.seq == seq)
 
         print("\n▶ 비전 검증 캡처 시작…", flush=True)
         res = capture_lecture_verified(
-            page, lec, TARGET_COURSE, TARGET_SEQ, TARGET_NAME,
+            page, lec, course_name, seq, name,
             mp3_path=mp3, note_path=note, client=client,
             overwrite=True,  # 기존 단순캡처 임베드를 비전 선택본으로 교체
             on_event=lambda m: print("  ·", m, flush=True),

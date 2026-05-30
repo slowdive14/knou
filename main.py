@@ -61,6 +61,21 @@ def _seq_of(lec) -> int:
     return int(getattr(lec, "seq"))
 
 
+def _video_done_of(lec) -> bool:
+    """Lecture 객체/딕셔너리에서 영상 시청완료 여부 추출(없으면 False=미시청)."""
+    if isinstance(lec, dict):
+        return bool(lec.get("video_done"))
+    return bool(getattr(lec, "video_done", False))
+
+
+def filter_unwatched(pairs) -> list:
+    """(과목명, lec) 쌍 중 영상 미시청(video_done=False)인 것만.
+
+    video_done 키/속성이 없으면 보수적으로 '미시청'으로 보고 포함한다
+    (요약/예습 대상에서 빠지지 않게)."""
+    return [(c, l) for c, l in pairs if not _video_done_of(l)]
+
+
 def lecture_key(course: str, seq) -> str:
     """상태 저장용 안정 키: '{과목}|{seq}'."""
     return f"{course}|{int(seq)}"
@@ -185,6 +200,7 @@ def _stage_download(c: _Ctx, course: str, lec) -> dict:
 
 
 def _stage_summarize(c: _Ctx, course: str, lec) -> dict:
+    from capture import probe_duration
     from download import build_filename
     from summarize import (needs_summary, note_filename, save_summary,
                            summarize_lecture)
@@ -200,7 +216,9 @@ def _stage_summarize(c: _Ctx, course: str, lec) -> dict:
         on_event=lambda m: c.logger.info("    %s", m))
     if not md:
         return {"ok": False, "error": "빈 요약 응답"}
-    save_summary(md, c.summary_dir, course, lec.seq, lec.name)
+    # MP3 길이로 Gemini 'MM:SS:00' 오형식 마커를 저장 전에 교정
+    dur = probe_duration(str(mp3)) if mp3.exists() else None
+    save_summary(md, c.summary_dir, course, lec.seq, lec.name, duration=dur)
     return {"ok": True}
 
 
@@ -237,8 +255,12 @@ def _needs_gemini(stages) -> bool:
 # 오케스트레이션 (IO)
 # ---------------------------------------------------------------------------
 def run(mode: str, course: str | None = None, seq=None,
-        state_path=DEFAULT_STATE, cfg=None) -> dict:
-    """전과목 순회 오케스트레이션. 반환: 실행 요약 dict."""
+        state_path=DEFAULT_STATE, cfg=None, unwatched: bool = False,
+        limit: int | None = None) -> dict:
+    """전과목 순회 오케스트레이션. 반환: 실행 요약 dict.
+
+    unwatched=True 면 영상 미시청 강의만 / limit 이 있으면 처리 대상을 N개로 제한.
+    """
     from google import genai
     from playwright.sync_api import sync_playwright
 
@@ -252,8 +274,8 @@ def run(mode: str, course: str | None = None, seq=None,
     logger = setup_logger()
     state = load_state(state_path)
 
-    logger.info("▶ 모드=%s 단계=%s 필터(course=%s, seq=%s)",
-                mode, stages, course, seq)
+    logger.info("▶ 모드=%s 단계=%s 필터(course=%s, seq=%s, unwatched=%s, limit=%s)",
+                mode, stages, course, seq, unwatched, limit)
 
     processed = skipped_lec = failed_lec = 0
     with sync_playwright() as p:
@@ -274,9 +296,17 @@ def run(mode: str, course: str | None = None, seq=None,
                 logger.warning("과목 '%s' 강의목록 조회 실패: %s",
                                course_obj.name, str(e)[:120])
         pairs = select_lectures(pairs, course=course, seq=seq)
-        todo = pending_lectures(state, pairs, stages)
-        logger.info("대상 강의: 전체 %d개 중 처리 %d개 (완료 skip %d개)",
-                    len(pairs), len(todo), len(pairs) - len(todo))
+        if unwatched:
+            before = len(pairs)
+            pairs = filter_unwatched(pairs)
+            logger.info("미시청 필터: %d개 중 미시청 %d개", before, len(pairs))
+        todo_all = pending_lectures(state, pairs, stages)
+        todo = todo_all if limit is None else todo_all[:limit]
+        deferred = len(todo_all) - len(todo)
+        logger.info("대상 강의: 전체 %d개 중 처리 %d개 "
+                    "(완료 skip %d개%s)",
+                    len(pairs), len(todo), len(pairs) - len(todo_all),
+                    f", limit 보류 {deferred}개" if deferred else "")
 
         try:
             for cname, lec in todo:
@@ -317,11 +347,12 @@ def run(mode: str, course: str | None = None, seq=None,
             except Exception:
                 pass
 
-    skipped_lec = len(pairs) - len(todo)
-    logger.info("■ 완료: 처리 %d / 실패 %d / 사전skip %d",
-                processed, failed_lec, skipped_lec)
+    skipped_lec = len(pairs) - len(todo_all)
+    deferred = len(todo_all) - len(todo)
+    logger.info("■ 완료: 처리 %d / 실패 %d / 사전skip %d / limit보류 %d",
+                processed, failed_lec, skipped_lec, deferred)
     return {"mode": mode, "total": len(pairs), "processed": processed,
-            "failed": failed_lec, "skipped": skipped_lec}
+            "failed": failed_lec, "skipped": skipped_lec, "deferred": deferred}
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -331,6 +362,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="이수 | 요약 | 전체")
     ap.add_argument("--course", default=None, help="과목명 부분일치 필터")
     ap.add_argument("--seq", type=int, default=None, help="차시 번호 필터")
+    ap.add_argument("--unwatched", action="store_true",
+                    help="영상 미시청(video_done=False) 강의만 처리")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="처리할 강의 최대 개수(예: 1 → 한 강의만)")
     ap.add_argument("--state", default=str(DEFAULT_STATE),
                     help="상태 파일 경로(기본 state.json)")
     return ap.parse_args(argv)
@@ -339,7 +374,8 @@ def parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> None:
     args = parse_args(argv)
     summary = run(args.mode, course=args.course, seq=args.seq,
-                  state_path=args.state)
+                  state_path=args.state, unwatched=args.unwatched,
+                  limit=args.limit)
     print(f"\n=== 요약 === {summary}", flush=True)
 
 

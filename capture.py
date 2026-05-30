@@ -30,7 +30,14 @@ import subprocess
 from pathlib import Path
 
 from download import sanitize
-from summarize import DEFAULT_MODEL, _TS_RE, seconds_to_timestamp, timestamp_to_seconds
+from summarize import (
+    DEFAULT_MODEL,
+    _TS_RE,
+    extract_timestamps,
+    normalize_ts_seconds,
+    seconds_to_timestamp,
+    timestamp_to_seconds,
+)
 
 DEFAULT_EXT = "jpg"
 # ffmpeg/ffprobe 실행파일(PATH 에 있으면 이름만으로 충분)
@@ -80,6 +87,36 @@ def candidate_seconds(base, offsets=VISION_OFFSETS, clip_dur=None) -> list[int]:
             continue
         out.add(s)
     return sorted(out)
+
+
+def clip_timeline(clips: list[dict]) -> list[tuple]:
+    """클립들을 재생(=MP3 연결) 순서대로 누적해 [(start, end, clip), ...] 반환.
+
+    MP3 는 강의 영상 클립들의 오디오를 순서대로 이어붙인 것 → MP3 절대초를
+    각 클립의 [start, end) 구간으로 매핑하기 위한 타임라인. 길이가 없거나(측정
+    실패) 0 이하인 클립은 건너뛴다(빈 구간 생성 방지).
+    """
+    out: list[tuple] = []
+    cum = 0.0
+    for c in clips:
+        d = c.get("duration")
+        if not isinstance(d, (int, float)) or d <= 0:
+            continue
+        out.append((cum, cum + float(d), c))
+        cum += float(d)
+    return out
+
+
+def locate_clip(clips: list[dict], sec):
+    """MP3 절대초(sec)가 떨어지는 클립과 그 클립 내 오프셋(초)을 찾는다.
+
+    return: (clip, offset) 또는 범위를 벗어나면 None.
+    offset 은 해당 클립을 절대초로 seek 할 때 쓸 클립 로컬 시각.
+    """
+    for (s, e, c) in clip_timeline(clips):
+        if s <= sec < e:
+            return c, sec - s
+    return None
 
 
 def orphan_captures(existing: list[str], referenced, subject: str, seq: int) -> list[str]:
@@ -496,38 +533,51 @@ def capture_lecture_verified(page, lec, subject, seq, name, mp3_path, note_path,
 
     popup = open_player(page, lec)
     picked = fallback = skipped = failed = 0
-    chosen = None
+    clips: list[dict] = []
     captures: dict[int, str] = {}
     try:
         clips = collect_clips(popup)
         for c in clips:
             c["duration"] = probe_duration(c.get("hlsUrl") or "")
-        chosen = pick_clip_by_duration(clips, target) if target else None
-        if not chosen:
-            log("⚠️ 매칭되는 영상 클립을 찾지 못함")
+        # MP3 = 클립 오디오 연결 → 누적 타임라인으로 절대초→(클립,오프셋) 매핑
+        timeline = clip_timeline(clips)
+        if not timeline:
+            log("⚠️ 길이를 측정한 영상 클립이 없음")
             return {"clip": None, "ts_count": len(timestamps), "picked": 0,
                     "fallback": 0, "skipped": 0, "failed": 0,
                     "out_dir": str(out_dir), "note": str(note_path)}
-        clip_dur = chosen.get("duration")
-        log(f"선택 클립: [{chosen['idx']}] {chosen.get('title')} "
-            f"({clip_dur}s, MP3와 차이 {abs(clip_dur - target):.1f}s)")
+        total = timeline[-1][1]
+        log(f"클립 {len(timeline)}개 연결 = {total:.0f}s / MP3 {target}s "
+            f"(차이 {abs(total - (target or 0)):.0f}s)")
 
         for t in timestamps:
-            base = int(t["seconds"])
+            note_sec = int(t["seconds"])          # 노트 마커 초(=embed/skip 키)
             label = (t.get("label") or "").strip()
-            if base in already:
+            if note_sec in already:
                 skipped += 1
                 continue
 
-            secs = candidate_seconds(base, offsets, clip_dur=clip_dur)
+            # 형식교정 → MP3 절대초 → 떨어지는 클립과 클립내 오프셋
+            base = normalize_ts_seconds(note_sec, target)
+            loc = locate_clip(clips, base)
+            if loc is None:
+                failed += 1
+                log(f"  ❌ {seconds_to_timestamp(note_sec)}: 클립 매핑 실패"
+                    f"(base={base}s > 전체 {total:.0f}s)")
+                continue
+            clip, offset = loc
+            offset = int(offset)
+            clip_dur = clip.get("duration")
+
+            secs = candidate_seconds(offset, offsets, clip_dur=clip_dur)
             cand: list[tuple[int, Path]] = []
             for s in secs:
-                cp = staging / f"{sanitize(subject)}_{seq}_{base}_c{s}.{ext}"
-                if capture_frame(chosen["hlsUrl"], s, cp)["ok"]:
+                cp = staging / f"{sanitize(subject)}_{seq}_{note_sec}_c{s}.{ext}"
+                if capture_frame(clip["hlsUrl"], s, cp)["ok"]:
                     cand.append((s, cp))
             if not cand:
                 failed += 1
-                log(f"  ❌ {seconds_to_timestamp(base)}: 후보 캡처 실패")
+                log(f"  ❌ {seconds_to_timestamp(note_sec)}: 후보 캡처 실패")
                 continue
 
             cap_secs = [s for s, _ in cand]
@@ -541,14 +591,15 @@ def capture_lecture_verified(page, lec, subject, seq, name, mp3_path, note_path,
                     client, label, [p for _, p in cand], on_event=on_event)
                 idx = sel.get("index")
                 if idx is None:
-                    chosen_sec = base if base in cap_secs else cap_secs[0]
+                    chosen_sec = offset if offset in cap_secs else cap_secs[0]
                     used_fallback = True
                     why = "fallback(t정각)"
                 else:
                     chosen_sec = cand[idx][0]
                     why = f"비전 pick: {sel.get('reason', '')}".strip()
 
-            final_fn = capture_filename(subject, seq, chosen_sec, ext)
+            # 파일명·embed 키는 노트 마커 초(note_sec)로 — 노트와 1:1 일치
+            final_fn = capture_filename(subject, seq, note_sec, ext)
             final_path = out_dir / final_fn
             if final_path.exists():
                 try:
@@ -562,14 +613,16 @@ def capture_lecture_verified(page, lec, subject, seq, name, mp3_path, note_path,
                         Path(p).unlink()
                     except OSError:
                         pass
-            captures[base] = final_fn
+            captures[note_sec] = final_fn
             if used_fallback:
                 fallback += 1
             else:
                 picked += 1
-            off = chosen_sec - base
-            log(f"  ✅ {seconds_to_timestamp(base)} "
-                f"→ {seconds_to_timestamp(chosen_sec)} (Δ{off:+d}s) [{why}]")
+            off = chosen_sec - offset
+            cor = "" if base == note_sec else f"(교정 {seconds_to_timestamp(base)})"
+            log(f"  ✅ {seconds_to_timestamp(note_sec)}{cor} → "
+                f"클립[{clip['idx']}]{clip.get('title', '')} "
+                f"+{chosen_sec}s (Δ{off:+d}s) [{why}]")
     finally:
         try:
             popup.close()
@@ -603,7 +656,117 @@ def capture_lecture_verified(page, lec, subject, seq, name, mp3_path, note_path,
         if pruned:
             log(f"orphan 캡처 {pruned}개 삭제")
 
-    return {"clip": chosen.get("title") if chosen else None,
+    n_clips = len(clip_timeline(clips))
+    return {"clip": f"{n_clips}개 클립 연결" if n_clips else None,
+            "clips": n_clips,
             "ts_count": len(timestamps), "picked": picked,
             "fallback": fallback, "skipped": skipped, "failed": failed,
             "pruned": pruned, "out_dir": str(out_dir), "note": str(note_path)}
+
+
+# ---------------------------------------------------------------------------
+# 기존 노트 타임스탬프 재정규화(오프라인 마이그레이션) — 재캡처 없이
+# 오형식 마커/임베드/캡처 파일명/timestamps.json 을 일괄 정정
+# ---------------------------------------------------------------------------
+def _plan_renormalize(markdown: str, subject: str, seq: int, duration,
+                      ext: str = DEFAULT_EXT) -> tuple[str, list[tuple]]:
+    """오형식 타임스탬프 노트 교정 계획(순수): (새 markdown, [(old_fn,new_fn)]).
+
+    각 [ts] 마커의 raw 초를 normalize_ts_seconds 로 교정. 교정된 마커는 줄 안의
+    [ts]→[교정ts] 로 치환하고, 바로 아래 임베드 ![[old_fn]] 가 이 개념의 캡처
+    파일명과 일치하면 ![[new_fn]] 로 치환하며 (old_fn,new_fn) 을 renames 에 담는다.
+    교정이 필요 없는 마커·임베드는 그대로(멱등). 파일 IO 없음.
+    """
+    lines = (markdown or "").splitlines()
+    out: list[str] = []
+    renames: list[tuple] = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        line = lines[i]
+        m = _TS_RE.search(line)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        ts = m.group(1)
+        raw = timestamp_to_seconds(ts)
+        norm = normalize_ts_seconds(raw, duration)
+        if norm == raw:
+            out.append(line)
+            i += 1
+            continue
+        new_ts = seconds_to_timestamp(norm)
+        out.append(line.replace(f"[{ts}]", f"[{new_ts}]", 1))
+        old_fn = capture_filename(subject, seq, raw, ext)
+        new_fn = capture_filename(subject, seq, norm, ext)
+        if i + 1 < n:
+            em = re.match(r"^\s*!\[\[(.+?)\]\]\s*$", lines[i + 1])
+            if em and em.group(1) == old_fn:
+                out.append(f"![[{new_fn}]]")
+                renames.append((old_fn, new_fn))
+                i += 2
+                continue
+        i += 1
+    text = "\n".join(out)
+    if markdown.endswith("\n") and not text.endswith("\n"):
+        text += "\n"
+    return text, renames
+
+
+def renormalize_note(note_path, subject, seq, name, duration, out_dir=None,
+                     ext: str = DEFAULT_EXT, on_event=None) -> dict:
+    """기존 노트의 오형식 타임스탬프를 오프라인으로 일괄 교정(재캡처 없음).
+
+    마커/임베드 텍스트 치환 + 캡처 이미지 파일명 rename + timestamps.json 재생성.
+    이미지 '내용'은 그대로 두고 '이름·표기'만 정정한다.
+    return: {"changed","renamed","note","timestamps"}
+    """
+    def log(m):
+        if on_event:
+            try:
+                on_event(m)
+            except Exception:
+                pass
+
+    note_path = Path(note_path)
+    if out_dir is None:
+        out_dir = note_path.parent / "_captures"
+    out_dir = Path(out_dir)
+
+    md = note_path.read_text(encoding="utf-8")
+    new_md, renames = _plan_renormalize(md, subject, seq, duration, ext)
+
+    renamed: list[tuple] = []
+    for old_fn, new_fn in renames:
+        src, dst = out_dir / old_fn, out_dir / new_fn
+        if not src.exists():
+            continue
+        try:
+            if dst.exists():
+                dst.unlink()
+            src.replace(dst)
+            renamed.append((old_fn, new_fn))
+            log(f"  rename {old_fn} → {new_fn}")
+        except OSError as e:
+            log(f"  ⚠️ rename 실패 {old_fn}: {str(e)[:60]}")
+
+    changed = new_md != md
+    if changed:
+        note_path.write_text(new_md, encoding="utf-8")
+        log(f"노트 마커 교정: {note_path.name}")
+
+    # timestamps.json 재생성(subject/seq/name 메타 보존)
+    ts_path = note_path.with_suffix(".timestamps.json")
+    ts = extract_timestamps(new_md)
+    if ts_path.exists():
+        data = json.loads(ts_path.read_text(encoding="utf-8"))
+    else:
+        data = {"subject": subject, "seq": seq, "name": name}
+    data["timestamps"] = ts
+    ts_path.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+    log(f"timestamps.json 재생성: {len(ts)}개")
+
+    return {"changed": changed, "renamed": renamed,
+            "note": str(note_path), "timestamps": str(ts_path)}

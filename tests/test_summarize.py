@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -14,7 +15,10 @@ from summarize import (  # noqa: E402
     build_prompt,
     extract_timestamps,
     needs_summary,
+    normalize_markdown_timestamps,
+    normalize_ts_seconds,
     note_filename,
+    save_summary,
     seconds_to_timestamp,
     timestamp_to_seconds,
 )
@@ -120,3 +124,67 @@ def test_build_prompt_mentions_key_requirements():
     # 핵심 요구: 타임스탬프(HH:MM:SS), 음성 기준 근사치, 마크다운
     assert "[HH:MM:SS]" in p or "HH:MM:SS" in p
     assert "근사" in p or "근사치" in p
+
+
+# ---- normalize_ts_seconds (Gemini 'MM:SS:00' 오형식 교정) ------------------
+def test_normalize_ts_seconds_misformatted():
+    assert normalize_ts_seconds(33660, 7209) == 561      # 09:21:00 → 9분21초
+    assert normalize_ts_seconds(208740, 7209) == 3479    # 57:59:00 → 57분59초
+
+
+def test_normalize_ts_seconds_valid_unchanged():
+    assert normalize_ts_seconds(3600, 7209) == 3600      # 진짜 1시간
+    assert normalize_ts_seconds(7260, 7209) == 7260      # 60s 이내 초과 → 보존
+
+
+def test_normalize_ts_seconds_no_duration_unchanged():
+    assert normalize_ts_seconds(33660, 0) == 33660
+    assert normalize_ts_seconds(33660, None) == 33660
+
+
+# ---- normalize_markdown_timestamps ----------------------------------------
+def test_normalize_markdown_timestamps_fixes_misformatted():
+    md = "### 나눗셈 정리 🎬 [09:21:00] (교재 p.3)\n본문\n"
+    out = normalize_markdown_timestamps(md, 7209)
+    assert "[00:09:21]" in out          # 9h21m → 9m21s 로 교정
+    assert "[09:21:00]" not in out
+    assert "나눗셈 정리" in out and "(교재 p.3)" in out
+
+
+def test_normalize_markdown_timestamps_keeps_valid():
+    md = "### 소수정리 🎬 [01:05:00]\n본문\n"
+    out = normalize_markdown_timestamps(md, 7209)
+    assert out == md                     # 1시간5분 = 정상 → 멱등
+
+
+def test_normalize_markdown_timestamps_no_duration_noop():
+    md = "### x 🎬 [09:21:00]\n"
+    assert normalize_markdown_timestamps(md, None) == md
+
+
+def test_normalize_markdown_timestamps_mixed():
+    md = ("### A 🎬 [09:21:00]\n"
+          "### B 🎬 [01:05:00]\n")
+    out = normalize_markdown_timestamps(md, 7209)
+    assert "[00:09:21]" in out           # 오형식만 교정
+    assert "[01:05:00]" in out           # 정상은 유지
+
+
+# ---- save_summary (저장 전 마커 교정 + json 동기화) -----------------------
+def test_save_summary_normalizes_md_and_json(tmp_path):
+    md = "# 이산수학 13강 - 정수론\n### 나눗셈 🎬 [09:21:00]\n본문\n"
+    res = save_summary(md, tmp_path, "이산수학", 13, "정수론", duration=7209)
+    note = Path(res["md"])
+    saved = note.read_text(encoding="utf-8")
+    assert "[00:09:21]" in saved and "[09:21:00]" not in saved
+    # 사이드카 json 도 교정된 초로 저장
+    ts = json.loads(Path(res["timestamps"]).read_text(encoding="utf-8"))
+    secs = [t["seconds"] for t in ts["timestamps"]]
+    assert secs == [561]
+
+
+def test_save_summary_without_duration_unchanged(tmp_path):
+    md = "# t\n### x 🎬 [09:21:00]\n"
+    res = save_summary(md, tmp_path, "이산수학", 13, "정수론")
+    saved = Path(res["md"]).read_text(encoding="utf-8")
+    assert "[09:21:00]" in saved          # duration 없으면 교정 안 함
