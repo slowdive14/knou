@@ -1,7 +1,7 @@
 """Phase 7 — 전과목 일괄 조율기.
 
 브라우저 1회 기동 + 로그인 → 전과목 강의 순회 → 모드별 단계 실행
-(watch=자동이수 / download=자료 / summarize=요약 / capture=비전검증 캡처) →
+(watch=자동이수 / download=자료 / summarize=요약 / capture=슬라이드 덱 매칭) →
 `state.json`에 단계별 완료 기록(재실행 시 done skip·중단 후 이어서) →
 강의 단위 try/except 로 한 강의 실패해도 다음 강의 계속 → `logs/`에 실행 로그.
 
@@ -223,20 +223,20 @@ def _stage_summarize(c: _Ctx, course: str, lec) -> dict:
 
 
 def _stage_capture(c: _Ctx, course: str, lec) -> dict:
-    from capture import capture_lecture_verified
-    from download import build_filename
+    """슬라이드 덱 매칭 캡처(deck_match). 영상→덱→개념매칭→노트 마커/이미지 보정.
+
+    옛 비전윈도우 경로(capture.capture_lecture_verified)는 보존되어 있으나
+    더 정확한 콘텐츠 매칭을 위해 이 경로로 대체했다(롤백은 이 함수만 되돌림).
+    """
+    from deck_match import deck_capture_lecture
     from summarize import note_filename
     note = c.summary_dir / note_filename(course, lec.seq, lec.name)
-    mp3 = c.downloads_dir / build_filename(course, lec.seq, "mp3")
     if not note.exists():
         return {"ok": False, "error": "요약 노트 없음(먼저 summarize)"}
-    if not mp3.exists():
-        return {"ok": False, "error": "MP3 없음(먼저 download)"}
-    res = capture_lecture_verified(
+    return deck_capture_lecture(
         c.page, lec, course, lec.seq, lec.name,
-        mp3_path=mp3, note_path=note, client=c.client,
+        cfg=c.cfg, client=c.client, note_path=note,
         on_event=lambda m: c.logger.info("    %s", m))
-    return {"ok": True, "detail": res}
 
 
 STAGE_FUNCS = {
@@ -256,10 +256,11 @@ def _needs_gemini(stages) -> bool:
 # ---------------------------------------------------------------------------
 def run(mode: str, course: str | None = None, seq=None,
         state_path=DEFAULT_STATE, cfg=None, unwatched: bool = False,
-        limit: int | None = None) -> dict:
+        limit: int | None = None, only_stages: list[str] | None = None) -> dict:
     """전과목 순회 오케스트레이션. 반환: 실행 요약 dict.
 
     unwatched=True 면 영상 미시청 강의만 / limit 이 있으면 처리 대상을 N개로 제한.
+    only_stages 가 있으면 모드 단계 중 그 단계만 실행(예: ["capture"]).
     """
     from google import genai
     from playwright.sync_api import sync_playwright
@@ -270,6 +271,12 @@ def run(mode: str, course: str | None = None, seq=None,
     from recon import launch_context
 
     stages = stages_for_mode(mode)
+    if only_stages:
+        bad = [s for s in only_stages if s not in STAGE_FUNCS]
+        if bad:
+            raise ValueError(f"알 수 없는 단계: {bad} "
+                             f"(가능: {list(STAGE_FUNCS)})")
+        stages = [s for s in stages if s in only_stages] or list(only_stages)
     cfg = cfg or load_config()
     logger = setup_logger()
     state = load_state(state_path)
@@ -366,6 +373,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="영상 미시청(video_done=False) 강의만 처리")
     ap.add_argument("--limit", type=int, default=None,
                     help="처리할 강의 최대 개수(예: 1 → 한 강의만)")
+    ap.add_argument("--stages", nargs="+", default=None,
+                    help="모드 단계 중 일부만 실행(예: --stages capture)")
     ap.add_argument("--state", default=str(DEFAULT_STATE),
                     help="상태 파일 경로(기본 state.json)")
     return ap.parse_args(argv)
@@ -375,7 +384,7 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     summary = run(args.mode, course=args.course, seq=args.seq,
                   state_path=args.state, unwatched=args.unwatched,
-                  limit=args.limit)
+                  limit=args.limit, only_stages=args.stages)
     print(f"\n=== 요약 === {summary}", flush=True)
 
 
