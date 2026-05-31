@@ -15,7 +15,8 @@
 강의자료실 구조(실측 recon_shots/lecturedata_list.json):
   - 게시판: 글마다 bdotNo, 분류(sbjtBdotClcd), 제목, 첨부(apndFileNm:표시명,
     apndFileSaveNm:저장명, 멀티는 ':'로 구분), fileCnt
-  - 차시 강의록 = 분류 '강의자료' + apndFileNm 이 'NN-'(2자리 0패딩)로 시작
+  - 차시 강의록 = 분류 '강의자료' + 표시명이 'NN-'(0패딩) 또는 'N강'(예: 데이터베이스
+    시스템_14강_강의록.pdf) 로 차시 지시. 여러 첨부면 '강의록' 본문 PDF 우선(흑백/체크포인트 후순위)
   - 다운로드 URL: /user_uploading?pathkey=COURSE.DATA&addSavePath={sbjtId}
                   &getfile={저장명}&realFileName={표시명(URL인코딩)}
   - MP3는 lectlist 의 strVidoAudoUrl(Lecture.audio_url)에 절대 URL이 이미 있음
@@ -86,26 +87,61 @@ def _split_files(post: dict):
     return list(zip(ds, ss))
 
 
-def match_pdf_post(posts, seq: int, category: str = "강의자료") -> dict | None:
-    """글목록에서 해당 차시의 강의록 글/첨부를 찾는다.
+def _seq_in_name(display_nm: str, seq: int) -> bool:
+    """첨부 표시명이 해당 차시의 것인지(과목 무관) 판정.
 
-    매칭 규칙: 분류 == category(기본 '강의자료') 이고 첨부 표시명이 'NN-'(2자리)로 시작.
+    두 가지 명명 규칙을 모두 인식한다:
+      - 'NN-...'  (2자리 0패딩 접두사. 예: 이산수학 '13-정수론.pdf')
+      - '..._N강_...' 또는 '...N강...' (예: '데이터베이스시스템_14강_강의록.pdf')
+    자릿수 경계를 보호해 seq=4 가 '14강'에, seq=1 이 '11강'에 오매칭되지 않는다.
+    """
+    if display_nm.startswith(f"{seq:02d}-"):
+        return True
+    # 앞에 숫자가 붙지 않은 'N강'(0패딩 허용). '_14강','(14강' 등 모두 허용.
+    return re.search(rf"(?<!\d)0*{seq}강(?![0-9])", display_nm) is not None
+
+
+def _pdf_pref_score(display_nm: str) -> int:
+    """같은 차시 첨부가 여럿일 때 '강의록' 본문 PDF 를 우선하기 위한 점수."""
+    score = 0
+    if _ext_of(display_nm) == "pdf":
+        score += 4
+    if "강의록" in display_nm:
+        score += 2
+    if "흑백" in display_nm:          # 강의록_흑백 → 후순위
+        score -= 1
+    if "체크포인트" in display_nm or "체크" in display_nm:
+        score -= 2
+    return score
+
+
+def match_pdf_post(posts, seq: int, category: str = "강의자료") -> dict | None:
+    """글목록에서 해당 차시의 강의록(본문 PDF) 첨부를 찾는다.
+
+    매칭 규칙: 분류 == category(기본 '강의자료') 이고 표시명이 해당 차시를 가리킴
+      (NN- 접두사 또는 'N강' 패턴; _seq_in_name 참고).
+    같은 차시 첨부가 여러 개면(강의록/흑백/체크포인트) '강의록' 본문 PDF 를 우선한다.
     반환: {"bdotNo","title","save_nm","display_nm","ext"} 또는 None.
     """
-    prefix = f"{seq:02d}-"
+    candidates: list[tuple[int, dict]] = []
     for p in posts or []:
         if (p.get("sbjtBdotClcd") or "") != category:
             continue
         for display_nm, save_nm in _split_files(p):
-            if display_nm.startswith(prefix):
-                return {
-                    "bdotNo": p.get("bdotNo"),
-                    "title": (p.get("sbjtNotcTitNm") or ""),
-                    "save_nm": save_nm,
-                    "display_nm": display_nm,
-                    "ext": _ext_of(display_nm),
-                }
-    return None
+            if not _seq_in_name(display_nm, seq):
+                continue
+            candidates.append((_pdf_pref_score(display_nm), {
+                "bdotNo": p.get("bdotNo"),
+                "title": (p.get("sbjtNotcTitNm") or ""),
+                "save_nm": save_nm,
+                "display_nm": display_nm,
+                "ext": _ext_of(display_nm) or "pdf",
+            }))
+    if not candidates:
+        return None
+    # 점수 내림차순(동점이면 원래 등장 순서 유지) → 최상위 1개
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
 
 
 # ---------------------------------------------------------------------------
