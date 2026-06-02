@@ -23,7 +23,21 @@
 
 ## 2. 설치 (처음 한 번만)
 
+### 가장 쉬운 방법 — 설치 도우미 더블클릭 (권장)
+
+1. 먼저 [python.org](https://www.python.org/downloads/) 에서 파이썬을 설치합니다.
+   설치 **첫 화면에서 "Add Python to PATH" 체크**를 잊지 마세요.
+2. 이 폴더의 **`install.bat` 을 더블클릭**합니다.
+3. 까만 창에서 `[1/4] … [4/4] …` 가 차례로 지나가고, **"설치 완료!"** 가 보이면 끝입니다.
+   (인터넷 속도에 따라 몇 분 걸립니다. 중간에 창을 닫지 마세요.)
+
+> 까만 창에 빨간/영문 오류가 보이면, 인터넷 연결을 확인하고 `install.bat` 을 한 번 더 더블클릭해 보세요.
+> 그래도 안 되면 아래 *수동 설치* 를 따라 하거나 7번 *문제가 생기면* 표를 참고하세요.
+
+### 수동 설치 (도우미가 안 될 때만)
+
 프로젝트 폴더에서 명령창(PowerShell)을 열고 아래를 **한 줄씩** 실행합니다.
+(폴더 빈 공간에서 **Shift + 마우스 우클릭 → "여기에 PowerShell 창 열기"**)
 
 ```powershell
 python -m venv .venv
@@ -34,6 +48,17 @@ python -m venv .venv
 - 첫 줄: 전용 파이썬 환경(`.venv`) 생성
 - 둘째 줄: 필요한 라이브러리 설치
 - 셋째 줄: 영상 시청용 브라우저(크로미움) 설치
+
+### ffmpeg 설치 (영상→오디오 변환용)
+
+가장 쉬운 방법은 PowerShell 에서 아래 한 줄을 실행하는 것입니다.
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+winget 이 없거나 막히면, [ffmpeg.org](https://ffmpeg.org/download.html) 에서 받은
+`ffmpeg.exe`·`ffprobe.exe` 두 파일을 **이 프로젝트 폴더에 복사**해 넣으세요.
 
 설치는 처음 한 번이면 됩니다.
 

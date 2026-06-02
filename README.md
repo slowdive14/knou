@@ -17,18 +17,27 @@
 
 ## 🚀 빠른 시작 (3단계)
 
-### 1) 설치 (처음 한 번만)
-[Python 3.11+](https://www.python.org/downloads/) 설치 시 **"Add Python to PATH"** 를 체크하세요.
-그다음 프로젝트 폴더에서 PowerShell 을 열고 **한 줄씩** 실행:
+### 1) 설치 (처음 한 번만) — 명령어 몰라도 됩니다
+
+**① 파이썬 설치**
+[python.org](https://www.python.org/downloads/) 에서 노란 **[Download]** 버튼을 눌러 설치하세요.
+⚠️ 설치 **첫 화면 맨 아래 "Add Python to PATH" 를 꼭 체크**한 뒤 설치하세요.
+
+**② 설치 도우미 더블클릭**
+이 폴더의 **`install.bat` 을 더블클릭**하세요. 까만 창이 뜨면서 필요한 것을 알아서 설치합니다
+(몇 분 걸립니다). **"설치 완료!"** 가 보이면 끝 — 창을 닫으세요.
+
+> 명령어를 직접 치고 싶다면(또는 도우미가 안 될 때) → [README_GUI.md](README_GUI.md) 의 *수동 설치* 참고.
+
+**③ ffmpeg 설치** — 영상에서 소리를 뽑아낼 때 필요합니다.
+가장 쉬운 방법: 시작 메뉴에서 **PowerShell** 을 열고 아래 한 줄을 붙여넣어 실행하세요.
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m playwright install chromium
+winget install Gyan.FFmpeg
 ```
 
-추가로 영상→오디오 변환에 **[ffmpeg](https://ffmpeg.org/download.html)** 가 필요합니다
-(PATH 에 추가하거나 `ffmpeg.exe`·`ffprobe.exe` 를 프로젝트 폴더에 두세요).
+(winget 이 없거나 막히면, [ffmpeg.org](https://ffmpeg.org/download.html) 에서 받은
+`ffmpeg.exe`·`ffprobe.exe` 두 파일을 **이 프로젝트 폴더에 그대로 복사**해 넣어도 됩니다.)
 
 ### 2) 실행
 폴더의 **`run_app.bat` 더블클릭** → 앱 창이 뜹니다.
