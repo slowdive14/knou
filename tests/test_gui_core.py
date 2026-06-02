@@ -10,10 +10,13 @@ from pathlib import Path
 # 프로젝트 루트를 import 경로에 추가
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import gui_core  # noqa: E402
 from gui_core import (  # noqa: E402
     first_run_needed,
+    is_frozen,
     mask_secret,
     read_env_file,
+    resource_path,
     validate_settings,
     write_env_file,
 )
@@ -146,3 +149,28 @@ def test_first_run_not_needed_when_complete(tmp_path):
         encoding="utf-8",
     )
     assert first_run_needed(p) is False
+
+
+# --- is_frozen / resource_path (Phase 5: 패키징 대비) ----------------------
+def test_is_frozen_false_in_source_run():
+    # 소스(테스트)로 돌 땐 패키징 아님.
+    assert is_frozen() is False
+
+
+def test_resource_path_source_uses_base_dir():
+    from config import BASE_DIR
+    p = resource_path("assets/icon.ico")
+    assert p == Path(BASE_DIR) / "assets/icon.ico"
+
+
+def test_resource_path_explicit_base_wins(tmp_path):
+    p = resource_path("icon.ico", base=tmp_path)
+    assert p == tmp_path / "icon.ico"
+
+
+def test_resource_path_frozen_uses_meipass(tmp_path, monkeypatch):
+    # 패키징 상태를 흉내: sys.frozen + sys._MEIPASS → 그 경로 기준.
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert gui_core.is_frozen() is True
+    assert resource_path("icon.ico") == tmp_path / "icon.ico"

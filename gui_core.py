@@ -9,9 +9,12 @@
   - mask_secret(value, keep=4)     : 화면 표시용 마스킹("AIza…(가림)")
   - validate_settings(d)           : 누락 필수키 리스트(config.REQUIRED 재사용)
   - first_run_needed(path)         : .env에 필수키가 빠졌으면 True(설정 마법사 유도)
+  - is_frozen()                    : PyInstaller 등으로 패키징(.exe) 실행 중인지
+  - resource_path(rel)             : 번들 리소스 실제 경로(frozen=_MEIPASS / 소스=루트)
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from config import BASE_DIR, REQUIRED
@@ -115,3 +118,23 @@ def validate_settings(d: dict) -> list:
 def first_run_needed(path=ENV_PATH) -> bool:
     """`.env`에 필수키가 하나라도 빠졌으면 True → 설정 마법사로 유도."""
     return bool(validate_settings(read_env_file(path)))
+
+
+def is_frozen() -> bool:
+    """PyInstaller 등으로 패키징(.exe)되어 실행 중이면 True.
+
+    패키징 시 `sys.executable` 은 파이썬이 아니라 exe 자신이 된다 → 백엔드
+    실행·리소스 경로 처리를 분기해야 하므로 그 판정의 단일 진입점.
+    """
+    return bool(getattr(sys, "frozen", False))
+
+
+def resource_path(rel: str, base=None) -> Path:
+    """번들된 리소스(아이콘 등)의 실제 경로.
+
+    패키징(frozen) 시 PyInstaller 가 임시 해제하는 `sys._MEIPASS` 기준,
+    소스 실행 시 프로젝트 루트(BASE_DIR) 기준으로 합친다. base 를 주면 우선.
+    """
+    if base is None:
+        base = getattr(sys, "_MEIPASS", BASE_DIR) if is_frozen() else BASE_DIR
+    return Path(base) / rel

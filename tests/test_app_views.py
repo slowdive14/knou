@@ -57,6 +57,28 @@ def test_settings_view_prefills_existing_values(tmp_path):
     assert "loaded_id" in values
 
 
+def test_settings_view_has_desktop_shortcut_button(tmp_path):
+    # Phase 5: 비개발자가 바탕화면 바로가기를 만들 수 있는 버튼이 있어야 함
+    view = build_settings_view(tmp_path / ".env")
+    labels = [c.content for c in _walk(view)
+              if isinstance(c, ft.OutlinedButton)]
+    assert any("바로가기" in str(l) for l in labels)
+
+
+def test_settings_view_first_run_hint_only_when_incomplete(tmp_path):
+    # 필수값 누락(첫 실행)이면 친절 안내가 뜨고, 다 채워지면 사라진다.
+    texts_missing = [c.value for c in _walk(build_settings_view(tmp_path / "a.env"))
+                     if isinstance(c, ft.Text)]
+    assert any("처음이신가요" in str(v) for v in texts_missing)
+
+    p = tmp_path / "b.env"
+    p.write_text("KNOU_ID=x\nKNOU_PW=y\nGEMINI_API_KEY=z\nVAULT_PATH=C:/v\n",
+                 encoding="utf-8")
+    texts_complete = [c.value for c in _walk(build_settings_view(p))
+                      if isinstance(c, ft.Text)]
+    assert not any("처음이신가요" in str(v) for v in texts_complete)
+
+
 # --- apply_settings(저장 경로) ---------------------------------------------
 def test_apply_settings_writes_and_reports_complete(tmp_path):
     p = tmp_path / ".env"

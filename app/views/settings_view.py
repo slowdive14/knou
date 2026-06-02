@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from deploy import create_desktop_shortcut
 from gui_core import (
     ENV_PATH,
     SECRET_KEYS,
@@ -96,14 +97,42 @@ def build_settings_view(env_path=ENV_PATH, show_message=None) -> ft.Control:
 
     save_btn = ft.FilledButton("저장", icon=ft.Icons.SAVE, on_click=on_save)
 
+    def on_make_shortcut(_=None) -> None:
+        try:
+            res = create_desktop_shortcut()
+        except Exception:
+            _notify("바로가기 생성에 실패했습니다(PowerShell 확인).", True)
+            return
+        if res.get("ok"):
+            _notify("바탕화면에 '바로가기'를 만들었습니다 ✓ "
+                    "(더블클릭하면 앱이 창 없이 열립니다)", False)
+        else:
+            _notify("바로가기 생성에 실패했습니다(권한/PowerShell 확인).", True)
+
+    shortcut_btn = ft.OutlinedButton(
+        "바탕화면 바로가기 만들기", icon=ft.Icons.ADD_LINK,
+        tooltip="더블클릭으로 앱을 켤 수 있는 바로가기를 바탕화면에 생성",
+        on_click=on_make_shortcut)
+
+    # 첫 실행(필수값 누락) 시 친절 안내 — 설정 마법사 역할.
+    first_hint = None
+    if validate_settings(data):
+        first_hint = ft.Container(
+            content=ft.Text(
+                "처음이신가요? 아래 필수 항목(*)을 채우고 [저장]을 누르세요. "
+                "그다음 '실행' 탭에서 강의를 고르거나 '예약' 탭에서 자동 실행을 거세요.",
+                size=13, color=ft.Colors.BLUE),
+            bgcolor=ft.Colors.BLUE_50, padding=10, border_radius=8)
+
     return ft.Column(
         [
             ft.Text("설정", size=24, weight=ft.FontWeight.BOLD),
             ft.Text("아이디·비밀번호·Gemini 키·볼트 경로를 입력하세요. "
                     "별표(*)는 필수입니다.", size=13, color=ft.Colors.GREY),
+            *([first_hint] if first_hint else []),
             ft.Divider(),
             *field_rows,
-            ft.Row([save_btn]),
+            ft.Row([save_btn, shortcut_btn]),
             banner,
         ],
         spacing=14,

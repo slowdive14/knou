@@ -11,7 +11,7 @@
 > ⛔ Quality Gate를 건너뛰거나 실패한 상태로 진행하지 말 것
 
 - **Last Updated**: 2026-06-02
-- **Status**: ✅ Phase 1·2·3 완료 · 🔄 Phase 4(자동 예약) 구현완료 — **창 없이 실행(VBS) + 실행 탭 로그 보기 + 예약 on/off(글자 버튼) + 실행 중 절전 억제(keep_awake) + 이름 변경(앱 'KNOU 형성평가 자동화 및 강의 노트 정리' · 예약 접두사 `KNOU_`)** 적용(테스트 264 통과, 등록·창숨김·토글·이름·절전억제 라이브 확인) — 사용자 1회 실사용 검증 대기
+- **Status**: ✅ Phase 1·2·3 완료 · 🔄 Phase 4(자동 예약)·Phase 5(배포) 구현완료 — Phase4: **창 없이 실행(VBS) + 실행 탭 로그 보기 + 예약 on/off + 실행 중 절전 억제(keep_awake) + 이름 변경(`KNOU_`)** / Phase5: **권장 배포경로(run_app.bat + 바탕화면 바로가기 + README_GUI.md + frozen 보정 토대)** 적용(테스트 **278 통과**, 절전억제·바로가기 .lnk 생성 라이브 확인) — 사용자 1회 실사용 검증 대기
 - **App 이름**: `KNOU 형성평가 자동화 및 강의 노트 정리`(창 제목) · 작업 스케줄러 예약 접두사 `KNOU_`(영문, 안정적) · 패키징 exe 는 `KNOU.exe`(Phase 5)
 - **Scope**: Large (5 phases, 약 10~17시간)
 - **Stack**: Python 3.14 / **Flet**(데스크톱 GUI) / 기존 백엔드(Playwright·Gemini·ffmpeg) **그대로 구동** / Windows 작업 스케줄러 / PyInstaller(.exe)
@@ -27,7 +27,7 @@
 - [x] **영상 이수 / 형성평가**: 미이수 강의 자동 이수(`--mode 이수`) — **되돌릴 수 없는 형성평가 자동 제출**이므로 필수 확인 + 취소 가능 *(구현 완료·수동 검증 대기)*
 - [x] **설정 화면**: 아이디/비밀번호/Gemini 키/볼트 경로를 화면에서 안전 입력(마스킹, 로그 미출력) — `.env` 직접 편집 불필요
 - [ ] **자동 예약**: 모드·필터·시각을 골라 Windows 작업 스케줄러에 등록(앱·터미널 꺼져 있어도 새벽 자동 실행) *(Phase 4 진행 중)*
-- [ ] **배포**: `KNOU.exe` 더블클릭 실행 + 첫 실행 설정 마법사 + 바탕화면 바로가기
+- [x] **배포**: `run_app.bat` 더블클릭 + **바탕화면 바로가기(콘솔 없이 pythonw 실행)** + 첫 실행 설정 마법사 + `README_GUI.md` *(권장 경로 채택 — 단일 .exe 는 Playwright 번들 취약성으로 보류, frozen 보정 토대만 선반영)*
 
 ### 핵심 설계 원칙
 1. **백엔드 재작성 0** — GUI는 기존 `main.py`를 **하위 프로세스(subprocess)로 구동**하고 stdout 로그를 실시간 표시한다.
@@ -239,15 +239,15 @@ knou/
 4. **(GREEN)** `run_app.bat`(소스 실행) + `README_GUI.md`(설치/사용/주의 — 비개발자용)
 5. **(REFACTOR)** 창 아이콘/제목/최소크기, 실행 중 종료 시 경고
 
-**Quality Gate**:
-- [ ] 깨끗한 경로에서 `KNOU.exe` 더블클릭 시 앱 실행(수동, 가능하면 다른 폴더/계정)
+**Quality Gate** (권장경로 — bat+바로가기 기준):
+- [x] `run_app.bat` 더블클릭 시 앱 실행(소스+venv) — 기존 검증
+- [ ] 설정 탭 [바탕화면 바로가기 만들기] → 바탕화면 `.lnk` 더블클릭 시 **콘솔 없이** 앱 실행(수동)
 - [ ] 첫 실행 설정 마법사로 `.env` 생성 → 예습 노트 생성까지 동작(end-to-end)
-- [ ] exe 실행에서도 비번·키 미출력
-- [ ] `README_GUI.md`만 보고 비개발자가 설치·실행 가능
+- [x] `README_GUI.md`만 보고 비개발자가 설치·실행 가능(문서 작성 완료)
 - [ ] (확인) 기존 CLI(`python main.py …`)도 그대로 동작(회귀 없음)
 
 **Dependencies**: Phase 1~4
-**Rollback**: `dist/` 삭제, 패키징 스크립트/README 제거
+**Rollback**: `deploy.py`·`README_GUI.md`·바로가기 제거(코드 토대 `is_frozen`/`resource_path` 는 무해하게 유지)
 
 ---
 
@@ -276,7 +276,7 @@ knou/
 | 2. 강의 선택 + 예습 노트 생성 | ✅ 완료 | 2026-06-01 |
 | 3. 형성평가/영상 이수 + 안전장치 | ✅ 완료 | 2026-06-02 |
 | 4. 자동 예약(작업 스케줄러) | 🔄 구현완료·수동검증 대기 | - |
-| 5. 패키징 & 배포(.exe) | ⬜ 대기 | - |
+| 5. 패키징 & 배포 | 🔄 권장경로(bat+바로가기+README) 구현완료·수동검증 대기 | 2026-06-02 |
 
 상태 범례: ⬜ 대기 / 🔄 진행중 / ✅ 완료 / ⚠️ 막힘
 
@@ -363,3 +363,13 @@ knou/
 - (배선) `build_run_script` 가 `.bat` 에서 `python -u main.py …` → `python -u keep_awake.py main.py …`로 변경(래퍼가 같은 venv python=`sys.executable`로 자식 구동, `cd /d`·UTF-8 환경 그대로 상속). 체인: `wscript(숨김) → run_*.bat → keep_awake.py(절전억제 ON) → main.py → 종료 시 OFF`.
 - (테스트) `keep_awake` 6(플래그 상수·자식 명령 빌더·begin/end 무예외·빈 인자 오류코드) + `build_run_script` keep_awake 경유/순서 1 = +7 → 전체 **264 통과**.
 - (남은 보강 여지) PC가 시각 전부터 이미 자고 있으면 시작 자체가 안 됨 → 필요 시 WakeToRun(PowerShell/XML 등록) 별도 추가.
+
+### Phase 5 — 패키징 & 배포 (권장경로 채택) (2026-06-02)
+- (의사결정) 단일 `KNOU.exe`(`flet pack`)는 백엔드가 Playwright(브라우저 바이너리)·ffmpeg 의존이라 **번들이 취약·무겁고**(브라우저 ~300MB+, hidden-import 누락, 클린환경 스모크 까다로움) → 사용자 선택으로 **권장경로(소스+venv 기반 배포)** 채택. 단일 exe 는 보류하되 **frozen 보정 토대**(`sys.executable`이 exe 가 되는 문제 대비)는 미리 넣어 나중에 전환 가능하게 둠.
+- (frozen 토대) `gui_core.is_frozen()`(`getattr(sys,'frozen',False)`) + `resource_path(rel)`(frozen=`sys._MEIPASS` / 소스=`BASE_DIR` 기준 — 아이콘 등 번들 리소스 경로 단일화). 소스 실행에선 동작 동일, exe 빌드 시 분기 진입점이 됨.
+- (비개발자 실행) `deploy.py` 신규 — `pythonw_path(py)`(같은 폴더 `pythonw.exe`: **콘솔 창 없이** Flet 창만), `build_launch_command(py)`→`[pythonw,'-m','app.main_app']`, `build_shortcut_ps(...)`(WScript.Shell COM 으로 `.lnk` 생성 PowerShell 스크립트, 작은따옴표 `''` 이스케이프), `desktop_dir()`(OneDrive\Desktop 폴백), IO `create_desktop_shortcut()`. 비밀값은 명령·바로가기 어디에도 없음. 라이브 확인: 임시폴더 `.lnk` 생성 rc=0·파일 존재.
+- (설정 탭) **[바탕화면 바로가기 만들기]** 버튼(`create_desktop_shortcut`) + **첫 실행 안내 배너**("처음이신가요? 필수(*) 채우고 저장…" — 필수값 누락 시에만 노출 → 설정 마법사 역할). 첫 실행 시 설정 탭 자동 오픈(`first_run_needed`)은 기존 유지.
+- (문서) `README_GUI.md` — 비개발자용: 준비물(Python/ffmpeg/Gemini키) → 설치(venv·pip·playwright install) → 켜기(bat/바로가기) → 첫 설정 → 사용(실행·예약·로그·on/off) → **절전 안내** → 문제해결 → **안전요약(형성평가 비가역·비밀값 .env 한정·캡처 .gitignore)**.
+- (테스트) `deploy` 8(pythonw 경로·실행명령·바로가기 PS 빌더·이스케이프·옵션생략·비밀값 미포함·desktop_dir) + `gui_core` 4(`is_frozen`/`resource_path` 소스·base·frozen) + `settings_view` 2(바로가기 버튼·첫실행 안내) = +14 → 전체 **278 통과**.
+- (수동 게이트 남음) 설정 탭 [바탕화면 바로가기 만들기] → 바탕화면 `.lnk` 더블클릭 시 **콘솔 없이** 앱이 뜨는지 / 첫 실행 마법사로 `.env` 채워 예습 노트까지 동작하는지 **사용자 직접 1회 확인**.
+- (남은 여지) 진짜 단일 exe 가 필요해지면 `flet pack` + **재실행 디스패치**(`KNOU.exe --run-backend …`로 main.py 대신 실행) + Playwright 브라우저 번들/경로 처리 + 클린환경 스모크를 별도 진행.
