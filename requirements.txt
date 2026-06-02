@@ -3,3 +3,4 @@ python-dotenv>=1.2
 pytest>=9.0
 google-genai>=2.6
 PyMuPDF>=1.27
+flet>=0.85,<0.86

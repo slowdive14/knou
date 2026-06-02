@@ -12,6 +12,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from summarize import (  # noqa: E402
+    _block_reason,
+    _finish_reason,
+    _resp_text,
+    _strip_code_fence,
     build_prompt,
     extract_timestamps,
     needs_summary,
@@ -22,6 +26,42 @@ from summarize import (  # noqa: E402
     seconds_to_timestamp,
     timestamp_to_seconds,
 )
+from types import SimpleNamespace  # noqa: E402
+
+
+# ---- Gemini 응답 파싱 헬퍼(빈 응답 견고화) --------------------------------
+def test_strip_code_fence():
+    assert _strip_code_fence("```markdown\n# 제목\n```") == "# 제목"
+    assert _strip_code_fence("# 제목") == "# 제목"
+    assert _strip_code_fence("") == ""
+
+
+def test_resp_text_prefers_text_attr():
+    resp = SimpleNamespace(text="```\n본문\n```")
+    assert _resp_text(resp) == "본문"
+
+
+def test_resp_text_falls_back_to_parts():
+    # resp.text 가 비어도 candidates parts 에서 본문을 모은다
+    part = SimpleNamespace(text="조각본문")
+    content = SimpleNamespace(parts=[part])
+    cand = SimpleNamespace(content=content)
+    resp = SimpleNamespace(text="", candidates=[cand])
+    assert _resp_text(resp) == "조각본문"
+
+
+def test_resp_text_empty_when_nothing():
+    resp = SimpleNamespace(text=None, candidates=[])
+    assert _resp_text(resp) == ""
+
+
+def test_finish_reason_and_block_reason():
+    cand = SimpleNamespace(finish_reason="MAX_TOKENS")
+    resp = SimpleNamespace(candidates=[cand],
+                           prompt_feedback=SimpleNamespace(block_reason=None))
+    assert _finish_reason(resp) == "MAX_TOKENS"
+    assert _block_reason(resp) is None
+    assert _finish_reason(SimpleNamespace()) == "?"
 
 
 # ---- timestamp 변환 -------------------------------------------------------

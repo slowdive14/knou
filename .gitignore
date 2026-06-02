@@ -13,9 +13,28 @@ __pycache__/
 state.json
 downloads/
 logs/
+lectures.json
+
+# 예약(작업 스케줄러) 생성 .bat (로컬 절대경로 포함 — 환경별 산출물)
+schedule_scripts/
 
 # 정찰 산출물 (스크린샷·DOM 덤프·개인 LMS 데이터)
 recon_shots/
+
+# 슬라이드 덱 매칭 산출물 (강의 영상 프레임·덱 이미지 덤프 — 대용량·개인 강의 내용)
+frames_*/
+deck_14/
+deck_14_*/
+deck_dedup_*/
+match_preview_*/
+probe_deck_14/
+probe_deck2_14/
+# 미리보기/몽타주/다이어그램 PNG·실험 로그 (생성 산출물)
+montage_*.png
+match_preview_*.png
+pipeline_overview.png
+*_preview.log
+*_build.log
 
 # 로컬 툴 설정
 .claude/

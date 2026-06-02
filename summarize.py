@@ -30,6 +30,11 @@ from download import sanitize
 
 DEFAULT_MODEL = "gemini-2.5-flash"
 
+# 빈 응답(finish_reason=MAX_TOKENS) 방지용. gemini-2.5-flash 는 thinking 이
+# 출력 예산을 잠식해, 한도 미설정 시 긴 강의에서 본문이 비어 돌아올 수 있다.
+MAX_OUTPUT_TOKENS = 32768   # 출력 예산을 넉넉히(thinking+본문 합산 한도)
+THINKING_BUDGET = 8192      # thinking 상한(0=비활성). 본문 예산을 남겨둔다
+
 # 확장자 → MIME (google-genai가 한글 경로 헤더 인코딩에 실패하므로
 # 파일 객체 업로드 시 명시적으로 넘긴다)
 _MIME_FALLBACK = {".mp3": "audio/mpeg", ".pdf": "application/pdf",
@@ -192,7 +197,10 @@ def build_prompt(subject: str, seq: int, name: str) -> str:
 5. 수식·기호는 KaTeX 인라인(`$...$`), 절차·알고리즘은 번호 목록, 비교는 표를 적절히 활용.
 6. 끝에 `## 한눈에 정리`로 이 강의의 핵심을 5~8개 bullet로 복습용 정리하고,
    이어서 `## 예습 체크리스트`로 "강의를 보면 이걸 설명할 수 있어야 한다" 식 점검 질문 3~5개를 둔다.
-7. 사족/머리말 없이 **마크다운 본문만** 출력하라(코드펜스로 감싸지 말 것)."""
+7. 따옴표 사용을 절제하라. 일반 용어·개념어(예: 시스템 장애, 트랜잭션, 데이터베이스)에는
+   작은따옴표('')를 두르지 말고 그냥 쓴다. 강조가 필요하면 **굵게**로 표시하고,
+   작은따옴표는 꼭 필요한 경우(코드·명령어 식별자, 글자 그대로의 인용)에만 제한적으로 쓴다.
+8. 사족/머리말 없이 **마크다운 본문만** 출력하라(코드펜스로 감싸지 말 것)."""
 
 
 # ---------------------------------------------------------------------------
@@ -227,9 +235,53 @@ def upload_and_wait(client, path, timeout: float = 300.0, poll: float = 3.0,
     raise TimeoutError(f"파일 ACTIVE 대기 시간초과: {Path(path).name}")
 
 
+def _strip_code_fence(text: str) -> str:
+    """응답이 ```...``` 코드펜스로 감싸여 오면 벗겨낸다."""
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    return text
+
+
+def _resp_text(resp) -> str:
+    """resp.text 가 비면 candidates parts 에서 직접 텍스트를 긁어모은다."""
+    try:
+        t = getattr(resp, "text", None)
+    except Exception:
+        t = None
+    if not t:
+        try:
+            parts = resp.candidates[0].content.parts or []
+            t = "".join(getattr(p, "text", "") or "" for p in parts)
+        except Exception:
+            t = None
+    return _strip_code_fence(t or "")
+
+
+def _finish_reason(resp) -> str:
+    try:
+        return str(resp.candidates[0].finish_reason)
+    except Exception:
+        return "?"
+
+
+def _block_reason(resp):
+    try:
+        br = resp.prompt_feedback.block_reason
+        return str(br) if br else None
+    except Exception:
+        return None
+
+
 def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
                       model=DEFAULT_MODEL, on_event=None):
-    """MP3+PDF 업로드 → Gemini 요약(마크다운 텍스트) 반환."""
+    """MP3+PDF 업로드 → Gemini 요약(마크다운 텍스트) 반환.
+
+    gemini-2.5-flash 의 빈 응답(thinking 이 출력 예산 잠식)을 막기 위해
+    max_output_tokens 와 thinking 상한을 명시하고, 그래도 비면 finish_reason 을
+    남긴 뒤 thinking 을 꺼서 1회 재시도한다.
+    """
     def log(m):
         if on_event:
             try:
@@ -244,13 +296,28 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
         contents.append(upload_and_wait(client, mp3_path, on_event=on_event))
     contents.append(build_prompt(subject, seq, name))
 
-    log(f"요약 생성 중(model={model})…")
-    resp = client.models.generate_content(model=model, contents=contents)
-    text = (getattr(resp, "text", None) or "").strip()
-    # 혹시 코드펜스로 감싸면 벗겨낸다
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text).strip()
+    from google.genai import types
+
+    def _generate(thinking_budget: int):
+        config = types.GenerateContentConfig(
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+        )
+        return client.models.generate_content(
+            model=model, contents=contents, config=config)
+
+    log(f"요약 생성 중(model={model}, max_tokens={MAX_OUTPUT_TOKENS}, "
+        f"thinking={THINKING_BUDGET})…")
+    resp = _generate(THINKING_BUDGET)
+    text = _resp_text(resp)
+    if not text:
+        br = _block_reason(resp)
+        log(f"⚠️ 빈 응답(finish_reason={_finish_reason(resp)}"
+            f"{', block=' + br if br else ''}) → thinking 끄고 1회 재시도")
+        resp = _generate(0)  # thinking 비활성 → 출력 예산 전부 본문에
+        text = _resp_text(resp)
+        if not text:
+            log(f"⚠️ 재시도도 빈 응답(finish_reason={_finish_reason(resp)})")
     return text
 
 
