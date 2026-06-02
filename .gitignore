@@ -41,3 +41,39 @@ pipeline_overview.png
 
 # 테스트 캐시
 .pytest_cache/
+
+# 개발용 일회성 스크립트 (정찰·probe·dump·실험 — 앱/테스트가 import 안 함, 로컬 전용)
+정찰실행.bat
+recon_shots/
+watch_recon.py
+watch_pilot.py
+watch_smoke.py
+watch_one.py
+capture_one.py
+capture_verify_one.py
+summarize_one.py
+download_one.py
+list_lectures.py
+login_check.py
+discover_check.py
+check_state.py
+dbg_eval.py
+dump_dom.py
+dump_player.py
+probe_clips_13.py
+probe_data.py
+probe_data2.py
+probe_data3.py
+probe_exam.py
+probe_lectlist.py
+probe_resume.py
+probe_video.py
+probe_deck_14.py
+probe_deck2_14.py
+probe_dedup_14.py
+build_deck_14.py
+deckmatch_14.py
+deck_13_match.json
+montage.py
+offline_dedup.py
+draw_pipeline.py
