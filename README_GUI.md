@@ -15,7 +15,7 @@
 | 필요한 것 | 설명 |
 |---|---|
 | **Python 3.11+** | [python.org](https://www.python.org/downloads/) 에서 설치. 설치 화면에서 **"Add Python to PATH" 체크**. |
-| **ffmpeg** | 영상→오디오 변환용. [ffmpeg.org](https://ffmpeg.org/download.html) 에서 받아 PATH 에 추가하거나, 프로젝트 폴더에 `ffmpeg.exe`/`ffprobe.exe` 를 둡니다. |
+| **ffmpeg** *(선택)* | 노트에 **강의 슬라이드 이미지**를 넣을 때만 필요. 없어도 텍스트 노트는 생성됩니다. [ffmpeg.org](https://ffmpeg.org/download.html) 에서 받아 PATH 에 추가하거나, 프로젝트 폴더에 `ffmpeg.exe`/`ffprobe.exe` 를 둡니다. |
 | **Gemini API 키** | 강의 요약(무료 키 가능). [Google AI Studio](https://aistudio.google.com/apikey) 에서 발급. |
 | **인터넷 연결** | 로그인·영상 시청·요약에 필요. |
 
@@ -49,9 +49,13 @@ python -m venv .venv
 - 둘째 줄: 필요한 라이브러리 설치
 - 셋째 줄: 영상 시청용 브라우저(크로미움) 설치
 
-### ffmpeg 설치 (영상→오디오 변환용)
+### (선택) ffmpeg 설치 — 슬라이드 이미지용
 
-가장 쉬운 방법은 PowerShell 에서 아래 한 줄을 실행하는 것입니다.
+ffmpeg 는 **강의 슬라이드 이미지를 노트에 끼워 넣을 때만** 필요합니다.
+**없어도 텍스트 예습 노트는 정상 생성**되므로(MP3 는 방송대에서 직접 받습니다),
+처음에는 건너뛰고 나중에 설치해도 됩니다.
+
+설치하려면 PowerShell 에서 아래 한 줄을 실행하세요.
 
 ```powershell
 winget install Gyan.FFmpeg
@@ -59,6 +63,8 @@ winget install Gyan.FFmpeg
 
 winget 이 없거나 막히면, [ffmpeg.org](https://ffmpeg.org/download.html) 에서 받은
 `ffmpeg.exe`·`ffprobe.exe` 두 파일을 **이 프로젝트 폴더에 복사**해 넣으세요.
+
+> ffmpeg 가 없으면 슬라이드 이미지만 빠지고, 타임스탬프가 조금 덜 정확해질 수 있습니다(앱은 멈추지 않습니다).
 
 설치는 처음 한 번이면 됩니다.
 

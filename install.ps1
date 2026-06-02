@@ -59,5 +59,5 @@ Write-Host '============================================================' -Foreg
 Write-Host '  설치 완료! 이제 run_app.bat 을 더블클릭해 앱을 켜세요.' -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 Write-Host ''
-Write-Host '(참고) 영상에서 소리를 뽑아내려면 ffmpeg 도 필요합니다.'
-Write-Host '       설치 방법은 README 의 ffmpeg 안내를 보세요.'
+Write-Host '(선택) 노트에 강의 슬라이드 이미지를 넣으려면 ffmpeg 가 필요합니다.'
+Write-Host '       없어도 텍스트 노트는 만들어집니다. 자세한 건 README 를 보세요.'
