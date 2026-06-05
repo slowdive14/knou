@@ -233,6 +233,15 @@ def test_mode_change_updates_button_label(tmp_path):
     assert btn.content == "이수 + 예습 노트 생성"
 
 
+def test_build_run_view_has_redo_checkbox(tmp_path):
+    # '다시 만들기(덮어쓰기)' 체크박스가 있고 기본은 꺼짐
+    view = build_run_view(snapshot_path=tmp_path / "none.json")
+    chks = [c for c in _walk(view) if isinstance(c, ft.Checkbox)]
+    assert len(chks) == 1
+    assert chks[0].value is False
+    assert "다시 만들기" in chks[0].label
+
+
 def test_build_run_view_has_recent_log_button(tmp_path):
     # 예약(창 없이 실행)이 남긴 로그를 다시 볼 수 있는 버튼이 있어야 함
     view = build_run_view(snapshot_path=tmp_path / "none.json")

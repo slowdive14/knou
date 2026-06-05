@@ -18,6 +18,7 @@ from main import (  # noqa: E402
     mark_stage,
     pending_lectures,
     select_lectures,
+    should_run_stage,
     stage_done,
     stages_for_mode,
 )
@@ -156,6 +157,31 @@ def test_pending_lectures_excludes_done():
     keys = [lecture_key(c, l["seq"]) for c, l in pending]
     assert "이산수학|1" not in keys          # 완료됨 → 제외
     assert "이산수학|2" in keys and "운영체제|1" in keys
+
+
+def test_pending_lectures_force_includes_done():
+    # force=True(다시 만들기/덮어쓰기) → 완료된 차시도 전부 포함
+    state = {}
+    mark_stage(state, "이산수학|1", "watch", ok=True)
+    pending = pending_lectures(state, PAIRS, ["watch"], force=True)
+    assert len(pending) == len(PAIRS)
+
+
+# ---- should_run_stage (force/덮어쓰기) -----------------------------------
+def test_should_run_stage_runs_when_not_done():
+    assert should_run_stage({}, "이산수학|1", "download") is True
+
+
+def test_should_run_stage_skips_done():
+    state = {}
+    mark_stage(state, "이산수학|1", "download", ok=True)
+    assert should_run_stage(state, "이산수학|1", "download") is False
+
+
+def test_should_run_stage_force_overrides_done():
+    state = {}
+    mark_stage(state, "이산수학|1", "download", ok=True)
+    assert should_run_stage(state, "이산수학|1", "download", force=True) is True
 
 
 # ---- filter_unwatched (미시청만) ------------------------------------------

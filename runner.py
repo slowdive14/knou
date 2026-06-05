@@ -41,7 +41,7 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # ---------------------------------------------------------------------------
 def build_command(py, mode, course=None, seq=None, limit=None,
                   stages=None, state=None, unwatched: bool = False,
-                  main_py=MAIN_PY) -> list[str]:
+                  force: bool = False, main_py=MAIN_PY) -> list[str]:
     """`python -u main.py --mode … [필터]` argv 를 만든다.
 
     비밀번호·API 키는 인자로 넣지 않는다(자식이 .env 에서 읽음)."""
@@ -52,6 +52,8 @@ def build_command(py, mode, course=None, seq=None, limit=None,
         argv += ["--seq", str(int(seq))]
     if unwatched:
         argv += ["--unwatched"]
+    if force:
+        argv += ["--force"]
     if limit is not None:
         argv += ["--limit", str(int(limit))]
     if stages:

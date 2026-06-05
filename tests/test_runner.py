@@ -63,6 +63,18 @@ def test_build_command_omits_none_filters():
     assert "--seq" not in argv
     assert "--limit" not in argv
     assert "--unwatched" not in argv
+    assert "--force" not in argv
+
+
+def test_build_command_force_flag():
+    # '다시 만들기(덮어쓰기)' → --force 전달
+    argv = build_command("py", "요약", course="과목", seq=1, force=True)
+    assert "--force" in argv
+
+
+def test_build_command_force_default_off():
+    argv = build_command("py", "요약", course="과목", seq=1)
+    assert "--force" not in argv
 
 
 def test_build_command_never_contains_secrets():

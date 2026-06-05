@@ -169,6 +169,8 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                      label="영상 이수 + 예습 노트 (⚠️ 형성평가 자동 제출)"),
         ], spacing=2),
     )
+    redo_chk = ft.Checkbox(
+        label="이미 만든 것도 다시 만들기 (덮어쓰기)", value=False)
     gen_btn = ft.FilledButton(_MODE_LABELS[MODE_SUMMARY],
                               icon=ft.Icons.AUTO_STORIES)
     cancel_btn = ft.OutlinedButton("취소", icon=ft.Icons.STOP, disabled=True)
@@ -261,6 +263,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         course_dd.disabled = running
         lecture_dd.disabled = running
         mode_group.disabled = running
+        redo_chk.disabled = running
         cancel_btn.disabled = not running
         _safe_update()
 
@@ -388,7 +391,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         state["note_path"] = (note_path_for(cfg, course, seq, name)
                               if (makes_note and name) else None)
         argv = build_command(_python_exe(), mode, course=course,
-                             seq=seq, limit=1)
+                             seq=seq, limit=1, force=bool(redo_chk.value))
 
         def after(ok):
             np = state.get("note_path")
@@ -536,6 +539,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             ft.Row([ft.Text("모드:", size=13, weight=ft.FontWeight.BOLD),
                     mode_group],
                    vertical_alignment=ft.CrossAxisAlignment.START),
+            redo_chk,
             sleep_warn,
             ft.Row([gen_btn, cancel_btn, open_btn]),
             progress,

@@ -87,6 +87,16 @@ def stage_done(state: dict, key: str, stage: str) -> bool:
     return bool(rec.get("ok"))
 
 
+def should_run_stage(state: dict, key: str, stage: str,
+                     force: bool = False) -> bool:
+    """이 단계를 실행해야 하면 True.
+
+    기본은 '아직 완료 안 된 단계'만 실행한다. force=True(다시 만들기/덮어쓰기)면
+    완료 기록을 무시하고 무조건 실행한다.
+    """
+    return bool(force) or not stage_done(state, key, stage)
+
+
 def lecture_done(state: dict, key: str, stages) -> bool:
     """해당 강의의 요청 단계가 모두 완료면 True(단계가 비면 False)."""
     return bool(stages) and all(stage_done(state, key, s) for s in stages)
@@ -114,8 +124,13 @@ def select_lectures(pairs, course: str | None = None, seq=None) -> list:
     return out
 
 
-def pending_lectures(state: dict, pairs, stages) -> list:
-    """요청 단계 기준 아직 완료되지 않은 강의만 선별."""
+def pending_lectures(state: dict, pairs, stages, force: bool = False) -> list:
+    """요청 단계 기준 아직 완료되지 않은 강의만 선별.
+
+    force=True(다시 만들기/덮어쓰기)면 완료 여부와 무관하게 전부 포함한다.
+    """
+    if force:
+        return list(pairs)
     return [(c, l) for c, l in pairs
             if not lecture_done(state, lecture_key(c, _seq_of(l)), stages)]
 
@@ -256,11 +271,13 @@ def _needs_gemini(stages) -> bool:
 # ---------------------------------------------------------------------------
 def run(mode: str, course: str | None = None, seq=None,
         state_path=DEFAULT_STATE, cfg=None, unwatched: bool = False,
-        limit: int | None = None, only_stages: list[str] | None = None) -> dict:
+        limit: int | None = None, only_stages: list[str] | None = None,
+        force: bool = False) -> dict:
     """전과목 순회 오케스트레이션. 반환: 실행 요약 dict.
 
     unwatched=True 면 영상 미시청 강의만 / limit 이 있으면 처리 대상을 N개로 제한.
     only_stages 가 있으면 모드 단계 중 그 단계만 실행(예: ["capture"]).
+    force=True(다시 만들기/덮어쓰기)면 이미 완료된 차시·단계도 무시하고 다시 처리한다.
     """
     from google import genai
     from playwright.sync_api import sync_playwright
@@ -281,8 +298,9 @@ def run(mode: str, course: str | None = None, seq=None,
     logger = setup_logger()
     state = load_state(state_path)
 
-    logger.info("▶ 모드=%s 단계=%s 필터(course=%s, seq=%s, unwatched=%s, limit=%s)",
-                mode, stages, course, seq, unwatched, limit)
+    logger.info("▶ 모드=%s 단계=%s 필터(course=%s, seq=%s, unwatched=%s, "
+                "limit=%s, force=%s)",
+                mode, stages, course, seq, unwatched, limit, force)
 
     processed = skipped_lec = failed_lec = 0
     with sync_playwright() as p:
@@ -307,13 +325,14 @@ def run(mode: str, course: str | None = None, seq=None,
             before = len(pairs)
             pairs = filter_unwatched(pairs)
             logger.info("미시청 필터: %d개 중 미시청 %d개", before, len(pairs))
-        todo_all = pending_lectures(state, pairs, stages)
+        todo_all = pending_lectures(state, pairs, stages, force=force)
         todo = todo_all if limit is None else todo_all[:limit]
         deferred = len(todo_all) - len(todo)
         logger.info("대상 강의: 전체 %d개 중 처리 %d개 "
-                    "(완료 skip %d개%s)",
+                    "(완료 skip %d개%s%s)",
                     len(pairs), len(todo), len(pairs) - len(todo_all),
-                    f", limit 보류 {deferred}개" if deferred else "")
+                    f", limit 보류 {deferred}개" if deferred else "",
+                    ", 다시 만들기(덮어쓰기) ON" if force else "")
 
         try:
             for cname, lec in todo:
@@ -321,7 +340,7 @@ def run(mode: str, course: str | None = None, seq=None,
                 logger.info("── %s %d강 '%s'", cname, lec.seq, lec.name)
                 lec_failed = False
                 for stage in stages:
-                    if stage_done(state, key, stage):
+                    if not should_run_stage(state, key, stage, force):
                         logger.info("  · %s: 이미 완료 skip", stage)
                         continue
                     try:
@@ -375,6 +394,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="처리할 강의 최대 개수(예: 1 → 한 강의만)")
     ap.add_argument("--stages", nargs="+", default=None,
                     help="모드 단계 중 일부만 실행(예: --stages capture)")
+    ap.add_argument("--force", action="store_true",
+                    help="이미 완료된 차시·단계도 무시하고 다시 처리(덮어쓰기)")
     ap.add_argument("--state", default=str(DEFAULT_STATE),
                     help="상태 파일 경로(기본 state.json)")
     return ap.parse_args(argv)
@@ -384,7 +405,8 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     summary = run(args.mode, course=args.course, seq=args.seq,
                   state_path=args.state, unwatched=args.unwatched,
-                  limit=args.limit, only_stages=args.stages)
+                  limit=args.limit, only_stages=args.stages,
+                  force=args.force)
     print(f"\n=== 요약 === {summary}", flush=True)
 
 
