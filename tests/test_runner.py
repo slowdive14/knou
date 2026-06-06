@@ -310,8 +310,9 @@ def test_estimate_watch_text_clamps_speed():
 
 def test_confirm_message_warns_irreversible():
     msg = confirm_message("이수")
-    assert "되돌릴 수 없" in msg
-    assert "형성평가" in msg
+    assert "실제 방송대 서버" in msg     # 실제 서버 이수 반영을 명시
+    assert "동의" in msg                 # 사전 동의 요구
+    assert "형성평가" in msg             # 형성평가 제출은 '포함 안 됨'을 명시
 
 
 def test_job_status_transitions():

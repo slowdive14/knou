@@ -1,4 +1,4 @@
-"""KNOU 형성평가 자동화 및 강의 노트 정리 — Flet 데스크톱 앱 진입점.
+"""KNOU 강의 이수 + 예습 노트 — Flet 데스크톱 앱 진입점.
 
 좌측 네비게이션(홈·실행·예약·설정)으로 화면을 전환한다. 첫 실행(.env 필수값
 누락) 시 설정 화면으로 유도한다. 실제 작업은 후속 Phase에서 subprocess로 main.py를
@@ -29,7 +29,7 @@ from app.views.schedule_view import build_schedule_view  # noqa: E402
 from app.views.settings_view import build_settings_view  # noqa: E402
 from gui_core import ENV_PATH, first_run_needed  # noqa: E402
 
-APP_TITLE = "KNOU 형성평가 자동화 및 강의 노트 정리"
+APP_TITLE = "KNOU 강의 이수 + 예습 노트"
 
 # (라벨, 아이콘) — 인덱스 순서가 곧 네비 순서
 NAV = [

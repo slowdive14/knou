@@ -5,7 +5,7 @@
 지정 시각에 `run_*.bat` 가 기존 `main.py` 를 구동한다. 기존 예약은 표로 보여주고
 삭제할 수 있다.
 
-⚠️ 이수/전체는 **형성평가 답안이 자동 제출되는 되돌릴 수 없는 동작**이며, 예약 시
+⚠️ 이수/전체는 **실제 방송대 서버에 영상 이수가 적립되는 동작**이며, 예약 시
    사람이 보지 않는 시각에 자동 실행된다 → 등록 전 반드시 동의 다이얼로그를 거친다.
 
 순수 로직(시각검증·인자/스크립트 빌더·CSV 파서)은 schedule_win 에서 단위테스트.
@@ -46,8 +46,8 @@ SNAPSHOT_PATH = PROJECT_ROOT / "lectures.json"
 # 모드 → 드롭다운 표시문구
 _MODE_OPTIONS = [
     (MODE_SUMMARY, "예습 노트 생성 (영상 이수 안 함)"),
-    (MODE_WATCH, "영상 이수 (⚠️ 형성평가 자동 제출 · 노트 없음)"),
-    (MODE_FULL, "영상 이수 + 예습 노트 (⚠️ 형성평가 자동 제출)"),
+    (MODE_WATCH, "영상 이수 (⚠️ 실제 서버에 이수 기록 · 노트 없음)"),
+    (MODE_FULL, "영상 이수 + 예습 노트 (⚠️ 실제 서버에 이수 기록)"),
 ]
 _FREQ_DAILY = "DAILY"
 _FREQ_ONCE = "ONCE"
@@ -246,10 +246,10 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         course = course_dd.value or None
         seq = int(lecture_dd.value) if lecture_dd.value else None
         unwatched = bool(unwatched_cb.value) and not seq
-        if requires_confirm(mode):       # 이수/전체 → 비가역 자동제출 동의 필수
+        if requires_confirm(mode):       # 이수/전체 → 실제 서버 이수 동의 필수
             body = (confirm_message(mode) + "\n\n"
                     "이 작업은 예약된 시각에 사람이 보지 않는 상태로 자동 실행되어 "
-                    "형성평가가 제출됩니다.\n\n" + watch_sleep_warning())
+                    "실제 서버에 영상 이수가 적립됩니다.\n\n" + watch_sleep_warning())
 
             def _confirm():
                 _close_dialog()
@@ -299,8 +299,8 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                     weight=ft.FontWeight.BOLD),
             ft.Text("앱·터미널이 꺼져 있어도 Windows 작업 스케줄러가 지정 시각에 "
                     "실행합니다(창은 뜨지 않음). 실행 결과는 '실행' 탭의 "
-                    "'최근 실행 로그 보기'로 확인하세요. (이수/전체는 형성평가가 "
-                    "자동 제출됨)", size=13, color=ft.Colors.GREY),
+                    "'최근 실행 로그 보기'로 확인하세요. (이수/전체는 실제 서버에 "
+                    "이수가 적립됨)", size=13, color=ft.Colors.GREY),
             ft.Divider(),
             mode_dd,
             ft.Row([course_dd, lecture_dd], wrap=True),
