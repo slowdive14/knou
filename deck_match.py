@@ -195,6 +195,31 @@ def drop_empty_slides(deck: list[dict], thresh: float = DEFAULT_EMPTY_THRESH,
     return kept
 
 
+def scrub_empty_embeds(md: str, out_dir, thresh: float = DEFAULT_EMPTY_THRESH):
+    """노트에서 '빈 슬라이드 이미지'를 가리키는 임베드 줄을 제거한다.
+
+    덱 필터(drop_empty_slides)는 새 빈 임베드를 막지만, 필터 도입 전에 만들어져
+    미매칭 개념에 남아있는 빈 임베드는 apply_to_note 가 건드리지 않아 그대로 남는다.
+    이 함수가 그런 잔존 빈 임베드 줄을 지운다(이미지 파일은 이후 orphan 청소가 삭제).
+    return: (new_md, removed_filenames:set)
+    """
+    out_dir = Path(out_dir)
+    removed: set[str] = set()
+    out: list[str] = []
+    for line in (md or "").splitlines():
+        m = re.match(r"^\s*!\[\[(.+?)\]\]\s*$", line)
+        if m:
+            p = out_dir / m.group(1)
+            if p.exists() and is_empty_slide(p, thresh):
+                removed.add(m.group(1))
+                continue
+        out.append(line)
+    text = "\n".join(out)
+    if md.endswith("\n") and not text.endswith("\n"):
+        text += "\n"
+    return text, removed
+
+
 def _pick_main_clip(popup, on_event=lambda m: None) -> dict | None:
     """플레이어 팝업에서 가장 긴(학습하기) 클립 1개 선택."""
     clips = collect_clips(popup)
@@ -501,6 +526,9 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
             shutil.copy2(src, out_dir / capture_filename(course, seq, sec,
                                                           DEFAULT_EXT))
     new_md = apply_to_note(md, concepts, plan, course, seq)
+    new_md, scrubbed = scrub_empty_embeds(new_md, out_dir)
+    if scrubbed:
+        on_event(f"빈 슬라이드 임베드 {len(scrubbed)}개 청소")
     if new_md != md:
         note_path.write_text(new_md, encoding="utf-8")
         on_event(f"노트 반영: {note_path.name}")

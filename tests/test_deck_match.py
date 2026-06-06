@@ -21,6 +21,7 @@ from deck_match import (  # noqa: E402
     body_ink_ratio,
     drop_empty_slides,
     is_empty_slide,
+    scrub_empty_embeds,
 )
 
 
@@ -83,3 +84,28 @@ def test_drop_empty_slides_disabled_with_zero_thresh(tmp_path):
     blank = _img(tmp_path, "b.png")
     deck = [{"n": 1, "sec": 0, "path": blank}]
     assert len(drop_empty_slides(deck, thresh=0)) == 1
+
+
+# --- scrub_empty_embeds (잔존 빈 임베드 청소) ------------------------------
+def test_scrub_empty_embeds_removes_blank_keeps_content(tmp_path):
+    blank = _img(tmp_path, "blank.png")
+    full = _img(tmp_path, "full.png", black_box=(120, 220, 700, 520))
+    md = (
+        "## 개념A\n- 내용 🎬 [00:10]\n"
+        f"![[{full.name}]]\n"
+        "## 개념B\n- 내용 🎬 [00:54]\n"
+        f"![[{blank.name}]]\n"
+    )
+    new_md, removed = scrub_empty_embeds(md, tmp_path)
+    assert blank.name in removed
+    assert f"![[{blank.name}]]" not in new_md
+    assert f"![[{full.name}]]" in new_md     # 내용 임베드는 유지
+    assert "🎬 [00:54]" in new_md            # 마커(타임스탬프)는 유지
+
+
+def test_scrub_empty_embeds_keeps_missing_file(tmp_path):
+    # 파일이 없으면 함부로 지우지 않는다(보수적)
+    md = "글 🎬 [00:01]\n![[gone.png]]\n"
+    new_md, removed = scrub_empty_embeds(md, tmp_path)
+    assert removed == set()
+    assert "![[gone.png]]" in new_md
