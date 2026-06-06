@@ -70,6 +70,11 @@ MODEL = "gemini-2.5-flash"
 # (발표자 있는 표지 프레임엔 어깨 일부가 들어오지만, 본문 잘림 방지를 우선한다.)
 DEFAULT_CROP = "920:660:40:40"
 DEFAULT_THRESH = 20
+# 빈 표지/구분 슬라이드 제외: 본문 영역 '잉크(글자·도형)' 비율이 이 값 미만이면
+# 제목만 있고 본문이 텅 빈 슬라이드로 보고 덱에서 뺀다(노트에 임베드 안 함).
+DEFAULT_EMPTY_THRESH = 0.01
+# 본문 판별 영역(crop된 슬라이드 기준 비율): 제목 띠·바깥 여백·우측 발표자 제외.
+_BODY_BOX_FRAC = (0.03, 0.20, 0.90, 0.94)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +144,57 @@ def dedup_frames(frames_dir: Path, thresh: int) -> list[dict]:
             for k, (sec, p) in enumerate(bounds, 1)]
 
 
+def body_ink_ratio(path, box_frac=_BODY_BOX_FRAC, step: int = 3) -> float:
+    """본문 영역의 '잉크(글자·도형)' 비율(0~1). 빈 표지일수록 0에 가깝다.
+
+    crop된 슬라이드 이미지의 본문(제목 띠·바깥 여백·우측 발표자 제외) 안에서
+    '흰 배경이 아닌' 픽셀의 비율을 센다. 표지/구분 슬라이드는 본문이 거의
+    흰색이라 0에 가깝고, 글자·도식이 있는 슬라이드는 뚜렷이 높다.
+    읽기 실패 시 1.0(=내용 있음)으로 봐서 실수로 드롭하지 않는다.
+    """
+    try:
+        im = Image.open(path).convert("RGB")
+    except Exception:
+        return 1.0
+    W, H = im.size
+    l, t, r, b = box_frac
+    box = im.crop((int(W * l), int(H * t), int(W * r), int(H * b)))
+    px = box.load()
+    bw, bh = box.size
+    ink = tot = 0
+    for y in range(0, bh, step):
+        for x in range(0, bw, step):
+            rr, gg, bb = px[x, y]
+            tot += 1
+            if not (rr > 190 and gg > 190 and bb > 190):
+                ink += 1
+    return ink / tot if tot else 1.0
+
+
+def is_empty_slide(path, thresh: float = DEFAULT_EMPTY_THRESH) -> bool:
+    """제목만 있고 본문이 텅 빈 표지/구분 슬라이드면 True(임베드 가치 없음)."""
+    return body_ink_ratio(path) < thresh
+
+
+def drop_empty_slides(deck: list[dict], thresh: float = DEFAULT_EMPTY_THRESH,
+                      on_event=lambda m: None) -> list[dict]:
+    """덱에서 빈 표지 슬라이드를 빼고 번호(n)를 다시 매긴다.
+
+    thresh<=0 이면 거르지 않는다(디버그용). 제거된 슬라이드는 매칭 후보에서
+    빠져 노트에 임베드되지 않는다(해당 개념은 미매칭 → 원본 마커 유지).
+    """
+    if thresh is None or thresh <= 0:
+        return deck
+    kept = [s for s in deck if not is_empty_slide(s.get("path"), thresh)]
+    dropped = len(deck) - len(kept)
+    for i, s in enumerate(kept, 1):
+        s["n"] = i
+    if dropped:
+        on_event(f"빈 표지 슬라이드 {dropped}개 제외 "
+                 f"(덱 {len(deck)}→{len(kept)})")
+    return kept
+
+
 def _pick_main_clip(popup, on_event=lambda m: None) -> dict | None:
     """플레이어 팝업에서 가장 긴(학습하기) 클립 1개 선택."""
     clips = collect_clips(popup)
@@ -155,8 +211,9 @@ def _pick_main_clip(popup, on_event=lambda m: None) -> dict | None:
 
 
 def build_deck_live(page, lec, frames_dir: Path, crop: str, thresh: int,
+                    empty_thresh: float = DEFAULT_EMPTY_THRESH,
                     on_event=lambda m: None) -> list[dict]:
-    """플레이어 열기→가장 긴 클립 HLS 추출→dedup. 반환: 덱."""
+    """플레이어 열기→가장 긴 클립 HLS 추출→dedup→빈 표지 제외. 반환: 덱."""
     from watch import open_player
     popup = open_player(page, lec)
     try:
@@ -171,6 +228,7 @@ def build_deck_live(page, lec, frames_dir: Path, crop: str, thresh: int,
         except Exception:
             pass
     deck = dedup_frames(frames_dir, thresh)
+    deck = drop_empty_slides(deck, empty_thresh, on_event=on_event)
     on_event(f"덱 {len(deck)}장 (thresh={thresh})")
     return deck
 
@@ -523,7 +581,10 @@ def main() -> None:
                     help="frames_{seq}/ 재사용(영상 재추출·로그인 생략)")
     ap.add_argument("--reuse-match", action="store_true",
                     help="deck_{seq}_match.json 재사용(Gemini 재호출 생략)")
+    ap.add_argument("--keep-empty", action="store_true",
+                    help="빈 표지 슬라이드도 덱에 남김(기본=제외)")
     args = ap.parse_args()
+    empty_thresh = 0 if args.keep_empty else DEFAULT_EMPTY_THRESH
 
     cfg = load_config()
     note_path = _find_note(cfg, args.course, args.seq)
@@ -546,9 +607,10 @@ def main() -> None:
             return
         emit(f"frames 재사용: {frames_dir.name}")
         deck = dedup_frames(frames_dir, args.thresh)
+        deck = drop_empty_slides(deck, empty_thresh, on_event=emit)
         emit(f"덱 {len(deck)}장 (thresh={args.thresh})")
     else:
-        deck = _build_deck_via_browser(cfg, args, frames_dir, emit)
+        deck = _build_deck_via_browser(cfg, args, frames_dir, emit, empty_thresh)
         if deck is None:
             return
     if not deck:
@@ -574,7 +636,9 @@ def main() -> None:
     print(f"\n=== 요약 === {summary}", flush=True)
 
 
-def _build_deck_via_browser(cfg, args, frames_dir: Path, emit) -> list[dict] | None:
+def _build_deck_via_browser(cfg, args, frames_dir: Path, emit,
+                            empty_thresh: float = DEFAULT_EMPTY_THRESH
+                            ) -> list[dict] | None:
     """CLI 라이브 모드: 자체 브라우저 컨텍스트로 덱 추출."""
     from playwright.sync_api import sync_playwright
 
@@ -600,7 +664,7 @@ def _build_deck_via_browser(cfg, args, frames_dir: Path, emit) -> list[dict] | N
             return None
         emit(f"대상: {course.name} {lec.seq}강 '{lec.name}'")
         deck = build_deck_live(page, lec, frames_dir, args.crop, args.thresh,
-                               on_event=emit)
+                               empty_thresh=empty_thresh, on_event=emit)
         ctx.close()
     return deck
 
