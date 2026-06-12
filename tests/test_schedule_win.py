@@ -13,16 +13,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from datetime import datetime  # noqa: E402
+
 from schedule_win import (  # noqa: E402
     TASK_PREFIX,
     build_run_command,
+    build_run_exec,
     build_run_script,
     build_schtasks_change_args,
     build_schtasks_create_args,
+    build_schtasks_create_xml_args,
     build_schtasks_delete_args,
     build_schtasks_query_args,
+    build_task_xml,
     build_vbs_launcher,
     is_disabled_status,
+    next_occurrence,
     parse_schtasks_list,
     script_filename,
     task_display_name,
@@ -187,6 +193,80 @@ def test_create_args_never_contains_secrets():
     joined = " ".join(argv)
     assert "KNOU_PW" not in joined
     assert "GEMINI_API_KEY" not in joined
+
+
+# --- next_occurrence (미래 시각 보장) --------------------------------------
+def test_next_occurrence_today_when_future():
+    now = datetime(2026, 6, 12, 1, 0, 0)        # 01:00, 목표 02:00 → 오늘
+    assert next_occurrence("02:00", now=now) == "2026-06-12T02:00:00"
+
+
+def test_next_occurrence_tomorrow_when_past():
+    now = datetime(2026, 6, 12, 9, 30, 0)       # 09:30, 목표 02:00 → 내일
+    assert next_occurrence("02:00", now=now) == "2026-06-13T02:00:00"
+
+
+def test_next_occurrence_invalid_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        next_occurrence("nope")
+
+
+# --- build_run_exec --------------------------------------------------------
+def test_build_run_exec_splits_command_and_args():
+    cmd, args = build_run_exec(r"C:\proj\schedule_scripts\run_watch.vbs")
+    assert cmd == "wscript.exe"
+    assert "//B" in args and "//Nologo" in args
+    assert "run_watch.vbs" in args
+
+
+# --- build_task_xml (안정성 설정) ------------------------------------------
+def test_build_task_xml_daily_robust_defaults():
+    xml = build_task_xml("wscript.exe", '//B "x.vbs"', "2026-06-13T02:00:00",
+                         freq="DAILY")
+    assert "<CalendarTrigger>" in xml and "<DaysInterval>1</DaysInterval>" in xml
+    assert "<StartBoundary>2026-06-13T02:00:00</StartBoundary>" in xml
+    # 놓친 예약 보충 + 배터리에서도 실행(=Disallow/Stop false)
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml
+    assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml
+    assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml
+    assert "<WakeToRun>false</WakeToRun>" in xml
+    assert "<Command>wscript.exe</Command>" in xml
+
+
+def test_build_task_xml_once_uses_time_trigger():
+    xml = build_task_xml("wscript.exe", "a", "2026-06-13T02:00:00", freq="ONCE")
+    assert "<TimeTrigger>" in xml
+    assert "<CalendarTrigger>" not in xml
+
+
+def test_build_task_xml_highest_runlevel():
+    xml = build_task_xml("c", "a", "2026-06-13T02:00:00", highest=True)
+    assert "<RunLevel>HighestAvailable</RunLevel>" in xml
+    low = build_task_xml("c", "a", "2026-06-13T02:00:00", highest=False)
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in low
+
+
+def test_build_task_xml_escapes_arguments():
+    xml = build_task_xml("wscript.exe", '//B "C:\\a & b\\x.vbs"',
+                         "2026-06-13T02:00:00")
+    assert "&amp;" in xml and "&quot;" in xml
+    assert " & " not in xml             # 원시 & 가 남으면 XML 깨짐
+
+
+def test_build_task_xml_no_secrets():
+    xml = build_task_xml("wscript.exe", '//B "run.vbs"', "2026-06-13T02:00:00")
+    assert "KNOU_PW" not in xml and "GEMINI_API_KEY" not in xml
+
+
+def test_build_schtasks_create_xml_args():
+    argv = build_schtasks_create_xml_args("KNOU_요약", r"C:\s\run.xml")
+    assert argv[0] == "schtasks"
+    assert "/Create" in argv and "/F" in argv
+    assert "/TN" in argv and "KNOU_요약" in argv
+    assert "/XML" in argv
+    xi = argv.index("/XML")
+    assert argv[xi + 1].endswith("run.xml")
 
 
 # --- build_schtasks_delete_args / query ------------------------------------

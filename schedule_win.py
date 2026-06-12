@@ -33,6 +33,7 @@ import hashlib
 import io
 import re
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -66,6 +67,23 @@ def normalize_time(hhmm: str) -> str:
     if not m:
         return hhmm
     return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def next_occurrence(hhmm: str, now: datetime | None = None) -> str:
+    """다음 실행 시각 ISO('YYYY-MM-DDTHH:MM:SS'). 오늘 그 시각이 지났으면 내일.
+
+    StartBoundary 를 **미래**로 둬, StartWhenAvailable(놓친 예약 보충)이 켜져 있어도
+    등록 직후 '과거에 놓친 실행'으로 오해해 곧바로 실행되는 일을 막는다.
+    """
+    m = _TIME_RE.match((hhmm or "").strip())
+    if not m:
+        raise ValueError(f"잘못된 시각: {hhmm!r}")
+    now = now or datetime.now()
+    target = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                         second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _filter_token(mode, course, seq) -> str:
@@ -160,6 +178,99 @@ def build_run_command(vbs_path) -> str:
     return f'wscript.exe //B //Nologo "{str(vbs_path)}"'
 
 
+def build_run_exec(vbs_path) -> tuple[str, str]:
+    """XML Exec 액션용 (Command, Arguments). 콘솔 숨김 wscript 로 VBS 실행."""
+    return "wscript.exe", f'//B //Nologo "{str(vbs_path)}"'
+
+
+def _xml_escape(s) -> str:
+    """XML 텍스트 이스케이프(경로·인자 안전)."""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;"))
+
+
+def build_task_xml(command, arguments, start_boundary, freq: str = "DAILY",
+                   highest: bool = False, *,
+                   start_when_available: bool = True,
+                   allow_on_batteries: bool = True, wake: bool = False,
+                   execution_time_limit: str = "PT72H") -> str:
+    """작업 스케줄러 등록용 XML(스키마 1.2) 생성(순수).
+
+    기본 `schtasks /Create` 플래그로는 못 바꾸는 안정성 설정을 켜기 위해 XML 로
+    등록한다(`schtasks /Create /XML`):
+      - start_when_available: 지정 시각에 PC가 꺼/자고 있어 놓쳤으면, 다음에 켤 때 실행.
+      - allow_on_batteries: 노트북이 배터리여도 실행(중간에 충전 빠져도 중단 안 함).
+      - wake: True 면 자는 PC를 깨워 실행(노트북은 보통 False 권장).
+    freq: 'DAILY'(매일) | 'ONCE'(한 번). start_boundary: 'YYYY-MM-DDTHH:MM:SS'.
+    """
+    sb = _xml_escape(start_boundary)
+    if str(freq).upper() == "ONCE":
+        trigger = (f"    <TimeTrigger>\n"
+                   f"      <StartBoundary>{sb}</StartBoundary>\n"
+                   f"      <Enabled>true</Enabled>\n"
+                   f"    </TimeTrigger>")
+    else:
+        trigger = (f"    <CalendarTrigger>\n"
+                   f"      <StartBoundary>{sb}</StartBoundary>\n"
+                   f"      <Enabled>true</Enabled>\n"
+                   f"      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>\n"
+                   f"    </CalendarTrigger>")
+    run_level = "HighestAvailable" if highest else "LeastPrivilege"
+    no_batt = "false" if allow_on_batteries else "true"
+    swa = "true" if start_when_available else "false"
+    wk = "true" if wake else "false"
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" '
+        'xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        '  <RegistrationInfo>\n'
+        '    <Author>KNOU</Author>\n'
+        '    <Description>KNOU 강의 자동 예약</Description>\n'
+        '  </RegistrationInfo>\n'
+        '  <Triggers>\n'
+        f'{trigger}\n'
+        '  </Triggers>\n'
+        '  <Principals>\n'
+        '    <Principal id="Author">\n'
+        '      <LogonType>InteractiveToken</LogonType>\n'
+        f'      <RunLevel>{run_level}</RunLevel>\n'
+        '    </Principal>\n'
+        '  </Principals>\n'
+        '  <Settings>\n'
+        '    <AllowStartOnDemand>true</AllowStartOnDemand>\n'
+        '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n'
+        f'    <DisallowStartIfOnBatteries>{no_batt}</DisallowStartIfOnBatteries>\n'
+        f'    <StopIfGoingOnBatteries>{no_batt}</StopIfGoingOnBatteries>\n'
+        '    <AllowHardTerminate>true</AllowHardTerminate>\n'
+        f'    <StartWhenAvailable>{swa}</StartWhenAvailable>\n'
+        '    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>\n'
+        '    <IdleSettings>\n'
+        '      <StopOnIdleEnd>false</StopOnIdleEnd>\n'
+        '      <RestartOnIdle>false</RestartOnIdle>\n'
+        '    </IdleSettings>\n'
+        '    <Enabled>true</Enabled>\n'
+        '    <Hidden>false</Hidden>\n'
+        '    <RunOnlyIfIdle>false</RunOnlyIfIdle>\n'
+        f'    <WakeToRun>{wk}</WakeToRun>\n'
+        f'    <ExecutionTimeLimit>{execution_time_limit}</ExecutionTimeLimit>\n'
+        '    <Priority>7</Priority>\n'
+        '  </Settings>\n'
+        '  <Actions Context="Author">\n'
+        '    <Exec>\n'
+        f'      <Command>{_xml_escape(command)}</Command>\n'
+        f'      <Arguments>{_xml_escape(arguments)}</Arguments>\n'
+        '    </Exec>\n'
+        '  </Actions>\n'
+        '</Task>\n'
+    )
+
+
+def build_schtasks_create_xml_args(task_name, xml_path) -> list[str]:
+    """`schtasks /Create /TN <name> /XML <file> /F` argv(XML 정의로 등록·덮어쓰기)."""
+    return ["schtasks", "/Create", "/TN", str(task_name),
+            "/XML", str(xml_path), "/F"]
+
+
 def build_schtasks_create_args(task_name, time_hhmm, run_command,
                                freq: str = "DAILY",
                                highest: bool = False) -> list[str]:
@@ -244,6 +355,15 @@ def write_run_script(content: str, filename: str, scripts_dir=SCRIPTS_DIR) -> Pa
     return path
 
 
+def write_task_xml(content: str, filename: str, scripts_dir=SCRIPTS_DIR) -> Path:
+    """작업 정의 XML 을 UTF-16 으로 저장(헤더의 encoding='UTF-16' 과 일치)."""
+    d = Path(scripts_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / filename
+    path.write_text(content, encoding="utf-16")
+    return path
+
+
 def _console_encoding() -> str:
     """schtasks 출력 디코딩용 OEM 콘솔 코드페이지(한국어 Windows=cp949).
 
@@ -295,12 +415,18 @@ def create_task(py, project_dir, mode, time_hhmm, course=None, seq=None,
     vbs_name = Path(fname).with_suffix(".vbs").name
     vbs_path = write_run_script(build_vbs_launcher(script_path),
                                 vbs_name, scripts_dir)
-    run_command = build_run_command(vbs_path)
-    st = normalize_time(time_hhmm)
+    command, arguments = build_run_exec(vbs_path)
+    start_boundary = next_occurrence(time_hhmm)
+    xml_name = Path(fname).with_suffix(".xml").name
 
+    # XML 정의로 등록 → 기본 schtasks 플래그로 못 켜는 안정성 설정(놓친 예약 보충·
+    # 배터리에서도 실행)을 적용한다. 노트북이 지정 시각에 자고 있어도 다음에 켤 때
+    # 실행된다.
     def _create(use_highest):
-        return _run_schtasks(build_schtasks_create_args(
-            name, st, run_command, freq=freq, highest=use_highest))
+        xml = build_task_xml(command, arguments, start_boundary,
+                             freq=freq, highest=use_highest)
+        xml_path = write_task_xml(xml, xml_name, scripts_dir)
+        return _run_schtasks(build_schtasks_create_xml_args(name, xml_path))
 
     proc = _create(highest)
     downgraded = False
