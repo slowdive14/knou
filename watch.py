@@ -323,23 +323,49 @@ def _reapply_speed(popup, frame_index, speed):
 
 
 def _dismiss_quiz(popup):
-    """돌발퀴즈 모달(#quiz_*)이 떠 있으면 아무 보기나 골라 제출하고 닫는다.
+    """돌발퀴즈 모달(#quiz_*)이 떠 있으면 보기 하나 골라 확인(정오답 무관)하고 닫는다.
 
-    완료기준상 정오답 무관. 모달 구조 확정 전까지 보수적으로 시도만 한다.
+    실제 구조(recon player_frame0.html):
+      - 모달 안 form 의 `.answerCh`(보기 라디오) 선택 → `.confirmAnswer`('확인') 클릭.
+      - exqsTc=2·exqsDc=3/4 의 첫 클릭은 정답검사만(오답이면 alert) 하고 등록 안 함
+        → 한 번 더 클릭하면 정오답 무관하게 registerUSTStudyExamRslt.ajax 로 등록.
+      - 등록되면 `.quizClose`('학습계속하기')로 모달을 닫아 영상이 재개된다.
+    alert 은 watch_lecture 에서 등록한 popup 'dialog' 핸들러가 자동 수락한다.
     """
     try:
-        # 보이는 quiz 모달 후보
         modal = popup.locator("[id^='quiz_']:visible").first
         if modal.count() == 0:
             return False
     except Exception:
         return False
-    for sel in ("input[type=radio]", ".answer, .item, li", "button:has-text('제출')",
-                "button:has-text('확인')", "button:has-text('닫기')"):
+
+    # (1) 보기 1개 선택 — 커스텀 라벨로 라디오가 가려진 경우 force/label 로 보강.
+    try:
+        radio = modal.locator(".answerCh").first
+        if radio.count() > 0:
+            try:
+                radio.check(force=True, timeout=1500)
+            except Exception:
+                modal.locator(".lists label").first.click(timeout=1500)
+    except Exception:
+        pass
+
+    # (2) 확인 클릭 — 1차=정답검사, 2차=정오답 무관 등록. 등록되면 버튼이 숨겨진다.
+    for _ in range(2):
         try:
-            popup.locator(sel).first.click(timeout=1000)
+            btn = modal.locator(".confirmAnswer:visible").first
+            if btn.count() == 0:
+                break
+            btn.click(timeout=1500)
+            time.sleep(1.2)
         except Exception:
-            continue
+            break
+
+    # (3) 학습계속하기로 모달 닫기 → 영상 재개(닫힘 후 watch 루프가 배속 재적용·play).
+    try:
+        modal.locator(".quizClose").first.click(timeout=1500)
+    except Exception:
+        pass
     return True
 
 
@@ -463,6 +489,12 @@ def watch_lecture(page, lec: Lecture, cfg=None, speed=None, poll=15,
     sp = clamp_speed(speed if speed is not None
                      else getattr(cfg, "playback_speed", 2.0))
     popup = open_player(page, lec)
+    # 돌발퀴즈가 띄우는 네이티브 alert/confirm(오답 안내·선택요구 등)을 자동 수락해
+    # 흐름이 멈추지 않게 한다(핸들러는 팝업당 한 번만 등록).
+    try:
+        popup.on("dialog", lambda d: d.accept())
+    except Exception:
+        pass
     results = []
     try:
         inv = clip_inventory(popup)
