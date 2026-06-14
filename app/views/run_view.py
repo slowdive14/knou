@@ -98,7 +98,7 @@ def lecture_option_text(row: LectureRow) -> str:
 
 def build_confirm_dialog(mode, body_text, est_text, on_confirm, on_cancel,
                          start_label="이수 시작"):
-    """실제 서버에 반영되는 영상 이수 확인 다이얼로그.
+    """실제 서버에 반영되는 영상 이수 + 형성평가 제출 확인 다이얼로그.
 
     체크박스에 동의하기 전에는 시작 버튼이 **로직 차원에서** 막힌다
     (UI disabled 뿐 아니라 핸들러에서도 차단 → 실수 클릭·자동화로도 진행 안 됨).
@@ -106,7 +106,7 @@ def build_confirm_dialog(mode, body_text, est_text, on_confirm, on_cancel,
     반환: (dlg, agree_checkbox, start_btn) — page 없이도 오프라인 단위테스트 가능.
     """
     agree = ft.Checkbox(
-        label="실제 방송대 서버에 이수(시청) 기록이 적립됨을 이해합니다",
+        label="실제 방송대 서버에 이수 기록과 형성평가 답안이 제출됨을 이해합니다",
         value=False)
     start_btn = ft.FilledButton(start_label, icon=ft.Icons.PLAY_CIRCLE,
                                 disabled=True)
@@ -134,7 +134,7 @@ def build_confirm_dialog(mode, body_text, est_text, on_confirm, on_cancel,
 
     dlg = ft.AlertDialog(
         modal=True,
-        title=ft.Text(f"⚠️ '{mode}' — 실제 서버 이수 진행 확인"),
+        title=ft.Text(f"⚠️ '{mode}' — 실제 서버 이수·제출 확인"),
         content=ft.Column(body_controls, tight=True, spacing=10),
         actions=[cancel_btn, start_btn],
         actions_alignment=ft.MainAxisAlignment.END,
@@ -165,9 +165,9 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             ft.Radio(value=MODE_SUMMARY,
                      label="예습 노트 생성 (영상 이수 안 함)"),
             ft.Radio(value=MODE_WATCH,
-                     label="영상 이수 (⚠️ 실제 서버에 이수 기록 · 노트 없음)"),
+                     label="영상 이수 + 형성평가 (⚠️ 실제 서버 제출 · 노트 없음)"),
             ft.Radio(value=MODE_FULL,
-                     label="영상 이수 + 예습 노트 (⚠️ 실제 서버에 이수 기록)"),
+                     label="영상 이수 + 형성평가 + 예습 노트 (⚠️ 실제 서버 제출)"),
         ], spacing=2),
     )
     redo_chk = ft.Checkbox(

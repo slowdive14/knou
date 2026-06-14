@@ -25,8 +25,9 @@ from main import (  # noqa: E402
 
 
 # ---- stages_for_mode ------------------------------------------------------
-def test_stages_for_mode_watch_only():
-    assert stages_for_mode("이수") == ["watch"]
+def test_stages_for_mode_watch_and_exam():
+    # 이수 = 영상 이수(watch) + 형성평가 풀이(exam)
+    assert stages_for_mode("이수") == ["watch", "exam"]
 
 
 def test_stages_for_mode_summary():
@@ -35,7 +36,7 @@ def test_stages_for_mode_summary():
 
 def test_stages_for_mode_all():
     assert stages_for_mode("전체") == [
-        "watch", "download", "summarize", "capture"]
+        "watch", "exam", "download", "summarize", "capture"]
 
 
 def test_stages_for_mode_invalid():
@@ -48,7 +49,7 @@ def test_stages_for_mode_returns_copy():
     # 반환 리스트를 변형해도 내부 정의가 오염되지 않아야 함
     a = stages_for_mode("이수")
     a.append("x")
-    assert stages_for_mode("이수") == ["watch"]
+    assert stages_for_mode("이수") == ["watch", "exam"]
 
 
 # ---- lecture_key ----------------------------------------------------------

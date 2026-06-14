@@ -37,10 +37,11 @@ DEFAULT_STATE = PROJECT_DIR / "state.json"
 LOG_DIR = PROJECT_DIR / "logs"
 
 # 모드 → 실행 단계 순서
+# watch=영상 이수(+돌발퀴즈), exam=형성평가(연습문제) 자동 풀이.
 MODES: dict[str, list[str]] = {
-    "이수": ["watch"],
+    "이수": ["watch", "exam"],
     "요약": ["download", "summarize", "capture"],
-    "전체": ["watch", "download", "summarize", "capture"],
+    "전체": ["watch", "exam", "download", "summarize", "capture"],
 }
 
 
@@ -201,6 +202,51 @@ def _stage_watch(c: _Ctx, course: str, lec) -> dict:
     return {"ok": True, "detail": res}
 
 
+def _stage_exam(c: _Ctx, course: str, lec) -> dict:
+    """형성평가(연습문제) 자동 풀이 — 정오답 무관으로 답안 등록.
+
+    ⚠️ 실제 방송대 서버에 답안이 제출되는 되돌릴 수 없는 동작이다(완료기준상 정오답
+    무관). 플레이어를 열어 `.exam-content-box` 의 문항을 모두 응답 등록하고 닫는다.
+    연습문제가 없는 차시는 skip(ok)으로 처리한다.
+    """
+    from exercise import _exam_frame, solve_exercises
+    from watch import open_player
+
+    popup = open_player(c.page, lec)
+    dialog_msgs: list[str] = []
+
+    def _on_dialog(d):
+        try:
+            dialog_msgs.append(d.message)
+        finally:
+            try:
+                d.accept()
+            except Exception:
+                pass
+
+    try:
+        popup.on("dialog", _on_dialog)
+    except Exception:
+        pass
+    try:
+        popup.wait_for_timeout(2000)  # 연습문제 박스 로딩 대기
+        if _exam_frame(popup) is None:
+            c.logger.info("    형성평가 없음(skip)")
+            return {"ok": True, "skipped": True, "detail": "연습문제 없음"}
+        res = solve_exercises(popup, dialog_msgs=dialog_msgs,
+                              on_event=lambda m: c.logger.info("    %s", m))
+        c.logger.info("    형성평가: %s (%s/%s 응답)", res.get("status"),
+                      res.get("answered"), res.get("total"))
+        if res.get("status") in ("ok", "no_questions", "no_exam_box"):
+            return {"ok": True, "detail": res}
+        return {"ok": False, "error": f"형성평가 status={res.get('status')}"}
+    finally:
+        try:
+            popup.close()
+        except Exception:
+            pass
+
+
 def _stage_download(c: _Ctx, course: str, lec) -> dict:
     from download import download_lecture
     res = download_lecture(
@@ -256,6 +302,7 @@ def _stage_capture(c: _Ctx, course: str, lec) -> dict:
 
 STAGE_FUNCS = {
     "watch": _stage_watch,
+    "exam": _stage_exam,
     "download": _stage_download,
     "summarize": _stage_summarize,
     "capture": _stage_capture,
