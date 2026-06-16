@@ -137,28 +137,25 @@ tests/
 ### Phase 2: LMS에서 문제·정답·해설 스캔 (`quiz_capture.py`)
 **Goal**: 플레이어 DOM에서 문항 stem·보기 텍스트·정답·해설·출처를 읽어 `quizbank` 형식으로 만든다. 풀이 직후(정답/해설이 드러난 상태) 스캔.
 **Estimated Time**: 3h
-**Status**: ⏳ Pending
+**Status**: ✅ Complete (순수 파싱) · ⏳ 라이브 스캔 수동검증 대기
 
 #### Tasks
 
 **🔴 RED**
-- [ ] **Test 2.1**: `tests/test_quiz_capture.py` — `parse_scanned(raw)` 순수 파싱
-  - 입력 픽스처는 recon `player_frame0.html` 구조에서 도출한 샘플 dict(브라우저 평가 결과 모사)
-  - `.exam-answer-message`의 가독 텍스트만 추출(hwpjson 주석 제거), 보기 번호 매핑
-  - 정답(`exqsCansCn`)/해설(`exqsExplCn`) 채워진 경우/빈 경우 처리
-  - 출처 라벨(`형성평가`/`돌발퀴즈`) 부여
+- [x] **Test 2.1**: `tests/test_quiz_capture.py` — `parse_scanned(raw)` 순수 파싱(7개)
+  - 정답 번호→보기 텍스트 보강 / 정답 텍스트→보기 번호 매칭 / 미풀이(정답 없음) / qtype 기본값 / 출처 폴백 / 식별불가 스킵 / 빈 입력
 
 **🟢 GREEN**
-- [ ] **Task 2.2**: `parse_scanned` 구현(순수)
-- [ ] **Task 2.3**: 스캔 JS + IO 함수 `scan_quiz(frame_or_popup)` 구현 — `.exam-content-box`/`#quiz_*`에서 문항·보기·정답·해설을 JSON 문자열로 반환(기존 `exercise._SCAN_JS` 확장). **풀이 후** 호출 가정.
+- [x] **Task 2.2**: `parse_scanned` + `_resolve_answer` 구현(순수)
+- [x] **Task 2.3**: 스캔 JS + IO `scan_quiz(frame, source)` 구현 — `.exam-content-box`/`#quiz_*` form 에서 문항·보기(`.exam-answer-message` textContent, hwpjson 주석 자동 제외)·정답(`[name=exqsCansCn]`)·해설(`.exqsExplCn`) 읽기. 실패 시 [] 반환(흐름 보호).
 
 **🔵 REFACTOR**
-- [ ] **Task 2.4**: `exercise.scan_questions`와 중복 최소화(공용 JS/헬퍼 추출 검토)
+- [x] **Task 2.4**: `quizbank.normalize_question` 재사용으로 정규화 일원화
 
 #### Quality Gate ✋
-- [ ] `parse_scanned` 순수 테스트 ≥90%, `pytest -q` 그린
-- [ ] 비밀값/JWT URL 미포함
-- [ ] **수동 게이트**: 실제 한 강의 형성평가 풀이 후 `scan_quiz` 결과가 문항/정답/해설을 옳게 담는지 1회 확인(라이브)
+- [x] `parse_scanned` 순수 테스트 통과(7), `pytest -q` 그린
+- [x] 비밀값/JWT URL 미포함(문항·정답·해설만)
+- [ ] **수동 게이트(미완)**: 실제 한 강의 형성평가 풀이 후 `scan_quiz` 결과가 문항 본문(stem 셀렉터)·정답·해설을 옳게 담는지 라이브 1회 확인 → 필요 시 stem 셀렉터 보정
 
 ---
 
@@ -274,12 +271,12 @@ tests/
 
 ### Completion Status
 - **Phase 1**: ✅ 100%
-- **Phase 2**: ⏳ 0%
+- **Phase 2**: ✅ 100% (순수) · 라이브 스캔 수동검증 대기
 - **Phase 3**: ⏳ 0%
 - **Phase 4**: ⏳ 0%
 - **Phase 5(선택)**: ⏳ 0%
 
-**Overall Progress**: ~25% (핵심 4단계 중 1단계 완료)
+**Overall Progress**: ~50% (핵심 4단계 중 2단계 완료)
 
 ### Time Tracking
 | Phase | Estimated | Actual | Variance |
@@ -314,6 +311,6 @@ tests/
 
 ---
 
-**Plan Status**: 🔄 In Progress (Phase 1 ✅ 완료)
-**Next Action**: Phase 2 — `tests/test_quiz_capture.py` 실패 테스트 작성(RED), `parse_scanned` 구현
+**Plan Status**: 🔄 In Progress (Phase 1·2 ✅ — Phase 2 라이브 스캔만 수동검증 대기)
+**Next Action**: Phase 3 — `tests/test_quiz_html.py`(RED) + `quiz_html.render_quiz_html` 구현
 **Blocked By**: None
