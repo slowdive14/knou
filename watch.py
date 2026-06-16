@@ -322,7 +322,7 @@ def _reapply_speed(popup, frame_index, speed):
         return False
 
 
-def _dismiss_quiz(popup):
+def _dismiss_quiz(popup, on_quiz=None):
     """돌발퀴즈 모달(#quiz_*)이 떠 있으면 보기 하나 골라 확인(정오답 무관)하고 닫는다.
 
     실제 구조(recon player_frame0.html):
@@ -331,6 +331,8 @@ def _dismiss_quiz(popup):
         → 한 번 더 클릭하면 정오답 무관하게 registerUSTStudyExamRslt.ajax 로 등록.
       - 등록되면 `.quizClose`('학습계속하기')로 모달을 닫아 영상이 재개된다.
     alert 은 watch_lecture 에서 등록한 popup 'dialog' 핸들러가 자동 수락한다.
+    on_quiz(popup) 가 주어지면 등록 직후(정답·해설 노출 상태)에 호출한다(복습 캡처용,
+    예외 격리 — 캡처 실패가 시청을 막지 않게 한다).
     """
     try:
         modal = popup.locator("[id^='quiz_']:visible").first
@@ -360,6 +362,13 @@ def _dismiss_quiz(popup):
             time.sleep(1.2)
         except Exception:
             break
+
+    # (2-1) 복습 캡처(정답·해설이 드러난 상태). 실패해도 무시.
+    if on_quiz is not None:
+        try:
+            on_quiz(popup)
+        except Exception:
+            pass
 
     # (3) 학습계속하기로 모달 닫기 → 영상 재개(닫힘 후 watch 루프가 배속 재적용·play).
     try:
@@ -396,7 +405,8 @@ def _trigger_save(popup, settle: float = 4.0):
     return fired
 
 
-def _play_until_end(popup, frame_index, speed, budget_s, poll=15, on_progress=None):
+def _play_until_end(popup, frame_index, speed, budget_s, poll=15,
+                    on_progress=None, on_quiz=None):
     """클립이 끝(ended)까지 재생되도록 감시한다. 진행은 '위치(pos)' 기준.
 
     - ended 플래그 또는 pos≈dur 도달 시 True 반환(완청).
@@ -405,6 +415,7 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15, on_progress=No
     - budget_s(벽시계 예산) 초과 시 False(timeout) 반환.
 
     on_progress(state_dict) 콜백이 있으면 매 폴링마다 호출.
+    on_quiz(popup) 콜백은 돌발퀴즈를 처리할 때 _dismiss_quiz 가 호출(복습 캡처용).
     """
     deadline = time.time() + budget_s
     last_pos = None
@@ -413,7 +424,7 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15, on_progress=No
     stalls = 0
     gone_count = 0      # 재생 후 <video> 사라짐 연속 횟수
     while time.time() < deadline:
-        _dismiss_quiz(popup)
+        _dismiss_quiz(popup, on_quiz=on_quiz)
         st = _clip_state(popup, frame_index)
         if on_progress:
             try:
@@ -457,7 +468,7 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15, on_progress=No
         if isinstance(pos, (int, float)) and last_pos is not None and pos <= last_pos + 0.1:
             stalls += 1
             if stalls >= 2:
-                _dismiss_quiz(popup)
+                _dismiss_quiz(popup, on_quiz=on_quiz)
                 _reapply_speed(popup, frame_index, speed)
                 stalls = 0
         else:
@@ -470,7 +481,7 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15, on_progress=No
 
 
 def watch_lecture(page, lec: Lecture, cfg=None, speed=None, poll=15,
-                  max_wait_factor=1.5, on_progress=None):
+                  max_wait_factor=1.5, on_progress=None, on_quiz=None):
     """한 차시의 모든 활성 클립을 끝까지 자동 시청해 영상 이수를 완료시킨다.
 
     동작:
@@ -515,7 +526,8 @@ def watch_lecture(page, lec: Lecture, cfg=None, speed=None, poll=15,
                 continue
             # 벽시계 예산 = 길이/배속 + 버퍼 → 여유배수 + 고정 여유 60초
             budget = wall_clock_seconds(dur / 60.0, sp) * max_wait_factor + 60.0
-            ended = _play_until_end(popup, idx, sp, budget, poll, on_progress)
+            ended = _play_until_end(popup, idx, sp, budget, poll, on_progress,
+                                    on_quiz=on_quiz)
             # 이 클립의 마지막 위치를 즉시 저장
             _trigger_save(popup)
             results.append({"clip": idx,

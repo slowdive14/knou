@@ -197,8 +197,18 @@ class _Ctx:
 
 def _stage_watch(c: _Ctx, course: str, lec) -> dict:
     from watch import watch_lecture
+
+    def _capture_quiz(popup):
+        # 돌발퀴즈 복습 캡처(부수효과·예외 격리) — 정답·해설 노출 직후 호출됨.
+        from quiz_capture import scan_quiz
+        from quiz_page import persist_questions
+        qs = scan_quiz(popup, source="돌발퀴즈")
+        if persist_questions(c.cfg, course, lec.seq, lec.name, qs):
+            c.logger.info("    퀴즈 캡처: 돌발퀴즈 %d문항 저장", len(qs))
+
     res = watch_lecture(c.page, lec, c.cfg,
-                        on_progress=lambda m: c.logger.info("    %s", m))
+                        on_progress=lambda m: c.logger.info("    %s", m),
+                        on_quiz=_capture_quiz)
     return {"ok": True, "detail": res}
 
 
@@ -237,6 +247,16 @@ def _stage_exam(c: _Ctx, course: str, lec) -> dict:
                               on_event=lambda m: c.logger.info("    %s", m))
         c.logger.info("    형성평가: %s (%s/%s 응답)", res.get("status"),
                       res.get("answered"), res.get("total"))
+        # 퀴즈 복습용 캡처(부수효과·예외 격리) — 풀이 후라 정답·해설이 드러나 있다.
+        try:
+            from quiz_capture import scan_quiz
+            from quiz_page import persist_questions
+            fr = _exam_frame(popup)
+            qs = scan_quiz(fr, source="형성평가") if fr is not None else []
+            if persist_questions(c.cfg, course, lec.seq, lec.name, qs):
+                c.logger.info("    퀴즈 캡처: 형성평가 %d문항 저장", len(qs))
+        except Exception as e:  # noqa: BLE001 - 캡처 실패가 이수를 막지 않게
+            c.logger.info("    퀴즈 캡처 건너뜀: %s", str(e)[:80])
         if res.get("status") in ("ok", "no_questions", "no_exam_box"):
             return {"ok": True, "detail": res}
         return {"ok": False, "error": f"형성평가 status={res.get('status')}"}

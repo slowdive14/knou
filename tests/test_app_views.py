@@ -250,6 +250,14 @@ def test_build_run_view_has_recent_log_button(tmp_path):
     assert "최근 실행 로그 보기" in labels
 
 
+def test_build_run_view_has_quiz_button(tmp_path):
+    # 복습용 퀴즈 HTML 페이지를 만드는 버튼이 있어야 함
+    view = build_run_view(snapshot_path=tmp_path / "none.json")
+    labels = [c.content for c in _walk(view)
+              if isinstance(c, ft.OutlinedButton)]
+    assert "퀴즈 페이지 만들기" in labels
+
+
 def test_build_run_view_sleep_warning_hidden_by_default(tmp_path):
     # 절전 경고는 화면에 있지만 기본(요약) 모드에선 숨김
     from runner import watch_sleep_warning

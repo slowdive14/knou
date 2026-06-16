@@ -183,30 +183,28 @@ tests/
 ---
 
 ### Phase 4: 파이프라인 · 앱/CLI 연동
-**Goal**: 이수 중 자동 캡처 + "퀴즈 페이지 만들기·열기" 동작으로 `quiz.html` 생성·열기.
+**Goal**: 이수 중 자동 캡처 + "퀴즈 페이지 만들기·열기" 동작으로 `강의퀴즈.html` 생성·열기.
 **Estimated Time**: 3h
-**Status**: ⏳ Pending
+**Status**: ✅ Complete (배선/조립) · ⏳ 실제 이수 e2e 수동검증 대기
 
 #### Tasks
 
 **🔴 RED**
-- [ ] **Test 4.1**: 배선 단위테스트(순수 가능 부분)
-  - CLI/명령 빌더에 퀴즈 페이지 생성 옵션이 인자로 반영(해당 시 `runner.build_command` 또는 신규 진입점)
-  - 여러 강의 bank 로드→`render_quiz_html` 결합 함수의 강의 정렬/병합
+- [x] **Test 4.1**: `tests/test_quiz_page.py` (6개) — `collect_banks`(과목·차시 정렬·빈강 제외·없는폴더), `build_quiz_page`(렌더·빈폴더 안전), `persist_questions`(병합·보강·빈입력 no-op) + `test_app_views`에 "퀴즈 페이지 만들기" 버튼 테스트
 
 **🟢 GREEN**
-- [ ] **Task 4.2**: `_stage_exam`에 캡처 연결 — 풀이 후 `scan_quiz`→`merge`→`save_bank`(예외 격리: 캡처 실패가 이수를 막지 않음)
-- [ ] **Task 4.3**: `watch._dismiss_quiz` 처리 후 돌발퀴즈 캡처(best-effort)
-- [ ] **Task 4.4**: 생성·열기 진입점 — 모든 bank → `quiz.html` 작성 후 `os.startfile`. (GUI 버튼 또는 `main.py`/CLI 서브커맨드 중 택1)
+- [x] **Task 4.2**: `_stage_exam`에 캡처 연결 — 풀이 후 `scan_quiz(형성평가)`→`persist_questions`(예외 격리)
+- [x] **Task 4.3**: `watch.watch_lecture(on_quiz=)` → `_play_until_end` → `_dismiss_quiz(on_quiz=)`로 돌발퀴즈 캡처(등록 직후, best-effort·격리). `_stage_watch`가 `scan_quiz(돌발퀴즈)`→persist 콜백 제공
+- [x] **Task 4.4**: `quiz_page.write_quiz_page` + run_view "퀴즈 페이지 만들기" 버튼(`default_quiz_paths`→생성→`os.startfile`)
 
 **🔵 REFACTOR**
-- [ ] **Task 4.5**: 캡처 호출부 공통화, 로깅 일관화
+- [x] **Task 4.5**: 캡처 저장을 `persist_questions` 한 곳으로 공통화, 로깅 일관화
 
 #### Quality Gate ✋
-- [ ] `pytest -q` 전부 그린(기존 305 + 신규)
-- [ ] `.gitignore`에 `퀴즈/`·`quiz.html`(및 bank JSON) 추가 — 개인 데이터 미커밋 확인(`git status`)
-- [ ] 캡처 실패 시에도 이수/시청이 정상 완료(예외 격리) 확인
-- [ ] **수동 e2e**: 한 강의 이수 → bank JSON 생성 확인 → 퀴즈 페이지 생성·열기 → 풀이 동작
+- [x] `pytest -q` 전부 그린(346 = 기존 305 + 신규 41)
+- [x] `.gitignore`에 `퀴즈/`·`quiz*.html`·`_quiz_*.py` 추가 — `quiz_demo.html` 미추적 확인
+- [x] 캡처 전 구간 try/except → 캡처 실패가 이수/시청을 막지 않음(콜백·스테이지 모두 격리)
+- [ ] **수동 e2e(미완)**: 한 강의 이수 → `퀴즈/{과목}_{seq}강.json` 생성 확인 → 앱 "퀴즈 페이지 만들기" → 브라우저에서 풀이
 
 ---
 
@@ -267,10 +265,10 @@ tests/
 - **Phase 1**: ✅ 100%
 - **Phase 2**: ✅ 100% (순수) · 라이브 스캔 수동검증 대기
 - **Phase 3**: ✅ 100% (순수 렌더) · 브라우저 동작 수동검증 대기
-- **Phase 4**: ⏳ 0%
+- **Phase 4**: ✅ 100% (배선/조립) · 실제 이수 e2e 수동검증 대기
 - **Phase 5(선택)**: ⏳ 0%
 
-**Overall Progress**: ~75% (핵심 4단계 중 3단계 완료)
+**Overall Progress**: 핵심 4단계 코드 완료(100%). 남은 것 = 라이브 수동검증(스캔 stem·e2e) + 선택 Phase 5(디자인 마무리)
 
 ### Time Tracking
 | Phase | Estimated | Actual | Variance |
@@ -305,6 +303,6 @@ tests/
 
 ---
 
-**Plan Status**: 🔄 In Progress (Phase 1·2·3 ✅ — 라이브 스캔/브라우저 동작 수동검증 대기)
-**Next Action**: Phase 4 — `_stage_exam`/`_dismiss_quiz`에 캡처 연결 + "퀴즈 페이지 만들기·열기" 진입점, `.gitignore`에 퀴즈 산출물 추가
-**Blocked By**: None
+**Plan Status**: 🔄 In Progress (핵심 4단계 코드 ✅ 완료 — 라이브 수동검증 대기, 선택 Phase 5 남음)
+**Next Action**: 실제 한 강의 이수로 e2e 수동검증(형성평가 stem 셀렉터 확인) → 필요 시 보정 → (선택) Phase 5 디자인 마무리
+**Blocked By**: None — 다음 이수 실행 때 캡처 동작/stem 셀렉터를 한 번 확인하면 됨

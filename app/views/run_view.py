@@ -180,6 +180,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                              visible=False, disabled=True)
     view_log_btn = ft.OutlinedButton("최근 실행 로그 보기",
                                      icon=ft.Icons.DESCRIPTION)
+    quiz_btn = ft.OutlinedButton("퀴즈 페이지 만들기", icon=ft.Icons.QUIZ)
 
     def _safe_update():
         if page is not None:
@@ -510,12 +511,35 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         set_status(f"최근 실행 로그 표시 ({len(lines)}줄) — {Path(p).name}",
                    ft.Colors.BLUE)
 
+    def on_make_quiz(_):
+        """모은 돌발퀴즈/형성평가 문항으로 복습용 HTML 페이지를 만들어 연다."""
+        try:
+            from config import load_config
+            cfg = load_config()
+        except Exception as ex:  # noqa: BLE001
+            set_status(f"설정이 필요합니다: {str(ex)[:100]} → '설정' 탭",
+                       ft.Colors.RED)
+            return
+        from quiz_page import default_quiz_paths, write_quiz_page
+        quiz_dir, out_path = default_quiz_paths(cfg)
+        try:
+            p = write_quiz_page(quiz_dir, out_path)
+        except Exception as ex:  # noqa: BLE001
+            set_status(f"퀴즈 페이지 생성 실패: {str(ex)[:100]}", ft.Colors.RED)
+            return
+        set_status(f"퀴즈 페이지 생성: {Path(p).name}", ft.Colors.GREEN)
+        try:
+            os.startfile(str(p))  # noqa: S606 - 사용자 의도적 페이지 열기
+        except Exception:
+            pass
+
     gen_btn.on_click = on_primary
     mode_group.on_change = on_mode_change
     cancel_btn.on_click = on_cancel
     refresh_btn.on_click = on_refresh
     open_btn.on_click = on_open
     view_log_btn.on_click = on_view_log
+    quiz_btn.on_click = on_make_quiz
 
     populate_courses()
 
@@ -546,7 +570,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             progress,
             ft.Row([status_badge, elapsed_text], spacing=12),
             ft.Row([ft.Text("진행 로그", size=13, weight=ft.FontWeight.BOLD),
-                    view_log_btn],
+                    ft.Row([quiz_btn, view_log_btn])],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             log_panel,
