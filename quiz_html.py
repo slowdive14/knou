@@ -50,6 +50,7 @@ def _render_card(num: int, q: dict) -> str:
         f'<div class="opts">{opts}</div>'
         f'<div class="q-actions"><button class="btn-reveal">정답 보기</button></div>'
         f'<div class="answer-box" hidden>'
+        f'<div class="ans-head">정답</div>'
         f'<div class="ans-correct">{correct}</div>'
         f'<div class="expl">{_esc(q.get("explanation") or "")}</div>'
         f'</div>'
@@ -109,7 +110,10 @@ def render_quiz_html(lectures, title: str = "강의 퀴즈") -> str:
         '<header class="topbar">'
         '<div class="lec-title" id="lecTitle"></div>'
         '<div class="progress">'
+        '<div class="progress-top">'
         '<span class="progress-text" id="progressText">0 / 0</span>'
+        '<span class="progress-label" id="progressLabel">0문제 풀이</span>'
+        '</div>'
         '<div class="progress-bar"><i id="progressFill"></i></div>'
         '</div>'
         '</header>'
@@ -143,8 +147,10 @@ body { margin: 0; display: flex; min-height: 100vh; font-family: "Malgun Gothic"
 .main { flex: 1; padding: 26px 34px; overflow-y: auto; }
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .lec-title { font-size: 30px; font-weight: 800; }
-.progress { background: #fff; border: 1px solid #e3eae7; border-radius: 12px; padding: 12px 16px; min-width: 190px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
-.progress-text { font-weight: 700; font-size: 14px; }
+.progress { background: #fff; border: 1px solid #e3eae7; border-radius: 12px; padding: 12px 16px; min-width: 210px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+.progress-top { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.progress-text { font-weight: 800; font-size: 16px; }
+.progress-label { font-size: 13px; color: #5b6b64; }
 .progress-bar { height: 8px; background: #e6ece9; border-radius: 6px; margin-top: 8px; overflow: hidden; }
 .progress-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#1f8a5f,#e0a83a); transition: width .25s; }
 .navrow { display: flex; gap: 10px; margin: 18px 0 22px; flex-wrap: wrap; }
@@ -172,6 +178,7 @@ body { margin: 0; display: flex; min-height: 100vh; font-family: "Malgun Gothic"
 .btn-reveal { background: #f3e7bf; border: 1px solid #e6d28f; border-radius: 8px; padding: 9px 16px; cursor: pointer; font-size: 14px; font-weight: 600; }
 .btn-reveal:hover { background: #eedca8; }
 .answer-box { margin-top: 14px; border: 1px solid #bfe6cf; border-left: 4px solid #1f8a5f; background: #f3fbf6; border-radius: 8px; padding: 14px 16px; }
+.ans-head { font-weight: 800; color: #1f8a5f; font-size: 15px; margin-bottom: 6px; }
 .ans-correct { font-weight: 700; color: #1f6b50; }
 .expl { margin-top: 8px; font-size: 14px; color: #3a463f; line-height: 1.6; white-space: pre-wrap; }
 .empty { color: #7a8a83; padding: 30px 0; }
@@ -210,7 +217,9 @@ _JS = r"""
     cards.forEach(function (c) { if (state[c.getAttribute('data-qid')] != null) done++; });
     var t = document.getElementById('progressText');
     var f = document.getElementById('progressFill');
+    var lbl = document.getElementById('progressLabel');
     if (t) t.textContent = done + ' / ' + cards.length;
+    if (lbl) lbl.textContent = cards.length + '문제 풀이';
     if (f) f.style.width = (cards.length ? (done / cards.length * 100) : 0) + '%';
   }
 

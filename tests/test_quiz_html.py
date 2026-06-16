@@ -78,6 +78,19 @@ def test_render_has_progress_and_answer_button():
     assert "정답 보기" in html
 
 
+def test_render_progress_has_count_and_label():
+    # 첨부 이미지: "N / N" 카운트 + "N문제 풀이" 라벨
+    html = render_quiz_html([_lec()])
+    assert 'id="progressText"' in html
+    assert 'id="progressLabel"' in html
+    assert "문제 풀이" in html
+
+
+def test_render_answer_box_has_header():
+    html = render_quiz_html([_lec(questions=[_q(explanation="해설")])])
+    assert 'class="ans-head"' in html      # '정답' 헤더 스타일
+
+
 def test_render_shows_source_badge():
     html = render_quiz_html([_lec(questions=[_q(source="돌발퀴즈")])])
     assert "돌발퀴즈" in html
