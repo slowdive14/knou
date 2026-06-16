@@ -134,15 +134,58 @@ def _eval_json(frame, js, *args):
         return {"raw": raw}
 
 
+# 플레이어 팝업 URL 식별(fnCntsPopup 이 frmStudy 를 제출하는 대상).
+_PLAYER_URL_HINT = "retrieveUSTStudy"
+
+
+def _player_popups(page):
+    """이 컨텍스트에 열려 있는 플레이어 팝업 페이지들(opener 제외)."""
+    return [p for p in page.context.pages
+            if p is not page and _PLAYER_URL_HINT in (p.url or "")]
+
+
 def open_player(page, lec: Lecture):
-    """fnCntsPopup 으로 플레이어 팝업을 열고 popup Page 를 반환."""
-    with page.expect_popup(timeout=30000) as pi:
-        page.evaluate(
-            "(a) => fnCntsPopup(a.s, a.t, a.atlc, 'Y', 'Y', a.sbjt)",
-            {"s": lec.enc_sbjt_id, "t": lec.enc_toc_no,
-             "atlc": lec.enc_atlc_no, "sbjt": lec.sbjt_id},
-        )
-    popup = pi.value
+    """fnCntsPopup 으로 플레이어 팝업을 열고 popup Page 를 반환.
+
+    fnCntsPopup 은 **고정 이름('_POPUP_STUDY')** 창을 연다. 직전 팝업이 덜 닫혀 그
+    이름이 남아 있으면 window.open 이 새 창 대신 기존 창을 재사용해 'popup' 이벤트가
+    안 떠 타임아웃 난다(이수 모드의 watch→exam 연속 호출에서 발생). 대비:
+      1) 남아 있는 플레이어 팝업을 먼저 닫는다(이름 해제).
+      2) popup 이벤트가 안 떠도, 폼이 그 창으로 제출돼 플레이어가 떠 있으면 그 창 사용.
+      3) 그래도 없으면 잠깐 대기 후 한 번 더 시도(이름이 풀린 뒤 새 창이 열리도록).
+    """
+    args = {"s": lec.enc_sbjt_id, "t": lec.enc_toc_no,
+            "atlc": lec.enc_atlc_no, "sbjt": lec.sbjt_id}
+    for p in _player_popups(page):           # 남은 플레이어 팝업 정리
+        try:
+            p.close()
+        except Exception:
+            pass
+
+    popup = None
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            with page.expect_popup(timeout=20000) as pi:
+                page.evaluate(
+                    "(a) => fnCntsPopup(a.s, a.t, a.atlc, 'Y', 'Y', a.sbjt)", args)
+            popup = pi.value
+            break
+        except Exception as e:               # popup 이벤트 미발생(이름 재사용 등)
+            last_err = e
+            cand = _player_popups(page)
+            if cand:                         # 재사용된 창이 이미 플레이어면 그걸 사용
+                popup = cand[-1]
+                break
+            for p in _player_popups(page):
+                try:
+                    p.close()
+                except Exception:
+                    pass
+            time.sleep(3)                    # 이름이 풀리도록 대기 후 재시도
+    if popup is None:
+        raise last_err
+
     try:
         popup.wait_for_load_state("networkidle", timeout=30000)
     except Exception:

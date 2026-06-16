@@ -289,7 +289,10 @@ tests/
 - 출처 라벨은 첨부 이미지의 "기존" 배지 자리에 `형성평가`/`돌발퀴즈`로 매핑.
 
 ### Blockers Encountered
-- (없음 — 작성 시점)
+- **exam 단계 popup 타임아웃**(라이브 이수에서 발견): `fnCntsPopup` 이 고정 이름
+  `_POPUP_STUDY` 창을 열어, watch→exam 연속 호출 시 직전 창 이름이 남아 새 popup
+  이벤트가 안 떠 30초 타임아웃 → exam 실패. → `watch.open_player` 를 견고화(남은
+  플레이어 팝업 정리 + popup 미발생 시 기존 플레이어 창 재사용 + 대기 후 1회 재시도)로 해결.
 
 ### Improvements for Future Plans
 - 후속: 수식/이미지 보기 렌더, 오답노트, 통계(강의별 정답률) — 본 계획 범위 밖.
