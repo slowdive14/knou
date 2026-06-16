@@ -162,29 +162,23 @@ tests/
 ### Phase 3: 인터랙티브 HTML 생성기 (`quiz_html.py`)
 **Goal**: `render_quiz_html(lectures)` → 첨부 이미지 스타일의 **단일 자체완결 HTML**. 좌측 강의 목록·문제 카드·보기 선택·정답 보기(정답+해설)·진행률·강의 이동·초기화(localStorage).
 **Estimated Time**: 4h
-**Status**: ⏳ Pending
+**Status**: ✅ Complete (순수 렌더) · ⏳ 브라우저 동작 수동검증 대기
 
 #### Tasks
 
 **🔴 RED**
-- [ ] **Test 3.1**: `tests/test_quiz_html.py`
-  - 모든 강의·문항·보기 텍스트가 (이스케이프되어) 포함
-  - 정답/해설이 **평문으로 바로 노출되지 않음**(data-속성/JS에만, 기본 화면 텍스트엔 없음)
-  - 강의 N개 → 사이드바 항목 N개, 진행률/초기화 마크업 존재
-  - 출처 배지(형성평가/돌발퀴즈) 표시
-  - 빈 데이터/특수문자(`<`, `&`, 따옴표) 안전, 비밀값 미포함
-  - 단일 파일(외부 링크·CDN 의존 없음)
+- [x] **Test 3.1**: `tests/test_quiz_html.py` (12개) — 문서/제목/문항·보기/이스케이프/정답 기본숨김(`data-answer-no`+`answer-box hidden`)/사이드바 N개/내비·초기화/진행률·정답보기/출처배지/단일파일(외부링크·CDN·http 없음)/빈 입력/비밀값
 
 **🟢 GREEN**
-- [ ] **Task 3.2**: `render_quiz_html` 구현 — 인라인 CSS(이미지 디자인)·JS(선택/정답공개/진행률/강의전환/초기화)
+- [x] **Task 3.2**: `quiz_html.render_quiz_html` 구현 — 서버렌더 카드 + 인라인 CSS(이미지 테마: 다크틸 사이드바·옵션카드·정답박스)·JS(보기선택·정답공개·진행률·강의전환·prev/next·초기화 localStorage)
 
 **🔵 REFACTOR**
-- [ ] **Task 3.3**: 템플릿 조립 함수 분리(헤더/사이드바/문항카드), 명명·주석 정리
+- [x] **Task 3.3**: `_render_option/_render_card/_render_lecture/_render_sidebar_item` 분리, `_esc/_escattr` 일원화, CSS/JS는 f-string 충돌 피해 정적 문자열
 
 #### Quality Gate ✋
-- [ ] 순수 렌더 테스트 ≥90%, `pytest -q` 그린
-- [ ] 정답 평문 비노출(테스트로 단언)
-- [ ] **수동**: 샘플 데이터로 HTML 생성 → 브라우저에서 보기 선택/정답 보기/강의 이동/초기화 동작 확인
+- [x] 순수 렌더 테스트 통과(12), `pytest -q` 그린(339)
+- [x] 정답 평문 비노출(`data-answer-no` + `answer-box hidden`만, 테스트 단언)
+- [ ] **수동(미완)**: `quiz_demo.html`(샘플) 브라우저에서 보기 선택/정답 보기/강의 이동/초기화 동작 확인
 
 ---
 
@@ -272,11 +266,11 @@ tests/
 ### Completion Status
 - **Phase 1**: ✅ 100%
 - **Phase 2**: ✅ 100% (순수) · 라이브 스캔 수동검증 대기
-- **Phase 3**: ⏳ 0%
+- **Phase 3**: ✅ 100% (순수 렌더) · 브라우저 동작 수동검증 대기
 - **Phase 4**: ⏳ 0%
 - **Phase 5(선택)**: ⏳ 0%
 
-**Overall Progress**: ~50% (핵심 4단계 중 2단계 완료)
+**Overall Progress**: ~75% (핵심 4단계 중 3단계 완료)
 
 ### Time Tracking
 | Phase | Estimated | Actual | Variance |
@@ -311,6 +305,6 @@ tests/
 
 ---
 
-**Plan Status**: 🔄 In Progress (Phase 1·2 ✅ — Phase 2 라이브 스캔만 수동검증 대기)
-**Next Action**: Phase 3 — `tests/test_quiz_html.py`(RED) + `quiz_html.render_quiz_html` 구현
+**Plan Status**: 🔄 In Progress (Phase 1·2·3 ✅ — 라이브 스캔/브라우저 동작 수동검증 대기)
+**Next Action**: Phase 4 — `_stage_exam`/`_dismiss_quiz`에 캡처 연결 + "퀴즈 페이지 만들기·열기" 진입점, `.gitignore`에 퀴즈 산출물 추가
 **Blocked By**: None

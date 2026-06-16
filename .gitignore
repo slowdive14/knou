@@ -42,6 +42,12 @@ pipeline_overview.png
 # 테스트 캐시
 .pytest_cache/
 
+# 퀴즈 복습 산출물 (개인 문제·정답 데이터 / 생성 HTML / 데모)
+퀴즈/
+quiz_bank/
+quiz*.html
+_quiz_*.py
+
 # 개발용 일회성 스크립트 (정찰·probe·dump·실험 — 앱/테스트가 import 안 함, 로컬 전용)
 정찰실행.bat
 recon_shots/
