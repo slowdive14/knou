@@ -39,6 +39,8 @@ from runner import (  # noqa: E402
     requires_confirm,
     watch_sleep_warning,
 )
+from schedule_win import parse_limit, valid_limit  # noqa: E402 - 예약 화면과 같은 규칙
+from ui_async import make_updater  # noqa: E402
 
 # 모드 라벨(화면) → main.py --mode 값
 MODE_SUMMARY = "요약"
@@ -53,6 +55,7 @@ _MODE_LABELS = {
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SNAPSHOT_PATH = PROJECT_ROOT / "lectures.json"
+STATE_PATH = PROJECT_ROOT / "state.json"
 LIST_LECTURES_PY = PROJECT_ROOT / "list_lectures.py"
 _MAX_LOG_LINES = 500
 
@@ -142,6 +145,27 @@ def build_confirm_dialog(mode, body_text, est_text, on_confirm, on_cancel,
     return dlg, agree, start_btn
 
 
+def build_extra_dialog(body_text, on_confirm, on_cancel,
+                       title: str = "🎬 두 번째 영상이 있어요"):
+    """한 회차에 영상이 2개일 때 — 두 번째 영상 예습노트 생성 확인 다이얼로그.
+
+    서버에 무언가를 제출하지 않고 노트만 만드는 작업이라 동의 체크박스는 없다
+    (이수 확인 다이얼로그와 다른 점). 반환: (dlg, make_btn).
+    """
+    make_btn = ft.FilledButton("노트 만들기", icon=ft.Icons.NOTE_ADD,
+                               on_click=lambda e: on_confirm())
+    skip_btn = ft.TextButton("건너뛰기", on_click=lambda e: on_cancel())
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(title),
+        content=ft.Column([ft.Text(body_text, size=13)], tight=True,
+                          spacing=10),
+        actions=[skip_btn, make_btn],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    return dlg, make_btn
+
+
 # ---------------------------------------------------------------------------
 # 뷰 빌더 (Flet UI — 수동 스모크)
 # ---------------------------------------------------------------------------
@@ -151,7 +175,8 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
              "job": None, "note_path": None}
 
     course_dd = ft.Dropdown(label="과목", width=360, options=[])
-    lecture_dd = ft.Dropdown(label="차시", width=520, options=[])
+    lecture_dd = ft.Dropdown(label="차시 (선택 — 비우면 여러 강 차례로)",
+                             width=460, options=[])
     progress = ft.ProgressBar(value=0, width=520, visible=False)
     status_badge = ft.Text("", size=13)
     elapsed_text = ft.Text("", size=12, color=ft.Colors.GREY)
@@ -172,6 +197,14 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     )
     redo_chk = ft.Checkbox(
         label="이미 만든 것도 다시 만들기 (덮어쓰기)", value=False)
+    # 차시를 안 고르면 '몇 강까지' 가 의미를 갖는다(고르면 그 한 강만).
+    # Flet 0.85 의 TextField 는 helper_text 가 아니라 helper(컨트롤)를 받는다.
+    limit_tf = ft.TextField(
+        label="한 번에 최대 (강)", value="1", width=160,
+        helper=ft.Text("차시를 비우면 이 개수만큼", size=11),
+        keyboard_type=ft.KeyboardType.NUMBER)
+    unwatched_chk = ft.Checkbox(
+        label="미이수부터 (차시를 안 골랐을 때)", value=True)
     gen_btn = ft.FilledButton(_MODE_LABELS[MODE_SUMMARY],
                               icon=ft.Icons.AUTO_STORIES)
     cancel_btn = ft.OutlinedButton("취소", icon=ft.Icons.STOP, disabled=True)
@@ -180,14 +213,18 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                              visible=False, disabled=True)
     view_log_btn = ft.OutlinedButton("최근 실행 로그 보기",
                                      icon=ft.Icons.DESCRIPTION)
+    exam_btn = ft.OutlinedButton("형성평가만 실행", icon=ft.Icons.FACT_CHECK,
+                                 tooltip="선택한 차시의 형성평가만 다시 풀어 "
+                                         "퀴즈 문항을 모읍니다 "
+                                         "(⚠️ 실제 서버 제출 · 영상/노트 없음)")
     quiz_btn = ft.OutlinedButton("퀴즈 페이지 만들기", icon=ft.Icons.QUIZ)
+    status_btn = ft.OutlinedButton("학습 현황 페이지",
+                                   icon=ft.Icons.DASHBOARD_OUTLINED)
 
-    def _safe_update():
-        if page is not None:
-            try:
-                page.update()
-            except Exception:
-                pass
+    # 진행 로그·경과시간은 **워커 스레드**에서 들어온다. 거기서 page.update() 를
+    # 직접 부르면 패치가 큐에만 쌓여, 창을 내렸다 올려야 밀린 줄이 나타난다.
+    # (자세한 이유는 ui_async 모듈 설명 참고)
+    _safe_update = make_updater(page)
 
     def log(msg: str, color=None):
         log_view.controls.append(
@@ -261,11 +298,14 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
 
     def _set_running(running: bool):
         gen_btn.disabled = running
+        exam_btn.disabled = running
         refresh_btn.disabled = running
         course_dd.disabled = running
         lecture_dd.disabled = running
         mode_group.disabled = running
         redo_chk.disabled = running
+        limit_tf.disabled = running
+        unwatched_chk.disabled = running
         cancel_btn.disabled = not running
         _safe_update()
 
@@ -379,6 +419,10 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             progress.visible = False
             set_status(f"시작 실패: {str(ex)[:120]}", ft.Colors.RED)
 
+    def run_count() -> int:
+        """'한 번에 최대 (강)' 입력값(빈칸·잘못된 값이면 1강)."""
+        return parse_limit(limit_tf.value) or 1
+
     # --- 모드별 실행 ------------------------------------------------------
     _RUN_LABELS = {
         MODE_SUMMARY: "예습 노트",
@@ -387,13 +431,46 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     }
 
     def _run(cfg, mode, course, seq, row):
-        """선택 모드로 main.py 구동. 요약/전체는 노트 생성 → 완료 시 '노트 열기'."""
+        """선택 모드로 main.py 구동. 요약/전체는 노트 생성 → 완료 시 '노트 열기'.
+
+        seq 가 None 이면 차시를 안 고른 것 — 그 과목에서 '한 번에 최대 N강'만큼
+        차례로 처리한다(노트 열기·두 번째 영상 확인은 한 강일 때만 의미가 있다).
+        """
         makes_note = mode in (MODE_SUMMARY, MODE_FULL)
+        one = seq is not None
+        count = 1 if one else run_count()
         name = row.name if row else ""
         state["note_path"] = (note_path_for(cfg, course, seq, name)
-                              if (makes_note and name) else None)
+                              if (makes_note and one and name) else None)
         argv = build_command(_python_exe(), mode, course=course,
-                             seq=seq, limit=1, force=bool(redo_chk.value))
+                             seq=seq, limit=count,
+                             unwatched=(not one and bool(unwatched_chk.value)),
+                             force=bool(redo_chk.value))
+
+        def after(ok):
+            np = state.get("note_path")
+            if ok and np and Path(np).exists():
+                open_btn.visible = True
+                open_btn.disabled = False
+            # 한 회차에 영상이 2개면 여기서 물어본다(실행이 다 끝난 뒤 한 번).
+            # 실패한 실행 뒤에는 묻지 않는다 — 다음 성공 실행 때 다시 뜬다.
+            # 여러 강을 한 번에 돌린 경우엔 어느 강인지 특정할 수 없어 묻지 않는다.
+            if ok and one:
+                _ask_extra_video(cfg, course, seq, name)
+
+        target = f"{seq}강" if one else f"최대 {count}강"
+        label = f"{course} {target} {_RUN_LABELS.get(mode, mode)}"
+        _start_job(argv, label, on_done=after if makes_note else None)
+
+    # --- 두 번째 영상(회차에 영상 2개) 예습노트 -----------------------------
+    def _run_extra(cfg, course, seq, name):
+        """`main.py --stages extra` 로 두 번째 영상 노트만 따로 만든다."""
+        from extra_video import extra_note_name
+        state["note_path"] = (note_path_for(cfg, course, seq,
+                                            extra_note_name(name, 2))
+                              if name else None)
+        argv = build_command(_python_exe(), MODE_SUMMARY, course=course,
+                             seq=seq, limit=1, stages=["extra"])
 
         def after(ok):
             np = state.get("note_path")
@@ -401,8 +478,80 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                 open_btn.visible = True
                 open_btn.disabled = False
 
-        label = f"{course} {seq}강 {_RUN_LABELS.get(mode, mode)}"
-        _start_job(argv, label, on_done=after if makes_note else None)
+        _start_job(argv, f"{course} {seq}강 두 번째 영상 예습노트", on_done=after)
+
+    # --- 형성평가(퀴즈)만 따로 -------------------------------------------
+    def _run_exam_only(course, seq):
+        """`main.py --stages exam --force` 로 형성평가만 다시 푼다(+문항 캡처).
+
+        --force 가 핵심이다: 형성평가가 한 번 '없음(skip)'으로 **완료 기록**되면
+        보통 실행에서는 영영 건너뛰어져, 나중에 문제가 올라와도 안 잡힌다.
+        """
+        argv = build_command(_python_exe(), MODE_WATCH, course=course,
+                             seq=seq, limit=1, stages=["exam"], force=True)
+        _start_job(argv, f"{course} {seq}강 형성평가·퀴즈")
+
+    def on_exam_only(_):
+        """형성평가만 실행 — 실제 서버 제출이므로 동의 다이얼로그를 반드시 거친다."""
+        if not course_dd.value or not lecture_dd.value:
+            set_status("먼저 과목과 차시를 선택하세요.", ft.Colors.RED)
+            return
+        course, seq = course_dd.value, int(lecture_dd.value)
+        body = (f"'{course} {seq}강' 의 형성평가만 다시 풀어 문항을 모읍니다"
+                "(영상 이수·노트 생성은 하지 않습니다).\n\n"
+                + confirm_message(MODE_WATCH))
+
+        def _confirm():
+            _close_dialog()
+            _run_exam_only(course, seq)
+
+        def _cancel():
+            _close_dialog()
+            set_status("형성평가 실행 취소됨.", ft.Colors.GREY)
+
+        dlg, _agree, _start = build_confirm_dialog(
+            MODE_WATCH, body, "", _confirm, _cancel,
+            start_label="형성평가 실행")
+        state["confirm_dialog"] = dlg
+        if page is not None:
+            try:
+                page.show_dialog(dlg)
+            except Exception:
+                pass
+
+    def _ask_extra_video(cfg, course, seq, name):
+        """실행 뒤 state.json 을 보고, 두 번째 영상이 있으면 생성 여부를 묻는다.
+
+        capture 단계가 남긴 탐지 기록만 읽는다(추가 로그인·플레이어 열기 없음).
+        """
+        try:
+            from extra_video import (extra_prompt_text, pending_extras,
+                                     read_state)
+            clips = pending_extras(read_state(STATE_PATH), course, seq)
+        except Exception:  # noqa: BLE001 - 탐지 기록 문제로 실행 결과를 가리지 않게
+            return
+        if not clips:
+            return
+        body = extra_prompt_text(clips, course, seq)
+        log(f"🎬 두 번째 영상 {len(clips)}개 감지 — 노트 생성 여부 확인")
+
+        def _confirm():
+            _close_dialog()
+            _run_extra(cfg, course, seq, name)
+
+        def _cancel():
+            _close_dialog()
+            set_status("두 번째 영상 노트는 건너뜀 "
+                       "(나중에 같은 차시를 다시 실행하면 또 물어봅니다)",
+                       ft.Colors.GREY)
+
+        dlg, _make = build_extra_dialog(body, _confirm, _cancel)
+        state["extra_dialog"] = dlg      # 테스트/디버그용 보관
+        if page is not None:
+            try:
+                page.show_dialog(dlg)
+            except Exception:
+                pass
 
     def _close_dialog():
         if page is not None:
@@ -417,7 +566,10 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         if row and getattr(row, "total_min", 0) > 0:
             est = estimate_watch_text(row.total_min, row.watched_min,
                                       getattr(cfg, "playback_speed", 2.0))
-        body = confirm_message(mode) + "\n\n" + watch_sleep_warning()
+        scope = (f"'{course} {seq}강' 한 강" if seq is not None
+                 else f"'{course}' 에서 최대 {run_count()}강(차시 미지정)")
+        body = (f"대상: {scope}\n\n" + confirm_message(mode) + "\n\n"
+                + watch_sleep_warning())
 
         def _confirm():
             _close_dialog()
@@ -437,9 +589,16 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                 pass
 
     def on_primary(_):
-        """주 실행 버튼: 선택된 모드(요약/이수/전체)로 분기."""
-        if not course_dd.value or not lecture_dd.value:
-            set_status("먼저 과목과 차시를 선택하세요.", ft.Colors.RED)
+        """주 실행 버튼: 선택된 모드(요약/이수/전체)로 분기.
+
+        차시는 **선택 사항**이다 — 비워두면 '한 번에 최대 N강'만큼 차례로 돈다.
+        """
+        if not course_dd.value:
+            set_status("먼저 과목을 선택하세요.", ft.Colors.RED)
+            return
+        if not valid_limit(limit_tf.value):
+            set_status("'한 번에 최대'는 1 이상의 숫자이거나 비워두세요.",
+                       ft.Colors.RED)
             return
         try:
             from config import load_config
@@ -449,9 +608,9 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                        ft.Colors.RED)
             return
         course = course_dd.value
-        seq = int(lecture_dd.value)
-        row = next((r for r in rows_for_course(state["rows"], course)
-                    if r.seq == seq), None)
+        seq = int(lecture_dd.value) if lecture_dd.value else None
+        row = (next((r for r in rows_for_course(state["rows"], course)
+                     if r.seq == seq), None) if seq is not None else None)
         mode = mode_group.value
         if requires_confirm(mode):       # 이수/전체 → 반드시 확인 다이얼로그
             _open_confirm(cfg, mode, course, seq, row)
@@ -533,6 +692,29 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         except Exception:
             pass
 
+    def on_make_status(_):
+        """과목·차시별로 무엇이 만들어졌는지 한눈에 보는 현황 페이지를 만들어 연다."""
+        try:
+            from config import load_config
+            cfg = load_config()
+        except Exception as ex:  # noqa: BLE001
+            set_status(f"설정이 필요합니다: {str(ex)[:100]} → '설정' 탭",
+                       ft.Colors.RED)
+            return
+        from status_page import write_status_page
+        try:
+            p = write_status_page(cfg, snapshot_path, STATE_PATH)
+        except Exception as ex:  # noqa: BLE001
+            set_status(f"현황 페이지 생성 실패: {str(ex)[:100]}", ft.Colors.RED)
+            return
+        set_status(f"현황 페이지 생성: {Path(p).name} "
+                   "(목록이 오래됐으면 '목록 새로고침' 후 다시 만드세요)",
+                   ft.Colors.GREEN)
+        try:
+            os.startfile(str(p))  # noqa: S606 - 사용자 의도적 페이지 열기
+        except Exception:
+            pass
+
     gen_btn.on_click = on_primary
     mode_group.on_change = on_mode_change
     cancel_btn.on_click = on_cancel
@@ -540,6 +722,8 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     open_btn.on_click = on_open
     view_log_btn.on_click = on_view_log
     quiz_btn.on_click = on_make_quiz
+    exam_btn.on_click = on_exam_only
+    status_btn.on_click = on_make_status
 
     populate_courses()
 
@@ -554,23 +738,26 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         [
             ft.Text("실행 — 예습 노트 · 영상 이수", size=24,
                     weight=ft.FontWeight.BOLD),
-            ft.Text("과목·차시와 모드를 고르고 실행하세요. "
+            ft.Text("과목과 모드를 고르고 실행하세요. 차시를 비우면 "
+                    "'한 번에 최대' 개수만큼 차례로 돕니다. "
                     "(목록이 비었으면 '목록 새로고침')", size=13,
                     color=ft.Colors.GREY),
             ft.Divider(),
             ft.Row([course_dd, refresh_btn],
                    vertical_alignment=ft.CrossAxisAlignment.END),
-            lecture_dd,
+            ft.Row([lecture_dd, limit_tf], wrap=True,
+                   vertical_alignment=ft.CrossAxisAlignment.START),
+            unwatched_chk,
             ft.Row([ft.Text("모드:", size=13, weight=ft.FontWeight.BOLD),
                     mode_group],
                    vertical_alignment=ft.CrossAxisAlignment.START),
             redo_chk,
             sleep_warn,
-            ft.Row([gen_btn, cancel_btn, open_btn]),
+            ft.Row([gen_btn, exam_btn, cancel_btn, open_btn], wrap=True),
             progress,
             ft.Row([status_badge, elapsed_text], spacing=12),
             ft.Row([ft.Text("진행 로그", size=13, weight=ft.FontWeight.BOLD),
-                    ft.Row([quiz_btn, view_log_btn])],
+                    ft.Row([status_btn, quiz_btn, view_log_btn])],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             log_panel,

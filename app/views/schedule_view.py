@@ -31,15 +31,22 @@ from app.views.run_view import (  # noqa: E402
     rows_for_course,
 )
 from runner import confirm_message, requires_confirm, watch_sleep_warning  # noqa: E402
+from ui_async import make_updater  # noqa: E402
 from schedule_win import (  # noqa: E402
     PROJECT_ROOT,
     create_task,
     delete_task,
+    end_task,
     is_disabled_status,
     list_tasks,
     normalize_time,
+    parse_limit,
     set_task_enabled,
+    task_registered,
+    valid_limit,
     valid_time,
+    wake_timer_hint,
+    wake_timer_setting,
 )
 
 SNAPSHOT_PATH = PROJECT_ROOT / "lectures.json"
@@ -59,12 +66,13 @@ def _python_exe() -> str:
     return sys.executable or "python"
 
 
-def build_task_row(task: dict, on_toggle, on_delete) -> ft.Control:
-    """등록된 예약 한 줄: 이름·다음 실행·상태 + **[끄기/켜기]·[삭제]** 버튼.
+def build_task_row(task: dict, on_toggle, on_delete, on_stop=None) -> ft.Control:
+    """등록된 예약 한 줄: 이름·다음 실행·상태 + **[지금 멈추기]·[끄기/켜기]·[삭제]**.
 
     page 없이도 만들어지는 순수 표현 함수(단위테스트 대상). 콜백:
       on_toggle(name, enable) : 끄기/켜기 클릭(enable=True 면 다시 켜기)
       on_delete(name)         : 삭제 클릭
+      on_stop(name)           : **지금 돌고 있는 실행**을 중단(끄기와 다름)
     상태가 '사용 안 함'이면 회색·"(꺼짐)" 표시하고 버튼은 '켜기'로 바뀐다.
     """
     name = task.get("name", "")
@@ -79,6 +87,20 @@ def build_task_row(task: dict, on_toggle, on_delete) -> ft.Control:
         + ("  (꺼짐)" if disabled else ""),
         size=11,
         color=ft.Colors.ORANGE if disabled else ft.Colors.GREY)
+    buttons = []
+    if on_stop is not None:
+        buttons.append(ft.OutlinedButton(
+            "지금 멈추기", icon=ft.Icons.STOP_CIRCLE_OUTLINED,
+            tooltip="지금 돌고 있는 실행을 즉시 중단합니다"
+                    "('끄기'는 다음 실행만 막습니다)",
+            on_click=lambda e: on_stop(name)))
+    buttons += [
+        ft.OutlinedButton(toggle_label, icon=toggle_icon, tooltip=toggle_tip,
+                          on_click=lambda e: on_toggle(name, disabled)),
+        ft.OutlinedButton("삭제", icon=ft.Icons.DELETE_OUTLINE,
+                          tooltip="이 예약을 완전히 삭제",
+                          on_click=lambda e: on_delete(name)),
+    ]
     return ft.Row(
         [
             ft.Icon(ft.Icons.SCHEDULE, size=18,
@@ -88,13 +110,10 @@ def build_task_row(task: dict, on_toggle, on_delete) -> ft.Control:
                         selectable=True),
                 sub,
             ], spacing=1, expand=True),
-            ft.OutlinedButton(toggle_label, icon=toggle_icon, tooltip=toggle_tip,
-                              on_click=lambda e: on_toggle(name, disabled)),
-            ft.OutlinedButton("삭제", icon=ft.Icons.DELETE_OUTLINE,
-                              tooltip="이 예약을 완전히 삭제",
-                              on_click=lambda e: on_delete(name)),
+            *buttons,
         ],
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        wrap=True,
     )
 
 
@@ -113,6 +132,11 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         label="미이수만 처리 (과목을 안 고르면 전체 미이수 대상)", value=True)
     time_tf = ft.TextField(label="실행 시각 (HH:MM · 24시간)", value="02:00",
                            width=200)
+    # Flet 0.85 의 TextField 는 helper_text 가 아니라 **helper**(컨트롤)를 받는다
+    limit_tf = ft.TextField(
+        label="한 번에 최대 (강)", value="3", width=170,
+        helper=ft.Text("비우면 대상 전부", size=11),
+        keyboard_type=ft.KeyboardType.NUMBER)
     freq_group = ft.RadioGroup(
         value=_FREQ_DAILY,
         content=ft.Row([
@@ -123,11 +147,21 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     highest_cb = ft.Checkbox(
         label="최고 권한으로 실행 (앱을 '관리자 권한으로 실행'한 경우에만)",
         value=False)
+    wake_cb = ft.Checkbox(
+        label="절전 중이면 PC를 깨워서 실행 (권장 — 안 켜면 다음에 PC를 켤 때 실행)",
+        value=False)
+    wake_note = ft.Text("", size=11, color=ft.Colors.ORANGE, visible=False,
+                        selectable=True)
     guide_note = ft.Text(
-        "※ 예약은 현재 Windows 사용자 계정으로 실행됩니다. 지정 시각에 PC가 "
-        "켜져 있고 로그인되어 있어야 하며(절전 금지), 같은 조건의 예약을 다시 "
-        "추가하면 기존 예약을 덮어씁니다. 일반 권한이면 '최고 권한'은 자동으로 "
-        "꺼져 등록됩니다.", size=11, color=ft.Colors.GREY)
+        "※ 예약은 현재 Windows 사용자 계정으로 실행됩니다. 지정 시각에 PC가 꺼져 "
+        "있으면 실행되지 않고, 절전 중이면 '깨워서 실행'을 켠 경우에만 실행됩니다"
+        "(안 켜면 다음에 PC를 켤 때 밀린 예약이 실행됨). '한 번에 최대'를 비우면 "
+        "대상 강의를 전부 처리해 한 번 실행이 여러 시간 이어질 수 있습니다 — "
+        "남은 강의는 다음 실행에서 이어서 처리되니 3강 안팎을 권합니다. "
+        "돌고 있는 것을 세우려면 아래 목록의 [지금 멈추기]를 쓰세요"
+        "('끄기'는 다음 실행만 막습니다). 같은 조건의 예약을 다시 추가하면 기존 "
+        "예약을 덮어씁니다. 일반 권한이면 '최고 권한'은 자동으로 꺼져 등록됩니다.",
+        size=11, color=ft.Colors.GREY)
     add_btn = ft.FilledButton("예약 추가", icon=ft.Icons.ALARM_ADD)
     refresh_btn = ft.OutlinedButton("목록 새로고침", icon=ft.Icons.REFRESH)
     status = ft.Text("", size=13)
@@ -135,12 +169,9 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                          visible=False)
     table = ft.Column([], spacing=6)
 
-    def _safe_update():
-        if page is not None:
-            try:
-                page.update()
-            except Exception:
-                pass
+    # 예약 등록은 워커 스레드에서 돌아 결과 문구도 거기서 온다 → 루프를 깨우는
+    # 통로로 갱신해야 즉시 보인다(ui_async 모듈 설명 참고).
+    _safe_update = make_updater(page)
 
     def set_status(text, color=None):
         status.value = text
@@ -179,14 +210,25 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         def _on_toggle(n, enable):
             res = set_task_enabled(n, enable)
             if res.get("ok"):
-                set_status(("다시 켬: " if enable else "잠시 끔: ") + n,
+                set_status(("다시 켬: " if enable else
+                            "잠시 끔(다음 실행부터 · 지금 도는 것은 계속됨): ") + n,
                            ft.Colors.GREEN)
             else:
                 set_status(f"변경 실패: {n} — {res.get('stderr', '')[:120]}",
                            ft.Colors.RED)
             refresh_table()
 
-        return build_task_row(task, _on_toggle, _on_delete)
+        def _on_stop(n):
+            res = end_task(n)
+            if res.get("ok"):
+                set_status(f"실행 중단됨 ⏹  {n}", ft.Colors.GREEN)
+            else:
+                set_status(f"멈출 실행이 없습니다(또는 중단 실패): {n} — "
+                           f"{(res.get('stderr') or '').strip()[:120]}",
+                           ft.Colors.ORANGE)
+            refresh_table()
+
+        return build_task_row(task, _on_toggle, _on_delete, on_stop=_on_stop)
 
     def refresh_table():
         if page is None:        # 오프라인 테스트: schtasks 조회 생략
@@ -214,13 +256,30 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                     normalize_time(time_tf.value),
                     course=course, seq=seq, unwatched=unwatched,
                     freq=freq_group.value, highest=bool(highest_cb.value),
+                    wake=bool(wake_cb.value),
+                    limit=parse_limit(limit_tf.value),
                 )
             except Exception as ex:  # noqa: BLE001
                 set_status(f"등록 실패: {str(ex)[:140]}", ft.Colors.RED)
                 return
             if res.get("ok"):
+                # schtasks 가 0 을 줘도 목록에 정말 올라왔는지 확인한다.
+                # (실측: 작업이 하나도 등록되지 않았는데 사용자는 등록된 줄 알고
+                #  새벽 실행을 기다린 사례가 있었다 → 등록 여부를 눈으로 못 믿는다.)
+                if not task_registered(res.get("name")):
+                    set_status(f"등록 실패 ❌  {res.get('name')} — schtasks 는 "
+                               "성공을 알렸지만 작업 목록에 없습니다. "
+                               "'목록 새로고침' 후에도 없으면 관리자 권한으로 "
+                               "앱을 실행해 다시 시도하세요.", ft.Colors.RED)
+                    refresh_table()
+                    return
                 extra = ("  (관리자 권한이 아니어서 '최고 권한'은 빼고 등록)"
                          if res.get("downgraded") else "")
+                extra += ("  · 절전 중이면 PC를 깨워 실행" if res.get("wake")
+                          else "  · 절전 중이면 다음에 PC를 켤 때 실행")
+                lim = parse_limit(limit_tf.value)
+                extra += (f"  · 한 번에 {lim}강까지" if lim
+                          else "  · 대상 전부(오래 걸릴 수 있음)")
                 set_status(f"예약 등록됨 ✅  {res.get('name')}  "
                            f"({freq_group.value} {normalize_time(time_tf.value)})"
                            f"{extra}", ft.Colors.GREEN)
@@ -242,6 +301,10 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     def on_add(_):
         if not valid_time(time_tf.value):
             set_status("시각 형식이 올바르지 않습니다 (예: 02:00).", ft.Colors.RED)
+            return
+        if not valid_limit(limit_tf.value):
+            set_status("'한 번에 최대'는 1 이상의 숫자이거나 비워두세요.",
+                       ft.Colors.RED)
             return
         mode = mode_dd.value
         course = course_dd.value or None
@@ -276,12 +339,32 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         sleep_note.visible = (mode_dd.value in (MODE_WATCH, MODE_FULL))
         _safe_update()
 
+    def on_wake_change(_):
+        """'깨워서 실행'을 켜면 Windows 전원 정책을 **읽어** 실제로 먹히는지 확인.
+
+        작업 XML 의 WakeToRun 만 켜도 '절전 모드 해제 타이머 허용'이 꺼져 있으면
+        PC는 안 깨어난다(조용히 건너뜀) → 미리 알려준다. 전원 설정 변경은
+        사용자가 직접 해야 하므로 명령만 보여준다.
+        """
+        if not wake_cb.value:
+            wake_note.visible = False
+            _safe_update()
+            return
+        try:
+            hint = wake_timer_hint(wake_timer_setting())
+        except Exception:  # noqa: BLE001 - powercfg 실패해도 예약은 막지 않는다
+            hint = ""
+        wake_note.value = hint
+        wake_note.visible = bool(hint)
+        _safe_update()
+
     def on_refresh(_):
         set_status("목록 새로고침 중…", ft.Colors.BLUE)
         refresh_table()
 
     add_btn.on_click = on_add
     mode_dd.on_select = on_mode_change
+    wake_cb.on_change = on_wake_change
     refresh_btn.on_click = on_refresh
 
     populate_courses()
@@ -307,9 +390,13 @@ def build_schedule_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             mode_dd,
             ft.Row([course_dd, lecture_dd], wrap=True),
             unwatched_cb,
-            ft.Row([time_tf, ft.Text("반복:", size=13,
-                                     weight=ft.FontWeight.BOLD), freq_group],
+            ft.Row([time_tf, limit_tf,
+                    ft.Text("반복:", size=13, weight=ft.FontWeight.BOLD),
+                    freq_group],
+                   wrap=True,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            wake_cb,
+            wake_note,
             highest_cb,
             guide_note,
             sleep_note,
