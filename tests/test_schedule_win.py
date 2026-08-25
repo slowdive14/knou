@@ -126,8 +126,21 @@ def test_build_vbs_launcher_runs_hidden():
     vbs = build_vbs_launcher(r"C:\proj\schedule_scripts\run_summary.bat")
     assert "WScript.Shell" in vbs
     assert ".Run" in vbs
-    assert ", 0, False" in vbs               # 0 = 창 숨김(SW_HIDE)
+    assert ", 0, True" in vbs                # 0 = 창 숨김(SW_HIDE), True = 끝까지 대기
     assert "run_summary.bat" in vbs
+
+
+def test_build_vbs_launcher_waits_for_the_run():
+    """세 번째 인자(bWaitOnReturn)는 반드시 True 여야 한다.
+
+    실측 사건: False 였을 때 wscript 가 즉시 끝나 작업은 1초 만에 '완료'가 되고
+    파이썬만 떨어져 나가 계속 돌았다. 그 결과 '지금 멈추기'(schtasks /End)가
+    멈출 대상을 못 찾고, IgnoreNew 도 무력화돼 다음 날 실행이 겹쳤다.
+    """
+    vbs = build_vbs_launcher(r"C:\proj\run.bat")
+    assert ", 0, False" not in vbs
+    line = next(ln for ln in vbs.splitlines() if ln.startswith("sh.Run"))
+    assert line.rstrip().endswith("True")
 
 
 def test_build_run_command_uses_wscript_and_vbs():

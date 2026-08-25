@@ -17,9 +17,13 @@
   - build_schtasks_query_args()           → schtasks /Query argv(CSV·헤더없음)
   - parse_schtasks_list(csv)              → [{name, next_run, status}] (우리 접두사만)
   - is_disabled_status(status)            → 상태가 '사용 안 함'(비활성)인지
+  - parse_wake_timer_setting(text)        → powercfg 출력 → {'ac': n, 'dc': n}
+  - wake_timers_allowed(setting, …)       → 절전 깨우기가 실제로 먹히는 상태인지
+  - wake_timer_hint(setting)              → 안 먹힐 때 사용자에게 보여줄 안내문
 
 IO(수동 검증):
   - write_run_script(...)                 → .bat·.vbs 파일 저장(UTF-8)
+  - wake_timer_setting()                  → powercfg 로 현재 전원 정책 **읽기만**
   - create_task / list_tasks / delete_task→ schtasks.exe 호출
   - set_task_enabled(name, enabled)       → 예약 사용/중지 전환
 
@@ -67,6 +71,20 @@ def normalize_time(hhmm: str) -> str:
     if not m:
         return hhmm
     return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def valid_limit(text) -> bool:
+    """'한 번에 최대 N강' 입력이 쓸 수 있는 값인가(빈칸=제한 없음도 허용)."""
+    s = str(text or "").strip()
+    if not s:
+        return True
+    return s.isdigit() and int(s) >= 1
+
+
+def parse_limit(text) -> int | None:
+    """'3' → 3 / 빈칸·잘못된 값 → None(제한 없음)."""
+    s = str(text or "").strip()
+    return int(s) if (s.isdigit() and int(s) >= 1) else None
 
 
 def next_occurrence(hhmm: str, now: datetime | None = None) -> str:
@@ -154,18 +172,28 @@ def build_run_script(py, project_dir, mode, course=None, seq=None,
     )
 
 
-def build_vbs_launcher(bat_path) -> str:
+def build_vbs_launcher(bat_path, wait: bool = True) -> str:
     """예약 .bat 를 **창 없이(hidden)** 실행하는 VBScript 내용(순수).
 
     작업 스케줄러가 .bat 를 /TR 로 직접 돌리면 콘솔 창이 잠깐 떴다 사라진다.
-    wscript 로 이 VBS 를 돌리면 `Run(.., 0, False)` 의 0(=SW_HIDE) 덕분에 창이
+    wscript 로 이 VBS 를 돌리면 `Run(.., 0, …)` 의 0(=SW_HIDE) 덕분에 창이
     전혀 보이지 않는다. 실행 결과(로그)는 main.py 가 logs/run_*.log 에 남기므로
     앱 '실행' 탭의 '최근 실행 로그 보기'로 확인한다.
+
+    ⚠️ 세 번째 인자(bWaitOnReturn)는 **True 여야 한다**. False 로 두면 wscript 가
+    곧바로 끝나 **작업은 1초 만에 '완료'** 로 바뀌고 파이썬만 떨어져 나가 계속
+    돈다. 그러면:
+      - `schtasks /End`(지금 멈추기)가 멈출 대상을 못 찾고,
+      - MultipleInstancesPolicy(IgnoreNew)도 소용없어 다음 날 예약이 **겹쳐서**
+        또 실행되며,
+      - 앱의 '끄기'(다음 실행만 막음)로도 도는 것을 세울 수 없다.
+    실제로 그 증상이 보고되어 True 로 바로잡았다.
     """
     p = str(bat_path).replace('"', "")
+    flag = "True" if wait else "False"
     return (
         'Set sh = CreateObject("WScript.Shell")\r\n'
-        f'sh.Run Chr(34) & "{p}" & Chr(34), 0, False\r\n'
+        f'sh.Run Chr(34) & "{p}" & Chr(34), 0, {flag}\r\n'
     )
 
 
@@ -294,6 +322,14 @@ def build_schtasks_create_args(task_name, time_hhmm, run_command,
     return argv
 
 
+def build_schtasks_end_args(task_name) -> list[str]:
+    """`schtasks /End /TN <name>` argv — **지금 돌고 있는** 실행을 중단한다.
+
+    /Change /DISABLE(끄기)는 '다음 실행'만 막을 뿐 이미 도는 것은 못 세운다.
+    """
+    return ["schtasks", "/End", "/TN", str(task_name)]
+
+
 def build_schtasks_change_args(task_name, enabled: bool) -> list[str]:
     """`schtasks /Change /TN <name> /ENABLE|/DISABLE` argv(예약 사용/중지)."""
     flag = "/ENABLE" if enabled else "/DISABLE"
@@ -304,6 +340,91 @@ def is_disabled_status(status: str) -> bool:
     """schtasks 상태 문자열이 '사용 안 함'(비활성)인지 판단(영문 Disabled 도 인식)."""
     s = (status or "")
     return ("사용 안" in s) or ("disabl" in s.lower())
+
+
+# ---------------------------------------------------------------------------
+# 절전 깨우기(wake timer) — 예약 시각에 PC가 자고 있어도 깨워서 실행할 수 있는가
+#
+# 작업 XML 의 <WakeToRun>true</WakeToRun> 만으로는 부족하다. Windows 전원 정책의
+# '절전 모드 해제 타이머 허용'(RTCWAKE)이 **사용**(1)이어야 실제로 깨어난다.
+# 기본값이 '사용 안 함'(0)이거나 '중요 절전 모드 해제 타이머만'(2)인 PC가 많아,
+# 그 경우 예약은 조용히 건너뛰어진다 → 미리 읽어서 안내한다.
+#
+# ⚠️ 여기서는 **읽기만** 한다. 전원 정책 변경은 시스템 설정 변경이라 앱이 대신
+#    하지 않고, 사용자가 직접 실행할 명령(wake_timer_hint)을 보여준다.
+# ---------------------------------------------------------------------------
+_SUB_SLEEP = "238C9FA8-0AAD-41ED-83F4-97BE242C8F20"   # 하위 그룹: 절전
+_RTCWAKE = "BD3B718A-0680-4D9D-8AB2-E1D2B4AC806D"     # 절전 모드 해제 타이머 허용
+
+WAKE_OFF = 0            # 사용 안 함 — 예약이 PC를 못 깨움
+WAKE_ON = 1             # 사용 — 예약이 PC를 깨움 (우리가 원하는 값)
+WAKE_IMPORTANT_ONLY = 2  # 중요 타이머만 — 일반 예약 작업은 여전히 못 깨움
+
+# "현재 AC 전원 설정 색인: 0x00000001" / "Current AC Power Setting Index: 0x…"
+_AC_IDX_RE = re.compile(r"^.*\bAC\b.*?(0x[0-9a-fA-F]+)\s*$", re.M)
+_DC_IDX_RE = re.compile(r"^.*\bDC\b.*?(0x[0-9a-fA-F]+)\s*$", re.M)
+
+
+def build_powercfg_query_args() -> list[str]:
+    """현재 전원 구성표의 '절전 모드 해제 타이머 허용' 값을 읽는 argv(읽기 전용)."""
+    return ["powercfg", "/query", "SCHEME_CURRENT", _SUB_SLEEP, _RTCWAKE]
+
+
+def build_powercfg_enable_commands() -> list[str]:
+    """사용자가 **직접** 실행할 활성화 명령(AC=콘센트, DC=배터리).
+
+    앱이 대신 실행하지 않는다 — 전원 정책은 시스템 설정이라 사용자 손으로 바꾼다.
+    """
+    return [
+        f"powercfg /SETACVALUEINDEX SCHEME_CURRENT {_SUB_SLEEP} {_RTCWAKE} 1",
+        f"powercfg /SETDCVALUEINDEX SCHEME_CURRENT {_SUB_SLEEP} {_RTCWAKE} 1",
+        "powercfg /SETACTIVE SCHEME_CURRENT",
+    ]
+
+
+def parse_wake_timer_setting(text: str) -> dict:
+    """powercfg 출력 → {'ac': 0|1|2|None, 'dc': …}. 못 읽으면 None.
+
+    한글/영문 Windows 모두에서 동작하도록 'AC'/'DC' 토큰과 16진 값만 본다
+    (설정 이름은 로케일마다 달라 신뢰하지 않는다).
+    """
+    out = {"ac": None, "dc": None}
+    if not text:
+        return out
+    for key, rx in (("ac", _AC_IDX_RE), ("dc", _DC_IDX_RE)):
+        m = rx.search(text)
+        if m:
+            try:
+                out[key] = int(m.group(1), 16)
+            except ValueError:
+                pass
+    return out
+
+
+def wake_timers_allowed(setting: dict, on_battery: bool = False) -> bool:
+    """이 PC에서 예약이 절전을 깨울 수 있는 상태인가(값이 '사용'=1 이어야 함).
+
+    값을 못 읽었으면(None) 막지 않는다 — 읽기 실패로 기능을 잠그지 않기 위해
+    낙관적으로 True 를 준다(안내문은 별도로 뜬다).
+    """
+    v = setting.get("dc" if on_battery else "ac")
+    return True if v is None else v == WAKE_ON
+
+
+def wake_timer_hint(setting: dict) -> str:
+    """절전 깨우기가 안 먹히는 상태면 안내문, 정상이면 빈 문자열."""
+    ac, dc = setting.get("ac"), setting.get("dc")
+    if ac is None and dc is None:
+        return ("전원 설정(절전 모드 해제 타이머)을 읽지 못했습니다 — "
+                "예약이 PC를 못 깨울 수도 있습니다.")
+    bad = [n for n, v in (("콘센트", ac), ("배터리", dc))
+           if v is not None and v != WAKE_ON]
+    if not bad:
+        return ""
+    return ("Windows 전원 설정의 '절전 모드 해제 타이머 허용'이 "
+            + "/".join(bad) + "에서 꺼져 있어 예약이 PC를 깨우지 못합니다. "
+            "관리자 PowerShell에서 아래를 실행한 뒤 다시 예약하세요:\n  "
+            + "\n  ".join(build_powercfg_enable_commands()))
 
 
 def build_schtasks_delete_args(task_name) -> list[str]:
@@ -395,21 +516,47 @@ def _run_schtasks(argv: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+def wake_timer_setting() -> dict:
+    """현재 전원 정책의 '절전 모드 해제 타이머 허용' 값을 **읽어서** 반환.
+
+    powercfg 가 없거나 실패하면 {'ac': None, 'dc': None} — 읽기 실패로 기능을
+    막지 않는다. 값을 바꾸지는 않는다(시스템 설정 변경은 사용자 몫).
+    """
+    try:
+        proc = subprocess.run(
+            build_powercfg_query_args(), capture_output=True, text=True,
+            encoding=_console_encoding(), errors="replace",
+            creationflags=_NO_WINDOW)
+    except Exception:  # noqa: BLE001 - powercfg 부재/권한 등
+        return {"ac": None, "dc": None}
+    if proc.returncode != 0:
+        return {"ac": None, "dc": None}
+    return parse_wake_timer_setting(proc.stdout or "")
+
+
 def create_task(py, project_dir, mode, time_hhmm, course=None, seq=None,
                 unwatched: bool = False, freq: str = "DAILY",
-                highest: bool = False, scripts_dir=SCRIPTS_DIR) -> dict:
+                highest: bool = False, wake: bool = False,
+                limit: int | None = None, scripts_dir=SCRIPTS_DIR) -> dict:
     """예약 1건 등록: .bat 생성 → schtasks /Create. 결과 dict 반환.
 
     최고권한(/RL HIGHEST)은 schtasks 가 **관리자 권한**으로 실행돼야만 등록되어,
     일반 사용자에선 '액세스 거부'가 난다. 이 경우 자동으로 **일반 권한으로 재시도**
     해 등록을 성사시키고(downgraded=True), 호출 측이 안내할 수 있게 한다.
 
-    반환: {ok, name, script, returncode, stdout, stderr, downgraded}.
+    limit=N 이면 **한 번에 최대 N강**만 처리하고 끝낸다(나머지는 다음 실행으로).
+    안 주면 대상 강의를 전부 돌아 12시간씩 이어지는 실행이 생길 수 있다.
+
+    wake=True 면 예약 시각에 PC가 자고 있어도 **깨워서** 실행한다(WakeToRun).
+    단, Windows 전원 정책의 '절전 모드 해제 타이머 허용'이 꺼져 있으면 깨어나지
+    않으므로 wake_timer_setting()/wake_timer_hint() 로 미리 확인해 안내한다.
+
+    반환: {ok, name, script, returncode, stdout, stderr, downgraded, wake}.
     """
     name = task_display_name(mode, course, seq)
     fname = script_filename(mode, course, seq)
     content = build_run_script(py, project_dir, mode, course=course,
-                               seq=seq, unwatched=unwatched)
+                               seq=seq, unwatched=unwatched, limit=limit)
     script_path = write_run_script(content, fname, scripts_dir)
     # 콘솔 창이 뜨지 않도록 .bat 을 감싸는 VBS 런처(같은 폴더, ASCII 파일명).
     vbs_name = Path(fname).with_suffix(".vbs").name
@@ -420,11 +567,11 @@ def create_task(py, project_dir, mode, time_hhmm, course=None, seq=None,
     xml_name = Path(fname).with_suffix(".xml").name
 
     # XML 정의로 등록 → 기본 schtasks 플래그로 못 켜는 안정성 설정(놓친 예약 보충·
-    # 배터리에서도 실행)을 적용한다. 노트북이 지정 시각에 자고 있어도 다음에 켤 때
-    # 실행된다.
+    # 배터리에서도 실행·절전 깨우기)을 적용한다. wake=False 여도 지정 시각에 자고
+    # 있었으면 다음에 켤 때 실행된다(StartWhenAvailable).
     def _create(use_highest):
         xml = build_task_xml(command, arguments, start_boundary,
-                             freq=freq, highest=use_highest)
+                             freq=freq, highest=use_highest, wake=bool(wake))
         xml_path = write_task_xml(xml, xml_name, scripts_dir)
         return _run_schtasks(build_schtasks_create_xml_args(name, xml_path))
 
@@ -440,7 +587,7 @@ def create_task(py, project_dir, mode, time_hhmm, course=None, seq=None,
             "script": str(script_path), "vbs": str(vbs_path),
             "returncode": proc.returncode,
             "stdout": proc.stdout, "stderr": proc.stderr,
-            "downgraded": downgraded}
+            "downgraded": downgraded, "wake": bool(wake)}
 
 
 def list_tasks() -> list[dict]:
@@ -451,9 +598,36 @@ def list_tasks() -> list[dict]:
     return parse_schtasks_list(proc.stdout or "")
 
 
+def task_registered(name: str) -> bool:
+    """그 이름의 예약이 **실제로** 작업 스케줄러에 올라와 있는지 확인.
+
+    등록 명령이 0 을 돌려줬다고 곧 등록된 것은 아니다(정책·권한으로 조용히
+    무산되는 경우가 있다) → 등록 직후 목록으로 되짚어 확인하는 용도.
+    """
+    if not name:
+        return False
+    try:
+        return any(t.get("name") == name for t in list_tasks())
+    except Exception:  # noqa: BLE001 - 조회 실패로 등록을 부정하지 않는다
+        return True
+
+
 def delete_task(name: str, scripts_dir=SCRIPTS_DIR) -> dict:
     """예약 삭제: schtasks /Delete. (생성한 .bat 은 남겨둬도 무해하므로 유지)"""
     proc = _run_schtasks(build_schtasks_delete_args(name))
+    return {"ok": proc.returncode == 0, "name": name,
+            "returncode": proc.returncode,
+            "stdout": proc.stdout, "stderr": proc.stderr}
+
+
+def end_task(name: str) -> dict:
+    """지금 실행 중인 예약을 즉시 중단(schtasks /End).
+
+    '끄기'(/DISABLE)와 다르다 — 끄기는 다음 실행만 막고, 이것은 **도는 것을
+    세운다**. 실행 중이 아니면 schtasks 가 실패를 돌려주는데, 그것도 그대로
+    전달해 호출 측이 '실행 중이 아님'으로 안내한다.
+    """
+    proc = _run_schtasks(build_schtasks_end_args(name))
     return {"ok": proc.returncode == 0, "name": name,
             "returncode": proc.returncode,
             "stdout": proc.stdout, "stderr": proc.stderr}
