@@ -63,7 +63,7 @@ def test_render_answer_hidden_by_default():
 def test_render_sidebar_lists_all_lectures():
     lecs = [_lec(seq=1), _lec(seq=2), _lec(seq=3)]
     html = render_quiz_html(lecs)
-    assert html.count('class="lec-item"') == 3
+    assert html.count('class="lec-item') == 3      # 첫 항목은 'lec-item active'
 
 
 def test_render_has_nav_and_reset_controls():
@@ -107,6 +107,23 @@ def test_render_empty_is_safe():
     html = render_quiz_html([])
     assert html.lstrip().startswith("<!DOCTYPE html>")
     assert "</html>" in html
+
+
+def test_render_first_lecture_visible_without_js():
+    # JS 가 안 돌아도 첫 강 문제가 보여야 한다(.lecture 는 기본 display:none).
+    html = render_quiz_html([_lec(seq=1, questions=[_q(question="첫강문제")]),
+                             _lec(seq=2)])
+    assert 'class="lecture active"' in html
+    assert html.count('class="lecture active"') == 1     # 첫 강만 활성
+    assert 'class="lec-item active"' in html
+
+
+def test_render_header_prefilled_without_js():
+    # 제목·문제수도 서버에서 채워 둔다(빈 헤더 방지).
+    html = render_quiz_html([_lec(seq=3, name="자료구조", course="파이썬",
+                                  questions=[_q("1"), _q("2")])])
+    assert '<div class="lec-title" id="lecTitle">파이썬 · 3강 · 자료구조</div>' in html
+    assert '>0 / 2<' in html and ">2문제 풀이<" in html
 
 
 def test_render_no_secrets():

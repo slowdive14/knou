@@ -11,6 +11,7 @@ __pycache__/
 
 # 진행상황 / 산출물
 state.json
+ui_prefs.json
 downloads/
 logs/
 lectures.json
