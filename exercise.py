@@ -90,6 +90,35 @@ def _exam_frame(popup):
     return None
 
 
+# 연습문제 박스가 늦게 붙는 차시가 있어 한 번만 보고 '없음'으로 단정하면 안 된다.
+# (실측: 2초 고정 대기 뒤 1회 확인 → '형성평가 없음(skip)' 으로 **완료 기록**되어
+#  그 차시는 다시 시도조차 안 되는 상태가 됐다.)
+EXAM_WAIT_MS = 15000      # 최대 대기
+EXAM_POLL_MS = 1000       # 확인 간격
+
+
+def wait_for_exam_frame(popup, timeout_ms: int = EXAM_WAIT_MS,
+                        poll_ms: int = EXAM_POLL_MS, finder=None):
+    """연습문제 프레임이 나타날 때까지 폴링하다 찾으면 반환(끝내 없으면 None).
+
+    finder 는 테스트용 주입점(기본 `_exam_frame`). 대기는 popup.wait_for_timeout
+    을 쓴다 — Playwright 가 그 동안 프레임 로딩을 계속 진행시키기 때문이다.
+    """
+    find = finder or _exam_frame
+    waited = 0
+    while True:
+        fr = find(popup)
+        if fr is not None:
+            return fr
+        if waited >= timeout_ms:
+            return None
+        try:
+            popup.wait_for_timeout(poll_ms)
+        except Exception:  # noqa: BLE001 - 창이 닫혔으면 더 기다릴 이유가 없다
+            return None
+        waited += poll_ms
+
+
 def scan_questions(frame):
     """연습문제 문항 목록 반환(읽기). list[dict] (없으면 [])."""
     try:

@@ -366,3 +366,60 @@ def test_plan_renormalize_no_duration_noop():
     md = "### x 🎬 [09:21:00]\n![[이산수학_13강_09-21-00.jpg]]\n"
     new_md, renames = _plan_renormalize(md, "이산수학", 13, None)
     assert new_md == md and renames == []
+
+
+# --- 클립 목록 대기(늦게 채워지는 플레이어) ---------------------------------
+# 실측: logs/run_20260819_152412.log 에서 '유효 클립 없음 → 덱 추출 실패'.
+# 한 번 읽고 비었다고 단정하지 않도록 폴링을 넣었고, 그 동작을 고정한다.
+from capture import (  # noqa: E402
+    CLIPS_POLL_MS,
+    CLIPS_WAIT_MS,
+    wait_for_clips,
+)
+
+
+class _ClipPopup:
+    def __init__(self, ready_at, raise_until=0):
+        self.ready_at = ready_at
+        self.raise_until = raise_until
+        self.calls = 0
+        self.waits = []
+
+    def read(self, _popup=None):
+        self.calls += 1
+        if self.calls <= self.raise_until:
+            raise RuntimeError("아직 로딩 중")
+        return [{"idx": 0}] if self.calls >= self.ready_at else []
+
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
+
+
+def test_wait_for_clips_returns_immediately_when_ready():
+    p = _ClipPopup(ready_at=1)
+    assert wait_for_clips(p, collector=p.read) == [{"idx": 0}]
+    assert p.waits == []
+
+
+def test_wait_for_clips_finds_late_clips():
+    p = _ClipPopup(ready_at=4)
+    assert wait_for_clips(p, collector=p.read) == [{"idx": 0}]
+    assert len(p.waits) == 3
+
+
+def test_wait_for_clips_empty_after_timeout():
+    p = _ClipPopup(ready_at=999)
+    assert wait_for_clips(p, timeout_ms=3000, poll_ms=1000,
+                          collector=p.read) == []
+    assert p.waits == [1000, 1000, 1000]
+
+
+def test_wait_for_clips_tolerates_evaluate_errors():
+    # 로딩 중 evaluate 가 터져도 포기하지 않는다
+    p = _ClipPopup(ready_at=3, raise_until=2)
+    assert wait_for_clips(p, collector=p.read) == [{"idx": 0}]
+
+
+def test_wait_for_clips_polls_more_than_once_by_default():
+    assert CLIPS_WAIT_MS >= 5000
+    assert 0 < CLIPS_POLL_MS <= CLIPS_WAIT_MS // 3

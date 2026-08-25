@@ -44,6 +44,15 @@ MODES: dict[str, list[str]] = {
     "전체": ["watch", "exam", "download", "summarize", "capture"],
 }
 
+# 단계 사이의 **진짜** 의존관계 — 앞 단계의 산출물이 있어야 돌아가는 것만 적는다.
+# 한 단계가 실패해도 여기에 걸리지 않는 단계는 계속 실행한다(실측 사례: 덱 추출이
+# 실패했다고 형성평가·요약까지 통째로 날아가면 안 된다).
+STAGE_DEPS: dict[str, list[str]] = {
+    "summarize": ["download"],    # 요약은 download 가 받은 mp3/pdf 를 읽는다
+    "capture": ["summarize"],     # 덱 매칭은 요약 노트에 마커·이미지를 심는다
+    "extra": ["summarize"],       # 두 번째 영상 노트도 요약 파이프라인을 탄다
+}
+
 
 # ---------------------------------------------------------------------------
 # 순수 로직 (단위테스트 대상)
@@ -53,6 +62,28 @@ def stages_for_mode(mode: str) -> list[str]:
     if mode not in MODES:
         raise ValueError(f"알 수 없는 모드: {mode!r} (가능: {list(MODES)})")
     return list(MODES[mode])
+
+
+def dependent_stages(failed: str, stages, deps=None) -> set[str]:
+    """`failed` 단계가 실패했을 때 **실행하면 안 되는** 후속 단계들(전이 포함).
+
+    산출물이 없어 어차피 못 도는 단계만 골라낸다. 나머지 단계는 실패와 무관하게
+    계속 실행한다 — 예: capture(덱 추출) 실패는 exam·download·summarize 를
+    막지 않고, exam 실패는 노트 생성을 막지 않는다.
+    """
+    deps = STAGE_DEPS if deps is None else deps
+    blocked: set[str] = set()
+    changed = True
+    while changed:                     # 전이 의존(요약→덱→…)까지 닫아둔다
+        changed = False
+        for stage in stages:
+            if stage in blocked:
+                continue
+            need = deps.get(stage) or []
+            if failed in need or blocked.intersection(need):
+                blocked.add(stage)
+                changed = True
+    return blocked
 
 
 def _seq_of(lec) -> int:
@@ -219,7 +250,8 @@ def _stage_exam(c: _Ctx, course: str, lec) -> dict:
     무관). 플레이어를 열어 `.exam-content-box` 의 문항을 모두 응답 등록하고 닫는다.
     연습문제가 없는 차시는 skip(ok)으로 처리한다.
     """
-    from exercise import _exam_frame, solve_exercises
+    from exercise import (EXAM_WAIT_MS, _exam_frame, solve_exercises,
+                          wait_for_exam_frame)
     from watch import open_player
 
     popup = open_player(c.page, lec)
@@ -239,9 +271,10 @@ def _stage_exam(c: _Ctx, course: str, lec) -> dict:
     except Exception:
         pass
     try:
-        popup.wait_for_timeout(2000)  # 연습문제 박스 로딩 대기
-        if _exam_frame(popup) is None:
-            c.logger.info("    형성평가 없음(skip)")
+        # 연습문제 박스가 뜰 때까지 기다린다(늦게 붙는 차시가 있어 폴링).
+        if wait_for_exam_frame(popup) is None:
+            c.logger.info("    형성평가 없음(skip · %d초 대기 후)",
+                          EXAM_WAIT_MS // 1000)
             return {"ok": True, "skipped": True, "detail": "연습문제 없음"}
         res = solve_exercises(popup, dialog_msgs=dialog_msgs,
                               on_event=lambda m: c.logger.info("    %s", m))
@@ -267,6 +300,52 @@ def _stage_exam(c: _Ctx, course: str, lec) -> dict:
             pass
 
 
+def _mp3_from_video(c: _Ctx, course: str, lec) -> bool:
+    """LMS 에 MP3 링크가 없는 과목: **영상에서 오디오만** 뽑아 MP3 를 만든다.
+
+    'AI네이티브가되기위한기초소양' 처럼 strVidoAudoUrl 이 비어 있는 과목이 있다
+    (영상·강의록은 멀쩡히 있다). 두 번째 영상 노트에서 쓰던 HLS→ffmpeg 경로를
+    그대로 재사용해 같은 이름의 MP3 를 만들어 두면, 이후 요약 단계는 평소와
+    똑같이 돈다(노트 품질도 다른 과목과 같아진다).
+
+    ⚠️ hlsUrl 에는 시한부 JWT 가 들어 있어 로그에 남기지 않는다(길이만 기록).
+    """
+    from capture import probe_duration, wait_for_clips
+    from download import build_filename
+    from extra_video import extract_audio
+    from watch import open_player
+
+    out = c.downloads_dir / build_filename(course, lec.seq, "mp3")
+    if out.exists() and out.stat().st_size > 0:
+        return True
+    popup = open_player(c.page, lec)
+    try:
+        clips = wait_for_clips(popup)
+        for cl in clips:
+            if cl.get("duration") is None:
+                cl["duration"] = probe_duration(cl.get("hlsUrl") or "")
+        valid = [cl for cl in clips
+                 if isinstance(cl.get("duration"), (int, float))
+                 and cl["duration"] > 0]
+        if not valid:
+            c.logger.info("    영상 클립도 없어 MP3 를 만들 수 없음")
+            return False
+        main = max(valid, key=lambda x: x["duration"])
+        c.logger.info("    MP3 링크 없음 → 영상에서 오디오 추출(%.0f분, 몇 분 걸림)",
+                      main["duration"] / 60)
+        r = extract_audio(main.get("hlsUrl") or "", out)
+        if r.get("ok"):
+            c.logger.info("    오디오 추출 완료: %s", out.name)
+            return True
+        c.logger.warning("    오디오 추출 실패: %s", (r.get("error") or "")[:120])
+        return False
+    finally:
+        try:
+            popup.close()
+        except Exception:
+            pass
+
+
 def _stage_download(c: _Ctx, course: str, lec) -> dict:
     from download import download_lecture
     res = download_lecture(
@@ -275,9 +354,18 @@ def _stage_download(c: _Ctx, course: str, lec) -> dict:
         on_event=lambda m: c.logger.info("    %s", m))
     c.posts_cache[course] = res.get("posts")
     mp3 = res.get("mp3") or {}
-    if not mp3.get("ok"):
-        return {"ok": False, "error": "MP3 다운로드 실패"}
-    return {"ok": True, "detail": {"pdf": bool((res.get("pdf") or {}).get("ok"))}}
+    pdf_ok = bool((res.get("pdf") or {}).get("ok"))
+    if mp3.get("ok"):
+        return {"ok": True, "detail": {"pdf": pdf_ok}}
+    # ① MP3 링크가 없거나 받기 실패 → 영상에서 오디오를 직접 뽑아 본다
+    if _mp3_from_video(c, course, lec):
+        return {"ok": True, "detail": {"pdf": pdf_ok, "mp3_from_video": True}}
+    # ② 그것도 안 되면 강의록만으로 요약한다 — 노트를 통째로 포기하지 않는다
+    if pdf_ok:
+        c.logger.info("    음성을 못 구함 → 강의록(PDF)만으로 요약 진행")
+        return {"ok": True, "detail": {"pdf": True, "audio": False},
+                "audio": False}
+    return {"ok": False, "error": "강의 음성·강의록을 모두 구하지 못함"}
 
 
 def _stage_summarize(c: _Ctx, course: str, lec) -> dict:
@@ -314,14 +402,41 @@ def _stage_capture(c: _Ctx, course: str, lec) -> dict:
     note = c.summary_dir / note_filename(course, lec.seq, lec.name)
     if not note.exists():
         return {"ok": False, "error": "요약 노트 없음(먼저 summarize)"}
-    return deck_capture_lecture(
+    clips: list = []          # 이 차시의 전체 클립(플레이어를 이미 여는 김에)
+    res = deck_capture_lecture(
         c.page, lec, course, lec.seq, lec.name,
         cfg=c.cfg, client=c.client, note_path=note,
+        on_event=lambda m: c.logger.info("    %s", m), out_clips=clips)
+    # 두 번째 영상 탐지 결과를 함께 돌려준다(실행 후 GUI 가 물어볼 근거).
+    # hlsUrl(토큰)은 담지 않는다 — clip_brief 로 idx/제목/길이만.
+    try:
+        from extra_video import clip_brief, pick_extra_clips
+        extras = pick_extra_clips(clips)
+        res["extra_videos"] = [clip_brief(x) for x in extras]
+        if extras:
+            c.logger.info("    두 번째 영상 %d개 감지(예습노트 별도 생성 가능)",
+                          len(extras))
+    except Exception as e:  # noqa: BLE001 - 탐지 실패가 캡처를 막지 않게
+        c.logger.info("    두 번째 영상 탐지 건너뜀: %s", str(e)[:80])
+    return res
+
+
+def _stage_extra(c: _Ctx, course: str, lec) -> dict:
+    """두 번째(이후) 영상 예습노트 — HLS 오디오 추출 → 요약 → 별도 노트 저장.
+
+    기본 모드에는 들어있지 않다. 실행이 끝난 뒤 사용자가 '만들기'를 고르면
+    `--stages extra` 로 이 단계만 따로 돈다(app/views/run_view.py).
+    """
+    from extra_video import make_extra_notes
+    return make_extra_notes(
+        c.page, lec, course, client=c.client,
+        downloads_dir=c.downloads_dir, out_dir=c.summary_dir,
         on_event=lambda m: c.logger.info("    %s", m))
 
 
 STAGE_FUNCS = {
     "watch": _stage_watch,
+    "extra": _stage_extra,
     "exam": _stage_exam,
     "download": _stage_download,
     "summarize": _stage_summarize,
@@ -330,7 +445,7 @@ STAGE_FUNCS = {
 
 
 def _needs_gemini(stages) -> bool:
-    return any(s in stages for s in ("summarize", "capture"))
+    return any(s in stages for s in ("summarize", "capture", "extra"))
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +521,12 @@ def run(mode: str, course: str | None = None, seq=None,
                 key = lecture_key(cname, lec.seq)
                 logger.info("── %s %d강 '%s'", cname, lec.seq, lec.name)
                 lec_failed = False
+                # 실패한 단계에 **의존하는** 단계만 건너뛴다(나머지는 계속 진행)
+                blocked: set[str] = set()
                 for stage in stages:
+                    if stage in blocked:
+                        logger.info("  · %s: 앞 단계 실패로 건너뜀", stage)
+                        continue
                     if not should_run_stage(state, key, stage, force):
                         logger.info("  · %s: 이미 완료 skip", stage)
                         continue
@@ -418,9 +538,14 @@ def run(mode: str, course: str | None = None, seq=None,
                         save_state(state_path, state)
                         logger.error("  ✗ %s 예외: %s", stage, str(e)[:160])
                         lec_failed = True
-                        break
+                        blocked |= dependent_stages(stage, stages)
+                        continue
                     mark_stage(state, key, stage, ok=r["ok"],
                                error=r.get("error"))
+                    if r.get("extra_videos") is not None:
+                        # 두 번째 영상 탐지 결과 보존(단계 기록과 별개 필드)
+                        rec = state.setdefault(key, {})
+                        rec["extra_videos"] = r["extra_videos"]
                     save_state(state_path, state)
                     if r["ok"]:
                         tag = "skip" if r.get("skipped") else "완료"
@@ -429,7 +554,7 @@ def run(mode: str, course: str | None = None, seq=None,
                         logger.warning("  ✗ %s 실패: %s", stage,
                                        r.get("error"))
                         lec_failed = True
-                        break
+                        blocked |= dependent_stages(stage, stages)
                 if lec_failed:
                     failed_lec += 1
                 else:

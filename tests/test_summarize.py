@@ -228,3 +228,43 @@ def test_save_summary_without_duration_unchanged(tmp_path):
     res = save_summary(md, tmp_path, "이산수학", 13, "정수론")
     saved = Path(res["md"]).read_text(encoding="utf-8")
     assert "[09:21:00]" in saved          # duration 없으면 교정 안 함
+
+
+# ---- 강의 음성이 없는 과목(강의록만) --------------------------------------
+# 실측: 'AI네이티브가되기위한기초소양' 은 LMS 에 MP3 링크(strVidoAudoUrl)가 비어
+# 있어 download 단계가 실패하고 노트가 아예 안 만들어졌다. 음성 없이 요약할 때
+# 모델이 없는 음성을 지어내지 않도록 지시문을 갈아끼운다.
+def test_no_audio_prompt_does_not_ask_for_audio():
+    p = build_prompt("AI네이티브", 1, "AI 기술 발전 동향", has_audio=False)
+    assert "강의 음성(MP3)" not in p
+    assert "강의록(PDF)" in p
+
+
+def test_no_audio_prompt_forbids_timestamp_markers():
+    # 🎬 마커는 덱 매칭이 실제 영상 위치로 쓰는 값이라, 근거 없이 생기면
+    # 이미지가 엉뚱한 곳에 붙는다
+    p = build_prompt("AI네이티브", 1, "AI 기술 발전 동향", has_audio=False)
+    assert "절대 넣지 마라" in p
+    assert "[HH:MM:SS]" in p          # '넣지 말라'는 문맥으로만 등장
+
+
+def test_no_audio_prompt_forbids_making_things_up():
+    p = build_prompt("AI네이티브", 1, "AI 기술 발전 동향", has_audio=False)
+    assert "지어내지" in p
+
+
+def test_audio_prompt_is_unchanged_by_default():
+    # 기본값은 예전 그대로여야 한다(다른 과목의 노트 품질이 바뀌면 안 됨)
+    assert build_prompt("이산수학", 1, "개요") == build_prompt(
+        "이산수학", 1, "개요", has_audio=True)
+
+
+def test_audio_prompt_still_requires_timestamps():
+    p = build_prompt("이산수학", 1, "개요", has_audio=True)
+    assert "🎬 [HH:MM:SS]" in p and "강의 음성(MP3)" in p
+
+
+def test_both_prompts_keep_the_same_title_line():
+    for has in (True, False):
+        p = build_prompt("자료구조", 3, "연결 리스트", has_audio=has)
+        assert "# 자료구조 3강 - 연결 리스트" in p

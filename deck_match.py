@@ -51,6 +51,7 @@ from capture import (
     collect_clips,
     orphan_captures,
     probe_duration,
+    wait_for_clips,
 )
 from download import sanitize
 from summarize import (
@@ -220,15 +221,21 @@ def scrub_empty_embeds(md: str, out_dir, thresh: float = DEFAULT_EMPTY_THRESH):
     return text, removed
 
 
-def _pick_main_clip(popup, on_event=lambda m: None) -> dict | None:
-    """플레이어 팝업에서 가장 긴(학습하기) 클립 1개 선택."""
-    clips = collect_clips(popup)
+def _pick_main_clip(popup, on_event=lambda m: None,
+                    out_clips: list | None = None) -> dict | None:
+    """플레이어 팝업에서 가장 긴(학습하기) 클립 1개 선택.
+
+    out_clips 를 주면 길이까지 잰 전체 클립 목록을 담아준다(두 번째 영상 탐지용).
+    """
+    clips = wait_for_clips(popup)   # 늦게 채워지는 플레이어 대응(폴링)
     for c in clips:
         c["duration"] = probe_duration(c.get("hlsUrl") or "")
     valid = [c for c in clips
              if isinstance(c.get("duration"), (int, float)) and c["duration"] > 0]
     if not valid:
         return None
+    if out_clips is not None:
+        out_clips.extend(clips)
     main = max(valid, key=lambda c: c["duration"])
     on_event(f"대상 클립 [{main.get('idx')}] {main.get('title')} "
              f"({main['duration']:.0f}s)")
@@ -237,12 +244,17 @@ def _pick_main_clip(popup, on_event=lambda m: None) -> dict | None:
 
 def build_deck_live(page, lec, frames_dir: Path, crop: str, thresh: int,
                     empty_thresh: float = DEFAULT_EMPTY_THRESH,
-                    on_event=lambda m: None) -> list[dict]:
-    """플레이어 열기→가장 긴 클립 HLS 추출→dedup→빈 표지 제외. 반환: 덱."""
+                    on_event=lambda m: None,
+                    out_clips: list | None = None) -> list[dict]:
+    """플레이어 열기→가장 긴 클립 HLS 추출→dedup→빈 표지 제외. 반환: 덱.
+
+    out_clips 를 주면 이 차시의 전체 클립 목록(길이 포함)을 담아준다 —
+    플레이어를 한 번 더 열지 않고 '두 번째 영상' 유무를 알아내기 위한 통로.
+    """
     from watch import open_player
     popup = open_player(page, lec)
     try:
-        main = _pick_main_clip(popup, on_event)
+        main = _pick_main_clip(popup, on_event, out_clips=out_clips)
         if not main:
             on_event("유효 클립 없음")
             return []
@@ -564,13 +576,16 @@ def deck_capture_lecture(page, lec, course: str, seq: int, name: str, *,
                          cfg, client, note_path: Path,
                          thresh: int = DEFAULT_THRESH, crop: str = DEFAULT_CROP,
                          apply: bool = True,
-                         on_event=lambda m: None) -> dict:
+                         on_event=lambda m: None,
+                         out_clips: list | None = None) -> dict:
     """영상→덱→개념매칭→노트 반영(기본 apply=True). main.py capture 단계용.
 
     미매칭 개념은 노트 원본을 유지한다(match_and_apply 기본 fill_unmatched=False).
+    out_clips 를 주면 이 차시의 전체 클립 목록을 담아준다(두 번째 영상 탐지용).
     """
     frames_dir = cfg.base_dir / f"frames_{seq}"
-    deck = build_deck_live(page, lec, frames_dir, crop, thresh, on_event=on_event)
+    deck = build_deck_live(page, lec, frames_dir, crop, thresh,
+                           on_event=on_event, out_clips=out_clips)
     if not deck:
         return {"ok": False, "error": "덱 추출 실패(클립/프레임 없음)"}
     summary = match_and_apply(

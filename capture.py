@@ -282,6 +282,38 @@ def collect_clips(popup) -> list[dict]:
     return json.loads(raw) if raw else []
 
 
+# 플레이어가 클립 목록(ifrmVODPlayer_data0..N)을 채우는 데 시간이 걸리는 차시가
+# 있다. 한 번만 읽고 비었다고 단정하면 '유효 클립 없음 → 덱 추출 실패' 가 된다
+# (실측: logs/run_20260819_152412.log 의 자료구조 2강).
+CLIPS_WAIT_MS = 10000
+CLIPS_POLL_MS = 1000
+
+
+def wait_for_clips(popup, timeout_ms: int = CLIPS_WAIT_MS,
+                   poll_ms: int = CLIPS_POLL_MS, collector=None) -> list[dict]:
+    """클립 목록이 채워질 때까지 폴링하다 반환(끝내 없으면 빈 리스트).
+
+    collector 는 테스트용 주입점(기본 `collect_clips`). 목록 읽기는 가벼운 JS
+    평가라 몇 번 더 시도해도 부담이 없다.
+    """
+    read = collector or collect_clips
+    waited = 0
+    while True:
+        try:
+            clips = read(popup)
+        except Exception:  # noqa: BLE001 - 아직 로딩 중이면 평가가 실패할 수 있다
+            clips = []
+        if clips:
+            return clips
+        if waited >= timeout_ms:
+            return []
+        try:
+            popup.wait_for_timeout(poll_ms)
+        except Exception:  # noqa: BLE001 - 창이 닫혔으면 더 기다릴 이유가 없다
+            return []
+        waited += poll_ms
+
+
 def resolve_clips(page, lec, with_duration: bool = True, on_event=None) -> list[dict]:
     """플레이어를 열어 클립 목록을 가져오고(옵션) 각 클립 길이를 ffprobe 로 측정.
 

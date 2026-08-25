@@ -171,8 +171,18 @@ def extract_timestamps(markdown: str) -> list[dict]:
     return out
 
 
-def build_prompt(subject: str, seq: int, name: str) -> str:
-    """Gemini에 보낼 한국어 '예습 학습 노트' 지시문."""
+def build_prompt(subject: str, seq: int, name: str,
+                 has_audio: bool = True) -> str:
+    """Gemini에 보낼 한국어 '예습 학습 노트' 지시문.
+
+    has_audio=False 는 MP3 를 못 구한 과목(LMS 에 음성 링크가 없고 영상에서도
+    추출 실패)용이다. 음성이 없는데 '음성을 분석하라'고 시키면 모델이 없는 것을
+    지어내고, 있지도 않은 `🎬 [HH:MM:SS]` 마커까지 만들어 낸다(그 마커는 덱 매칭이
+    실제 영상 위치로 쓰는 값이라 틀리면 이미지가 엉뚱한 곳에 붙는다) → 지시문에서
+    음성·타임스탬프 요구를 통째로 뺀다.
+    """
+    if not has_audio:
+        return _build_prompt_no_audio(subject, seq, name)
     return f"""너는 한국방송통신대학교 '{subject}' {seq}강 '{name}'의 학습 도우미다.
 첨부한 **강의 음성(MP3)**과 **강의록(PDF)**을 함께 분석해, 학습자가 이 노트만 읽어도
 **강의 전체 내용을 효율적으로 예습**할 수 있는 **한국어 마크다운 학습 노트**를 작성하라.
@@ -200,6 +210,40 @@ def build_prompt(subject: str, seq: int, name: str) -> str:
 7. 따옴표 사용을 절제하라. 일반 용어·개념어(예: 시스템 장애, 트랜잭션, 데이터베이스)에는
    작은따옴표('')를 두르지 말고 그냥 쓴다. 강조가 필요하면 **굵게**로 표시하고,
    작은따옴표는 꼭 필요한 경우(코드·명령어 식별자, 글자 그대로의 인용)에만 제한적으로 쓴다.
+8. 사족/머리말 없이 **마크다운 본문만** 출력하라(코드펜스로 감싸지 말 것)."""
+
+
+def _build_prompt_no_audio(subject: str, seq: int, name: str) -> str:
+    """강의록(PDF)만 있을 때의 지시문 — 음성·타임스탬프 요구를 뺀 판본."""
+    return f"""너는 한국방송통신대학교 '{subject}' {seq}강 '{name}'의 학습 도우미다.
+첨부한 **강의록(PDF)**을 분석해, 학습자가 이 노트만 읽어도 **강의 내용을 효율적으로
+예습**할 수 있는 **한국어 마크다운 학습 노트**를 작성하라.
+
+⚠️ 이 강의는 **강의 음성이 제공되지 않아 강의록만** 첨부되어 있다. 강의록에 없는
+내용을 지어내지 말고, 강사가 말했을 법한 내용을 상상해 쓰지 마라. 시간 위치를
+가리키는 마커(`🎬 [HH:MM:SS]`)도 **절대 넣지 마라**(근거가 없다).
+
+[대상 독자] 이제 막 CS(컴퓨터과학)를 시작한 **입문자**다. 어려운 용어·개념이 나오면
+**중학교 3학년도 이해할 수 있게** 쉬운 말로 풀어 설명하고, 이해를 돕는 직관·비유·배경지식을
+필요할 때 짧게 덧붙여라(군더더기는 금지). 목표는 '짧은 요약'이 아니라 '빠진 곳 없는 효율적 예습'이다.
+
+요구사항:
+1. 구조: `# {subject} {seq}강 - {name}` 제목으로 시작하고, 강의록 순서대로 `##` 대주제,
+   `###` 핵심 개념으로 나눈다. 강의록이 다룬 **중요한 내용·예시·결론을 빠짐없이** 포괄하라.
+2. 각 `###` 핵심 개념마다 아래를 담되, 초보자가 막힐 부분은 과감히 더 설명하라:
+   - **쉬운 정의**: 한 문장으로 핵심을 먼저 말하고, 이어서 입문자 눈높이로 풀어 설명.
+   - **왜 필요한가 / 어디에 쓰나**: 동기와 응용을 한두 줄로.
+   - **직관·비유·예시**: 이해를 돕는 비유나 구체 예시(필요할 때만).
+   - **헷갈리기 쉬운 점**: 있으면 짧게 짚어준다.
+   - 처음 나오는 전문용어는 `한국어(영문/약자)` 형태로 쓰고 뜻을 한 줄로 풀어준다.
+3. 각 `###` 핵심 개념 제목 바로 아래 독립된 한 줄에 강의록 페이지를 `(교재 p.N)` 로 적어라
+   (페이지를 특정할 수 없으면 그 줄을 생략한다). 시간 마커는 넣지 않는다.
+4. 강의록이 슬라이드라 설명이 짧으면, 슬라이드에 적힌 항목을 **풀어서** 설명하되
+   근거 없는 사실·수치·인용은 만들지 마라.
+5. 수식·기호는 KaTeX 인라인(`$...$`), 절차·알고리즘은 번호 목록, 비교는 표를 적절히 활용.
+6. 끝에 `## 한눈에 정리`로 이 강의의 핵심을 5~8개 bullet로 복습용 정리하고,
+   이어서 `## 예습 체크리스트`로 "강의를 보면 이걸 설명할 수 있어야 한다" 식 점검 질문 3~5개를 둔다.
+7. 따옴표 사용을 절제하라. 강조가 필요하면 **굵게**로 표시한다.
 8. 사족/머리말 없이 **마크다운 본문만** 출력하라(코드펜스로 감싸지 말 것)."""
 
 
@@ -292,9 +336,13 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
     contents = []
     if pdf_path and Path(pdf_path).exists():
         contents.append(upload_and_wait(client, pdf_path, on_event=on_event))
-    if mp3_path and Path(mp3_path).exists():
+    has_audio = bool(mp3_path and Path(mp3_path).exists())
+    if has_audio:
         contents.append(upload_and_wait(client, mp3_path, on_event=on_event))
-    contents.append(build_prompt(subject, seq, name))
+    else:
+        # 음성 없이 '음성을 분석하라'고 시키면 없는 내용·타임스탬프를 지어낸다
+        log("강의 음성 없음 → 강의록(PDF)만으로 요약(타임스탬프 마커 생략)")
+    contents.append(build_prompt(subject, seq, name, has_audio=has_audio))
 
     from google.genai import types
 

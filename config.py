@@ -54,7 +54,9 @@ def load_config(
     """
     if env is None:
         if use_dotenv:
-            load_dotenv(BASE_DIR / ".env")
+            # override=True: 앱이 켜져 있는 동안 '설정' 탭에서 .env 를 고쳐도
+            # 이전 값이 os.environ 에 남아 그대로 쓰이는 일이 없게 한다.
+            load_dotenv(BASE_DIR / ".env", override=True)
         src: Mapping[str, str] = os.environ
     else:
         src = env

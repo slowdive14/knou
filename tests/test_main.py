@@ -209,3 +209,39 @@ def test_filter_unwatched_missing_key_is_unwatched():
 def test_filter_unwatched_all_done_empty():
     pairs = [("이산수학", {"seq": 1, "video_done": True})]
     assert filter_unwatched(pairs) == []
+
+
+# ---- extra 단계(회차에 영상 2개) -------------------------------------------
+def test_extra_stage_is_registered_but_not_in_normal_modes():
+    # 실행 뒤 사용자가 고를 때만 도는 단계 → 기본 모드에는 없어야 한다
+    from main import STAGE_FUNCS
+    assert "extra" in STAGE_FUNCS
+    for mode in ("이수", "요약", "전체"):
+        assert "extra" not in stages_for_mode(mode)
+
+
+def test_extra_stage_needs_gemini():
+    from main import _needs_gemini
+    assert _needs_gemini(["extra"]) is True
+    assert _needs_gemini(["watch"]) is False
+
+
+def test_extra_stage_records_and_skips_like_other_stages():
+    # --stages extra 재실행 시 이미 성공한 차시는 건너뛴다
+    from main import mark_stage, should_run_stage
+    st = {}
+    key = lecture_key("자료구조", 1)
+    assert should_run_stage(st, key, "extra") is True
+    mark_stage(st, key, "extra", ok=True)
+    assert should_run_stage(st, key, "extra") is False
+    assert should_run_stage(st, key, "extra", force=True) is True
+
+
+def test_extra_videos_field_survives_stage_marking():
+    # 탐지 기록(extra_videos)은 단계 기록과 별개 필드 → 서로 지우지 않는다
+    from main import mark_stage
+    st = {lecture_key("자료구조", 1): {"extra_videos": [{"idx": 1}]}}
+    mark_stage(st, lecture_key("자료구조", 1), "capture", ok=True)
+    rec = st[lecture_key("자료구조", 1)]
+    assert rec["extra_videos"] == [{"idx": 1}]
+    assert rec["capture"]["ok"] is True
