@@ -23,6 +23,8 @@
 from __future__ import annotations
 
 import subprocess
+
+from proc_util import run_hidden
 import sys
 from pathlib import Path
 
@@ -182,7 +184,7 @@ def ensure_chromium(p) -> None:
     if exe.exists():
         return
     print(f"⚙️  Chromium이 없습니다 ({exe}). 설치를 시작합니다...")
-    subprocess.run(
+    run_hidden(
         [sys.executable, "-m", "playwright", "install", "chromium"],
         check=True,
     )

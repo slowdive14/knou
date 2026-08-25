@@ -29,6 +29,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from proc_util import run_hidden
 from download import sanitize
 from summarize import (
     DEFAULT_MODEL,
@@ -265,7 +266,7 @@ _COLLECT_JS = """
 def probe_duration(url: str, timeout: float = 120.0):
     """ffprobe 로 스트림 길이(초) 측정. 실패 시 None."""
     try:
-        r = subprocess.run(
+        r = run_hidden(
             [FFPROBE, "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(url)],
             capture_output=True, text=True, timeout=timeout,
@@ -355,7 +356,7 @@ def capture_frame(url: str, seconds: int, out_path, quality: int = 2,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = build_ffmpeg_cmd(url, seconds, out_path, quality)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = run_hidden(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return {"ok": False, "seconds": seconds, "path": str(out_path),
                 "error": str(e)[:120]}

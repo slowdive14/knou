@@ -53,6 +53,7 @@ from capture import (
     probe_duration,
     wait_for_clips,
 )
+from proc_util import run_hidden
 from download import sanitize
 from summarize import (
     _TS_RE,
@@ -116,7 +117,7 @@ def extract_frames(url: str, frames_dir: Path, crop: str,
         str(frames_dir / "f_%06d.jpg"),
     ]
     t0 = time.time()
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    r = run_hidden(cmd, capture_output=True, text=True, timeout=timeout)
     dt = time.time() - t0
     n = len(list(frames_dir.glob("f_*.jpg")))
     on_event(f"프레임 추출: {n}장 ({dt:.0f}s, rc={r.returncode})")

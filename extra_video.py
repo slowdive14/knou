@@ -24,6 +24,8 @@ IO(수동 검증):
 from __future__ import annotations
 
 import subprocess
+
+from proc_util import run_hidden
 from pathlib import Path
 
 from capture import FFMPEG, probe_duration
@@ -149,7 +151,7 @@ def extract_audio(url: str, out_path, timeout: float = 3600.0,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = build_audio_cmd(url, out_path, bitrate)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = run_hidden(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception as e:  # noqa: BLE001 - ffmpeg 부재/타임아웃 모두 실패로
         return {"ok": False, "path": str(out_path), "error": str(e)[:160]}
     ok = (r.returncode == 0) and out_path.exists() and out_path.stat().st_size > 0

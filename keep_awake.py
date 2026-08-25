@@ -17,6 +17,8 @@ main.py(백엔드)도 손대지 않는다 — 여기서 하위 프로세스로 �
 from __future__ import annotations
 
 import subprocess
+
+from proc_util import run_hidden
 import sys
 
 # SetThreadExecutionState 플래그
@@ -70,7 +72,7 @@ def run(args: list[str]) -> int:
         return 2
     begin_keep_awake()
     try:
-        return subprocess.run(build_child_command(args)).returncode
+        return run_hidden(build_child_command(args)).returncode
     finally:
         end_keep_awake()
 
