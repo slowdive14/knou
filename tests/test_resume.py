@@ -111,3 +111,63 @@ def test_force_still_redoes_everything():
     st = _state(7, watch=True, summarize=False)
     key = lecture_key("과목", 7)
     assert should_run_stage(st, key, "watch", force=True) is True
+
+
+# --- 이어서 할 때의 처리 순서 -----------------------------------------------
+# 실측 불편: 2강(이미지만 없음)과 7강(노트부터 없음)이 함께 대기하는데 차시 순이라
+# 2강이 먼저 잡혔다. 한 번에 1강만 도는 설정에서는 정작 급한 7강 노트가 밀린다.
+from main import first_missing_stage, order_todo  # noqa: E402
+
+
+def _pairs(*seqs):
+    return [("과목", _lec(s, True)) for s in seqs]
+
+
+def _mixed_state():
+    st = {}
+    st.update(_state(2, watch=True, exam=True, download=True, summarize=True,
+                     capture=False))          # 이미지만 없음
+    st.update(_state(7, watch=True, exam=True, download=True,
+                     summarize=False))        # 노트부터 없음
+    return st
+
+
+def test_note_missing_lecture_comes_before_images_only():
+    st = _mixed_state()
+    got = [l["seq"] for _c, l in order_todo(st, _pairs(2, 7), FULL)]
+    assert got == [7, 2]
+
+
+def test_resume_lectures_come_before_fresh_ones():
+    st = _mixed_state()
+    pairs = _pairs(2, 7) + [("과목", _lec(8, False))]
+    got = [l["seq"] for _c, l in order_todo(st, pairs, FULL)]
+    assert got == [7, 2, 8]                    # 새 강의(8)는 뒤로
+
+
+def test_fresh_course_keeps_lecture_order():
+    # 실패 기록이 없으면 예전과 똑같이 차시 순(정상 실행 동작을 바꾸지 않는다)
+    pairs = [("과목", _lec(s, False)) for s in (1, 2, 3, 4)]
+    got = [l["seq"] for _c, l in order_todo({}, pairs, FULL)]
+    assert got == [1, 2, 3, 4]
+
+
+def test_same_gap_falls_back_to_lecture_order():
+    st = {}
+    st.update(_state(9, watch=True, exam=True, download=True, summarize=False))
+    st.update(_state(4, watch=True, exam=True, download=True, summarize=False))
+    got = [l["seq"] for _c, l in order_todo(st, _pairs(9, 4), FULL)]
+    assert got == [4, 9]
+
+
+def test_first_missing_stage_points_at_the_gap():
+    st = _state(7, watch=True, exam=True, download=True, summarize=False)
+    assert first_missing_stage(st, lecture_key("과목", 7), FULL) == 3  # summarize
+    st2 = _state(2, watch=True, exam=True, download=True, summarize=True,
+                 capture=False)
+    assert first_missing_stage(st2, lecture_key("과목", 2), FULL) == 4  # capture
+
+
+def test_first_missing_stage_all_done():
+    st = _state(1, **{s: True for s in FULL})
+    assert first_missing_stage(st, lecture_key("과목", 1), FULL) == len(FULL)

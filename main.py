@@ -64,6 +64,42 @@ def stages_for_mode(mode: str) -> list[str]:
     return list(MODES[mode])
 
 
+def first_missing_stage(state: dict, key: str, stages) -> int:
+    """이 강의에서 **처음으로 안 끝난 단계**의 자리(0-based). 다 끝났으면 len.
+
+    작을수록 파이프라인 앞쪽이 비어 있다 = 더 근본적인 게 없다는 뜻
+    (예: 노트(summarize)가 없는 강의 < 이미지(capture)만 없는 강의).
+    """
+    for i, s in enumerate(stages or ()):
+        if not stage_done(state, key, s):
+            return i
+    return len(stages or ())
+
+
+def order_todo(state: dict, pairs, stages) -> list:
+    """처리 순서를 정한다 — **이어서 할 강의 먼저, 그 중에서도 앞 단계가 빈 것부터**.
+
+    실측 불편: 실패 기록이 있는 2강(이미지만 없음)과 7강(노트부터 없음)이 함께
+    대기하는데 차시 번호 순이라 2강이 먼저 잡혔다. 한 번에 1강만 도는 설정에서는
+    정작 급한 7강의 노트가 계속 밀린다.
+
+    규칙(결정적이라 예측 가능하다):
+      1) 실패 기록이 있는 강의(=이어서 하기)를 새 강의보다 먼저
+      2) 그 안에서는 **앞 단계가 비어 있는 것부터**(노트 없음 < 이미지만 없음)
+      3) 같으면 차시 순
+    새로 시작하는 과목은 1)에 걸리는 강의가 없어 예전과 똑같이 차시 순이다.
+    """
+    def sort_key(item):
+        cname, lec = item
+        key = lecture_key(cname, _seq_of(lec))
+        resume = has_failed_stage(state, key, stages)
+        return (0 if resume else 1,
+                first_missing_stage(state, key, stages) if resume else 0,
+                _seq_of(lec))
+
+    return sorted(pairs, key=sort_key)
+
+
 def dependent_stages(failed: str, stages, deps=None) -> set[str]:
     """`failed` 단계가 실패했을 때 **실행하면 안 되는** 후속 단계들(전이 포함).
 
@@ -539,6 +575,8 @@ def run(mode: str, course: str | None = None, seq=None,
                         f" (이수했지만 이어서 할 강의 {resume}개 포함)"
                         if resume else "")
         todo_all = pending_lectures(state, pairs, stages, force=force)
+        # 이어서 할 강의를 앞으로(노트 없는 것 → 이미지만 없는 것 → 새 강의)
+        todo_all = order_todo(state, todo_all, stages)
         todo = todo_all if limit is None else todo_all[:limit]
         deferred = len(todo_all) - len(todo)
         logger.info("대상 강의: 전체 %d개 중 처리 %d개 "
