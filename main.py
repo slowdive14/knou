@@ -100,12 +100,39 @@ def _video_done_of(lec) -> bool:
     return bool(getattr(lec, "video_done", False))
 
 
-def filter_unwatched(pairs) -> list:
+def has_failed_stage(state: dict, key: str, stages) -> bool:
+    """요청 단계 중 **실패로 기록된** 단계가 하나라도 있으면 True.
+
+    '미이수만' 필터가 이어서 하기를 막지 않게 하려고 쓴다(아래 filter_unwatched).
+    """
+    rec = state.get(key) or {}
+    for s in stages or ():
+        r = rec.get(s)
+        if isinstance(r, dict) and r.get("ok") is False:
+            return True
+    return False
+
+
+def filter_unwatched(pairs, state=None, stages=None) -> list:
     """(과목명, lec) 쌍 중 영상 미시청(video_done=False)인 것만.
 
     video_done 키/속성이 없으면 보수적으로 '미시청'으로 보고 포함한다
-    (요약/예습 대상에서 빠지지 않게)."""
-    return [(c, l) for c, l in pairs if not _video_done_of(l)]
+    (요약/예습 대상에서 빠지지 않게).
+
+    ⚠️ 단, **실패 기록이 있는 강의는 이미 이수했더라도 남긴다**. 영상 이수는
+    성공했는데 요약이 실패한 강의는 LMS 상 video_done=True 가 되어 이 필터에
+    걸러지고, 그러면 실패한 단계를 영영 이어서 할 수 없다(실측: 7강 summarize
+    가 429 로 실패했는데 다음 실행에서 대상에서 빠졌다).
+    """
+    out = []
+    for c, l in pairs:
+        if not _video_done_of(l):
+            out.append((c, l))
+            continue
+        if state is not None and has_failed_stage(
+                state, lecture_key(c, _seq_of(l)), stages):
+            out.append((c, l))          # 이어서 할 게 남은 강의는 통과
+    return out
 
 
 def lecture_key(course: str, seq) -> str:
@@ -505,8 +532,12 @@ def run(mode: str, course: str | None = None, seq=None,
         pairs = select_lectures(pairs, course=course, seq=seq)
         if unwatched:
             before = len(pairs)
-            pairs = filter_unwatched(pairs)
-            logger.info("미시청 필터: %d개 중 미시청 %d개", before, len(pairs))
+            # 실패 기록이 있는 강의는 이미 이수했어도 남긴다(이어서 하기)
+            pairs = filter_unwatched(pairs, state=state, stages=stages)
+            resume = sum(1 for c, l in pairs if _video_done_of(l))
+            logger.info("미시청 필터: %d개 중 대상 %d개%s", before, len(pairs),
+                        f" (이수했지만 이어서 할 강의 {resume}개 포함)"
+                        if resume else "")
         todo_all = pending_lectures(state, pairs, stages, force=force)
         todo = todo_all if limit is None else todo_all[:limit]
         deferred = len(todo_all) - len(todo)

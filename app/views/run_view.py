@@ -401,7 +401,12 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                 detail = (f"(실패 {failed}건)" if failed else
                           f"(종료코드 {code})" if code not in (0, -1) else
                           "(빈 결과)")
-                set_status(f"실패 ❌  {label} {detail} — 아래 로그의 ✗ 줄을 확인하세요",
+                # 성공한 단계는 기록돼 있으므로 그냥 다시 누르면 이어서 간다
+                # (영상 이수를 다시 하지 않는다) — 사용자가 이걸 몰라 처음부터
+                # 다시 돌리는 일이 없게 상태줄에서 알려준다.
+                set_status(f"실패 ❌  {label} {detail} — 아래 로그의 ✗ 줄을 "
+                           "확인하세요. 그대로 다시 실행하면 **실패한 단계부터** "
+                           "이어서 합니다(영상 이수는 다시 안 함).",
                            ft.Colors.RED)
             if on_done:
                 try:
