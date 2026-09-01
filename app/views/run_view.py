@@ -213,6 +213,11 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                              visible=False, disabled=True)
     view_log_btn = ft.OutlinedButton("최근 실행 로그 보기",
                                      icon=ft.Icons.DESCRIPTION)
+    watch_btn = ft.OutlinedButton("영상 이수만 실행", icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+                                  tooltip="선택한 차시의 영상만 다시 이수합니다. "
+                                          "예습노트는 그대로 두므로 노트는 멀쩡한데 "
+                                          "이수만 안 된 차시(현황의 주황 '실행함')에 "
+                                          "쓰세요 (⚠️ 실제 서버 적립)")
     exam_btn = ft.OutlinedButton("형성평가만 실행", icon=ft.Icons.FACT_CHECK,
                                  tooltip="선택한 차시의 형성평가만 다시 풀어 "
                                          "퀴즈 문항을 모읍니다 "
@@ -298,6 +303,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
 
     def _set_running(running: bool):
         gen_btn.disabled = running
+        watch_btn.disabled = running
         exam_btn.disabled = running
         refresh_btn.disabled = running
         course_dd.disabled = running
@@ -524,6 +530,59 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             except Exception:
                 pass
 
+    # --- 영상 이수만 따로 -------------------------------------------------
+    def _run_watch_only(course, seq, row):
+        """`main.py --stages watch --force` 로 **영상만** 다시 이수한다.
+
+        노트·형성평가는 건드리지 않는다. 예습노트는 LMS 가 주는 MP3 로 만들기
+        때문에 영상 시청 실패와 무관하게 멀쩡한 경우가 많다 — 그럴 때 '덮어쓰기'
+        로 전체를 다시 돌리면 노트까지 새로 만들어 Gemini 사용량만 낭비한다.
+
+        --force 가 핵심이다: 완청 오판으로 watch 가 이미 '완료'로 기록된 차시
+        (학습현황의 주황 '실행함')를 되돌리는 통로다.
+        """
+        argv = build_command(_python_exe(), MODE_WATCH, course=course,
+                             seq=seq, limit=1, stages=["watch"], force=True)
+        _start_job(argv, f"{course} {seq}강 영상 이수")
+
+    def on_watch_only(_):
+        """영상 이수만 실행 — 실제 서버 적립이므로 동의 다이얼로그를 거친다."""
+        if not course_dd.value or not lecture_dd.value:
+            set_status("먼저 과목과 차시를 선택하세요.", ft.Colors.RED)
+            return
+        course, seq = course_dd.value, int(lecture_dd.value)
+        row = next((r for r in rows_for_course(state["rows"], course)
+                    if r.seq == seq), None)
+        est = ""
+        if row and getattr(row, "total_min", 0) > 0:
+            try:
+                from config import load_config
+                sp = getattr(load_config(), "playback_speed", 2.0)
+            except Exception:  # noqa: BLE001 - 설정이 없어도 안내만 생략
+                sp = 2.0
+            est = estimate_watch_text(row.total_min, row.watched_min, sp)
+        body = (f"'{course} {seq}강' 의 **영상만** 다시 이수합니다"
+                "(형성평가·예습노트는 건드리지 않습니다).\n\n"
+                + confirm_message(MODE_WATCH) + "\n\n" + watch_sleep_warning())
+
+        def _confirm():
+            _close_dialog()
+            _run_watch_only(course, seq, row)
+
+        def _cancel():
+            _close_dialog()
+            set_status("영상 이수 취소됨.", ft.Colors.GREY)
+
+        dlg, _agree, _start = build_confirm_dialog(
+            MODE_WATCH, body, est, _confirm, _cancel,
+            start_label="영상 이수 시작")
+        state["confirm_dialog"] = dlg
+        if page is not None:
+            try:
+                page.show_dialog(dlg)
+            except Exception:
+                pass
+
     def _ask_extra_video(cfg, course, seq, name):
         """실행 뒤 state.json 을 보고, 두 번째 영상이 있으면 생성 여부를 묻는다.
 
@@ -727,6 +786,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     open_btn.on_click = on_open
     view_log_btn.on_click = on_view_log
     quiz_btn.on_click = on_make_quiz
+    watch_btn.on_click = on_watch_only
     exam_btn.on_click = on_exam_only
     status_btn.on_click = on_make_status
 
@@ -758,7 +818,8 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                    vertical_alignment=ft.CrossAxisAlignment.START),
             redo_chk,
             sleep_warn,
-            ft.Row([gen_btn, exam_btn, cancel_btn, open_btn], wrap=True),
+            ft.Row([gen_btn, watch_btn, exam_btn, cancel_btn, open_btn],
+                   wrap=True),
             progress,
             ft.Row([status_badge, elapsed_text], spacing=12),
             ft.Row([ft.Text("진행 로그", size=13, weight=ft.FontWeight.BOLD),

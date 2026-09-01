@@ -413,6 +413,55 @@ def test_single_lecture_command_ignores_count():
     assert "--unwatched" not in argv
 
 
+def _watch_btn(view):
+    """실행 화면의 '영상 이수만 실행' 버튼."""
+    return next(c for c in _walk(view)
+                if isinstance(c, ft.OutlinedButton) and c.content == "영상 이수만 실행")
+
+
+def test_build_run_view_has_watch_only_button(tmp_path):
+    # 노트는 멀쩡한데 이수만 안 된 차시를 되돌리는 통로
+    view = build_run_view(snapshot_path=tmp_path / "none.json")
+    assert _watch_btn(view) is not None
+
+
+def test_watch_only_requires_course_and_lecture(tmp_path):
+    view = build_run_view(snapshot_path=tmp_path / "none.json")
+    _watch_btn(view).on_click(None)
+    msgs = [c.value for c in _walk(view)
+            if isinstance(c, ft.Text) and c.color == ft.Colors.RED]
+    assert any("과목과 차시" in (m or "") for m in msgs)
+
+
+def test_watch_only_asks_for_consent(tmp_path):
+    # 실제 서버 적립이므로 동의 다이얼로그를 거치고, 동의 전엔 시작 불가
+    page = _DialogPage()
+    view = build_run_view(page, snapshot_path=tmp_path / "none.json")
+    dds = [c for c in _walk(view) if isinstance(c, ft.Dropdown)]
+    dds[0].value, dds[1].value = "컴퓨터구조", "10"
+    _watch_btn(view).on_click(None)
+
+    assert len(page.dialogs) == 1
+    dlg = page.dialogs[0]
+    start = next(a for a in dlg.actions if isinstance(a, ft.FilledButton))
+    assert start.disabled is True
+    body = " ".join(t.value for t in _walk(dlg)
+                    if isinstance(t, ft.Text) and t.value)
+    assert "형성평가·예습노트는 건드리지 않습니다" in body
+
+
+def test_watch_only_command_is_watch_stage_with_force():
+    # --stages watch + --force. force 가 없으면 완청 오판으로 '완료' 기록된
+    # 차시를 영영 되돌릴 수 없다. 노트(summarize)는 절대 섞이면 안 된다.
+    from runner import build_command
+    argv = build_command("py.exe", "이수", course="컴퓨터구조", seq=10,
+                         limit=1, stages=["watch"], force=True)
+    assert "--stages" in argv and "watch" in argv
+    assert "--force" in argv
+    assert argv[argv.index("--seq") + 1] == "10"
+    assert "summarize" not in argv and "exam" not in argv
+
+
 def _exam_btn(view):
     """실행 화면의 '형성평가만 실행' 버튼."""
     return next(c for c in _walk(view)
