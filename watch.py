@@ -27,6 +27,11 @@ from discover import Lecture
 ALLOWED_SPEEDS = (0.5, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0)
 DEFAULT_BUFFER = 0.12  # 12% 여유 (버퍼링/광고문구 페이드 등)
 
+# 플레이어 상태를 연속으로 못 읽으면(창이 닫힘·세션 끊김) 완청이 아니라 실패로.
+READ_FAIL_LIMIT = 3
+# '<video> 가 사라짐'을 완청으로 인정하려면 길이의 이만큼까지는 가 있어야 한다.
+NEAR_END_RATIO = 0.90
+
 
 def remaining_minutes(watched_min: int, total_min: int) -> int:
     """남은 시청 분. 음수 방지(이미 다 본 경우 0)."""
@@ -466,6 +471,7 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15,
     max_pos = 0.0       # 도달한 최대 위치
     stalls = 0
     gone_count = 0      # 재생 후 <video> 사라짐 연속 횟수
+    err_count = 0       # 플레이어 상태를 아예 못 읽은 연속 횟수(창이 닫힘 등)
     while time.time() < deadline:
         _dismiss_quiz(popup, on_quiz=on_quiz)
         st = _clip_state(popup, frame_index)
@@ -474,6 +480,18 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15,
                 on_progress(st)
             except Exception:
                 pass
+
+        # 상태를 **못 읽은** 것(evalErr)은 '영상이 끝났다'와 전혀 다르다.
+        # 실측 사고: 플레이어 창이 죽어 evalErr 이 연속으로 나자 아래 (3)번
+        # 규칙이 dur=None 을 '재생 후 언로드'로 오인해 7초만 보고도 완청으로
+        # 판정했다(컴퓨터구조 10강 · 67분 영상). 읽기 실패는 완청 근거가 아니다.
+        if st.get("evalErr"):
+            err_count += 1
+            if err_count >= READ_FAIL_LIMIT:
+                return False        # 창이 닫혔거나 세션이 죽음 → 완청 아님
+            time.sleep(poll)
+            continue
+        err_count = 0
 
         pos = st.get("pos")
         dur = st.get("dur")
@@ -491,7 +509,11 @@ def _play_until_end(popup, frame_index, speed, budget_s, poll=15,
         # (3) 재생 후 <video> 가 사라짐/리셋(pos=0·dur=None) → 짧은 클립이 끝나면
         #     ended 없이 프레임이 언로드되는 경우가 있어 완청으로 간주.
         #     단발 버퍼링 오탐 방지를 위해 2회 연속 확인.
+        #     ⚠️ 길이를 알고 있다면 **끝 근처까지 갔을 때만** 인정한다 —
+        #     67분짜리를 7초 보고 언로드된 것을 완청이라 하면 안 된다.
         gone = st.get("gone") or st.get("none") or dur is None
+        if gone and seen_dur and max_pos < seen_dur * NEAR_END_RATIO:
+            gone = False
         if gone and max_pos > 1.0:
             gone_count += 1
             if gone_count >= 2:
