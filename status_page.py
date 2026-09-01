@@ -96,6 +96,15 @@ def _stage_ok(state: dict, key: str, stage: str) -> bool:
     return bool(_stage_rec(state, key, stage).get("ok"))
 
 
+def _stage_skipped(state: dict, key: str, stage: str) -> bool:
+    """그 단계를 '할 게 없어서 건너뜀'으로 기록했는가(예: 형성평가 없는 차시).
+
+    '돌렸는데 서버는 미완료'(확인 필요)와 '애초에 없음'(정상)을 화면에서
+    구분하기 위한 값. 옛 기록에는 이 필드가 없어 False 로 떨어진다.
+    """
+    return bool(_stage_rec(state, key, stage).get("skipped"))
+
+
 def ran_after_snapshot(state: dict, key: str, stage: str,
                        snapshot_at: str) -> bool:
     """그 단계를 '목록 스냅샷을 받아온 뒤'에 성공했으면 True.
@@ -132,6 +141,7 @@ def scan_lecture(row, state: dict, *, downloads_dir, summary_dir,
         "exam_run": _stage_ok(state, key, "exam"),
         "watch_new": ran_after_snapshot(state, key, "watch", snapshot_at),
         "exam_new": ran_after_snapshot(state, key, "exam", snapshot_at),
+        "exam_none": _stage_skipped(state, key, "exam"),
         "notes": notes,
         "mp3": _file_info(Path(downloads_dir)
                           / f"{sanitize(row.course)}_{int(row.seq)}강.mp3"),

@@ -36,9 +36,9 @@ STATE_PATH = PROJECT_ROOT / "state.json"
 # 순수 조각 (오프라인 테스트 가능)
 # ---------------------------------------------------------------------------
 _KINDS = {
-    # 종류 → (완료 필드, 실행 기록 필드, 갱신 후 실행 필드, 완료 문구)
-    "watch": ("video_done", "watch_run", "watch_new", "이수완료"),
-    "exam": ("exam_done", "exam_run", "exam_new", "완료"),
+    # 종류 → (완료 필드, 실행 기록 필드, 갱신 후 실행 필드, 완료 문구, 없음 필드)
+    "watch": ("video_done", "watch_run", "watch_new", "이수완료", None),
+    "exam": ("exam_done", "exam_run", "exam_new", "완료", "exam_none"),
 }
 
 
@@ -48,9 +48,13 @@ def status_label(row: dict, kind: str = "watch") -> tuple[str, str]:
     HTML 페이지와 판정 규칙을 맞춘다 — 목록 스냅샷 이후에 실행한 건 따로 표시
     (LMS 가 아직 모르는 상태라 '미완료'로 보이는 게 당연하므로).
     """
-    done_f, ran_f, new_f, done_text = _KINDS.get(kind, _KINDS["watch"])
+    done_f, ran_f, new_f, done_text, none_f = _KINDS.get(kind, _KINDS["watch"])
     if row.get(done_f):
         return (done_text, "done")
+    # '그 차시에 애초에 없음'은 확인할 게 없는 정상 상태 —
+    # '돌렸는데 서버는 미완료'(주황 경고)와 반드시 구분한다.
+    if none_f and row.get(ran_f) and row.get(none_f):
+        return ("없음", "absent")
     if row.get(ran_f) and row.get(new_f):
         return ("실행함*", "fresh")
     if row.get(ran_f):
@@ -73,6 +77,7 @@ def _pill(text: str, kind: str) -> ft.Control:
         "done": (MINT, MINT_BG),
         "fresh": (MINT, None),
         "wait": (APRI, APRI_BG),
+        "absent": (MUTE, None),   # 경고색을 쓰지 않는다(정상 상태)
     }.get(kind, (MUTE, None))
     return ft.Container(
         content=ft.Text(text, size=11, weight=ft.FontWeight.BOLD, color=color),

@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from status_html import (  # noqa: E402
+    _exam_cell,
     fmt_when,
     overall_stats,
     render_status_html,
@@ -275,3 +276,41 @@ def test_theme_choice_is_optional_without_js():
     html = render_status_html([_course()])
     assert "prefers-color-scheme: dark" in html
     assert 'data-theme="dark">' not in html    # 서버가 테마를 못박지 않는다
+
+
+# --- '형성평가 없음'을 경고와 구분 -------------------------------------------
+# 실측 혼란: 형성평가가 아예 없는 과목(AI네이티브)의 차시가 '돌렸는데 서버는
+# 미완료'와 똑같은 주황 '실행함'으로 보여, 문제가 있는 줄 알게 됐다.
+def _exam_row(**kw):
+    row = {"exam_done": False, "exam_run": True, "exam_new": False,
+           "exam_none": False, "quiz_count": 0}
+    row.update(kw)
+    return row
+
+
+def test_exam_none_shows_absent_badge():
+    html = _exam_cell(_exam_row(exam_none=True), "q.html")
+    assert "없음" in html
+    assert "pill none" in html
+    assert "실행함" not in html
+
+
+def test_exam_none_is_not_the_warning_colour():
+    html = _exam_cell(_exam_row(exam_none=True), "q.html")
+    assert "pill wait" not in html          # 주황 경고와 같아 보이면 안 된다
+
+
+def test_exam_ran_but_server_pending_still_warns():
+    html = _exam_cell(_exam_row(), "q.html")
+    assert "실행함" in html and "pill wait" in html
+
+
+def test_exam_done_wins_over_none():
+    html = _exam_cell(_exam_row(exam_done=True, exam_none=True), "q.html")
+    assert "pill ok" in html
+
+
+def test_legend_explains_absent():
+    from status_html import render_status_html
+    html = render_status_html([], title="t")
+    assert "형성평가가 없음" in html

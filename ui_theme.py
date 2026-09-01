@@ -187,6 +187,8 @@ h1 { margin:8px 0 0; font-size:clamp(30px,4.6vw,46px); font-weight:800;
 .pill.ok { background:var(--mint-s); color:var(--mint); border-color:rgba(0,163,122,.22); }
 .pill.fresh { color:var(--mint); border-color:rgba(0,163,122,.38); }
 .pill.wait { background:var(--apri-s); color:var(--apri); border-color:rgba(217,131,36,.26); }
+/* '없음' — 확인할 게 없는 정상 상태라 경고색(apri)을 쓰지 않는다 */
+.pill.none { color:var(--muted); border-color:var(--line); opacity:.85; }
 .pill sup { font-size:9px; margin-left:-1px; }
 .pill .dot { width:6px; height:6px; border-radius:50%; background:currentColor;
   flex:0 0 auto; }

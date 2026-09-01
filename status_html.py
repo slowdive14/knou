@@ -47,15 +47,20 @@ def pct(done, total) -> float:
 
 
 def _mark(done: bool, ran: bool = False, done_text: str = "완료",
-          fresh: bool = False) -> str:
-    """완료 / 실행함*(목록 갱신 전) / 실행함(서버는 미완료) / 없음 — 상태 알약.
+          fresh: bool = False, none: bool = False) -> str:
+    """완료 / 없음 / 실행함*(목록 갱신 전) / 실행함(서버는 미완료) / — 상태 알약.
 
     fresh=True 는 '목록 스냅샷을 받은 뒤에 실행했다'는 뜻 — LMS 기준 미완료로
     보이는 게 당연한 상태라 다르게 표시한다.
+    none=True 는 '그 차시에 애초에 없다'(형성평가 없는 차시) — 확인할 게 없는
+    정상 상태라, '돌렸는데 서버는 미완료'(주황 경고)와 반드시 구분한다.
     """
     if done:
         return (f'<span class="pill ok">{_icon("i-check", "ico sm")}'
                 f'{_esc(done_text)}</span>')
+    if ran and none:
+        return ('<span class="pill none" title="이 차시에는 형성평가가 없습니다">'
+                '<i class="dot"></i>없음</span>')
     if ran and fresh:
         return ('<span class="pill fresh" '
                 'title="목록 새로고침 전이라 LMS 기준 확인 안 됨">'
@@ -97,7 +102,8 @@ def _notes_cell(row: dict) -> str:
 
 def _exam_cell(row: dict, quiz_url) -> str:
     parts = [_mark(bool(row.get("exam_done")), bool(row.get("exam_run")),
-                   fresh=bool(row.get("exam_new")))]
+                   fresh=bool(row.get("exam_new")),
+                   none=bool(row.get("exam_none")))]
     n = int(row.get("quiz_count") or 0)
     if n:
         label = f"{n}문항"
@@ -259,6 +265,8 @@ def render_status_html(courses, title: str = "방송대 학습 현황",
         '실행함<sup>*</sup> 목록 새로고침 전</span>'
         '<span class="pill wait sm"><i class="dot"></i>'
         '실행했지만 서버 기준 미완료</span>'
+        '<span class="pill none sm"><i class="dot"></i>'
+        '없음 — 그 차시에 형성평가가 없음</span>'
         '<span class="lg-none">· 아직</span>'
         '<span class="lg-tip">칩을 누르면 파일이 바로 열립니다</span>'
         '</footer>'

@@ -198,10 +198,15 @@ def lecture_done(state: dict, key: str, stages) -> bool:
 
 
 def mark_stage(state: dict, key: str, stage: str, ok: bool = True,
-               error: str | None = None) -> dict:
-    """state[key][stage] 기록(성공/실패+에러+시각). 다른 단계는 보존."""
+               error: str | None = None, skipped: bool = False) -> dict:
+    """state[key][stage] 기록(성공/실패+에러+시각). 다른 단계는 보존.
+
+    skipped=True 는 '할 게 없어서 건너뜀'이다(예: 그 차시에 형성평가가 아예
+    없음). 실패와도, 실제로 처리한 것과도 다르므로 따로 남긴다 — 현황 화면에서
+    '돌렸는데 서버는 미완료'와 '애초에 없음'을 구분해 보여주기 위함.
+    """
     state.setdefault(key, {})[stage] = {
-        "ok": bool(ok), "error": error,
+        "ok": bool(ok), "error": error, "skipped": bool(skipped),
         "at": datetime.now().isoformat(timespec="seconds"),
     }
     return state
@@ -610,7 +615,8 @@ def run(mode: str, course: str | None = None, seq=None,
                         blocked |= dependent_stages(stage, stages)
                         continue
                     mark_stage(state, key, stage, ok=r["ok"],
-                               error=r.get("error"))
+                               error=r.get("error"),
+                               skipped=bool(r.get("skipped")))
                     if r.get("extra_videos") is not None:
                         # 두 번째 영상 탐지 결과 보존(단계 기록과 별개 필드)
                         rec = state.setdefault(key, {})

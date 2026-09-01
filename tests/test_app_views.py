@@ -1323,3 +1323,35 @@ def test_status_view_routes_pdf_to_app_screen(tmp_path):
     from app.views.status_view import build_status_view
     sig = inspect.signature(build_status_view)
     assert "on_open_pdf" in sig.parameters
+
+
+# --- 현황: '형성평가 없음'을 경고와 구분 -------------------------------------
+def test_status_label_absent_exam():
+    row = {"exam_done": False, "exam_run": True, "exam_new": False,
+           "exam_none": True}
+    assert status_label(row, "exam") == ("없음", "absent")
+
+
+def test_status_label_absent_is_not_warning_colour():
+    absent = _pill_kind({"exam_done": False, "exam_run": True,
+                         "exam_none": True})
+    warn = _pill_kind({"exam_done": False, "exam_run": True})
+    assert absent != warn
+
+
+def _pill_kind(row):
+    from app.views.status_view import _pill
+    text, kind = status_label(row, "exam")
+    _pill(text, kind)                      # 색 매핑에서 터지지 않아야 한다
+    return kind
+
+
+def test_status_label_done_wins_over_absent():
+    row = {"exam_done": True, "exam_run": True, "exam_none": True}
+    assert status_label(row, "exam")[1] == "done"
+
+
+def test_status_label_watch_has_no_absent_state():
+    # 영상은 '없음'이라는 개념이 없다 — 기존 3단계 그대로
+    row = {"video_done": False, "watch_run": True, "watch_new": False}
+    assert status_label(row, "watch") == ("실행함", "wait")
