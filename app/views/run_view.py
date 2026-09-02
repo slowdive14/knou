@@ -5,7 +5,10 @@
 실시간 로그 패널에 흘리고, `parse_progress_line` 으로 단계 진행률·상태를 갱신한다.
 완료되면 "노트 열기"로 결과 노트를 연다(os.startfile).
 
-"새로고침"은 경량 `list_lectures.py` 를 돌려 `lectures.json` 을 갱신한다(로그인 필요).
+강의 목록(`lectures.json`)은 **실행이 끝날 때 main.py 가 스스로 갱신**하고, 이 화면은
+그 파일을 다시 읽어 차시의 ✅ 를 바로 반영한다(로그인·네트워크 없음).
+[목록 새로고침] 버튼은 첫 설정·수강 과목 변경처럼 **목록 자체가 달라졌을 때**만
+쓰면 된다(경량 `list_lectures.py` 를 돌려 로그인 후 다시 받아온다).
 
 순수 헬퍼(course_names/rows_for_course/lecture_option_text/load_snapshot_rows)는
 단위테스트, 실제 생성은 한 강의 수동 검증(기존 프로젝트 철학).
@@ -97,6 +100,31 @@ def lecture_option_text(row: LectureRow) -> str:
     """드롭다운 표시문구: '13강 - 트랜잭션 ✅'(영상 이수면 체크)."""
     mark = " ✅" if row.video_done else ""
     return f"{row.seq}강 - {row.name}{mark}"
+
+
+def refresh_lecture_options(rows, course_dd, lecture_dd) -> bool:
+    """새 강의 목록으로 과목·차시 드롭다운을 다시 채운다(고른 항목은 유지).
+
+    실행이 끝나면 main.py 가 lectures.json 을 새로 쓰므로, 그걸 읽어 이 함수로
+    화면에 반영하면 사람이 [목록 새로고침]을 누르지 않아도 차시의 ✅ 가 붙는다.
+    rows 가 비었으면(파일 없음·깨짐) **아무것도 건드리지 않는다** — 멀쩡한 화면을
+    빈 목록으로 지우지 않기 위함. 반환: 실제로 갱신했으면 True.
+
+    page 없이 동작하는 순수 표현 함수(단위테스트 대상).
+    """
+    if not rows:
+        return False
+    course, seq = course_dd.value, lecture_dd.value
+    names = course_names(rows)
+    course_dd.options = [ft.dropdown.Option(key=n, text=n) for n in names]
+    course_dd.value = course if course in names else (names[0] if names else None)
+    lec_rows = rows_for_course(rows, course_dd.value)
+    lecture_dd.options = [
+        ft.dropdown.Option(key=str(r.seq), text=lecture_option_text(r))
+        for r in lec_rows
+    ]
+    lecture_dd.value = seq if any(str(r.seq) == seq for r in lec_rows) else None
+    return True
 
 
 def build_confirm_dialog(mode, body_text, est_text, on_confirm, on_cancel,
@@ -208,7 +236,14 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     gen_btn = ft.FilledButton(_MODE_LABELS[MODE_SUMMARY],
                               icon=ft.Icons.AUTO_STORIES)
     cancel_btn = ft.OutlinedButton("취소", icon=ft.Icons.STOP, disabled=True)
-    refresh_btn = ft.OutlinedButton("목록 새로고침", icon=ft.Icons.REFRESH)
+    # 실행이 끝나면 목록은 저절로 갱신된다(main.py 가 저장 → _reload_snapshot).
+    # 이 버튼이 여전히 필요한 경우: 첫 설정, 수강 과목·차시가 바뀐 경우,
+    # 앱 밖(브라우저)에서 직접 수강한 진도를 반영하고 싶을 때.
+    refresh_btn = ft.OutlinedButton(
+        "목록 새로고침", icon=ft.Icons.REFRESH,
+        tooltip="LMS 에 로그인해 과목·차시 목록을 다시 받아옵니다. "
+                "실행이 끝나면 목록은 저절로 갱신되므로, 첫 설정이나 "
+                "수강 과목이 바뀐 경우에만 누르면 됩니다")
     open_btn = ft.TextButton("노트 열기", icon=ft.Icons.OPEN_IN_NEW,
                              visible=False, disabled=True)
     view_log_btn = ft.OutlinedButton("최근 실행 로그 보기",
@@ -315,6 +350,17 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         cancel_btn.disabled = not running
         _safe_update()
 
+    def _reload_snapshot():
+        """lectures.json 을 다시 읽어 차시 목록을 갱신한다(고른 항목은 유지).
+
+        main.py 가 실행 끝에 목록을 새로 저장하므로, 여기서 읽기만 하면 이수
+        결과(✅)가 바로 보인다. 로그인·네트워크 없이 파일만 읽는다.
+        """
+        rows = load_snapshot_rows(snapshot_path)
+        if refresh_lecture_options(rows, course_dd, lecture_dd):
+            state["rows"] = rows
+            _safe_update()
+
     def populate_lectures(*_):
         rows = rows_for_course(state["rows"], course_dd.value)
         lecture_dd.options = [
@@ -391,6 +437,10 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             _stop_ticker()
             _set_running(False)
             progress.visible = False
+            # main.py 가 끝나면서 강의 목록(lectures.json)을 새로 저장한다.
+            # 그걸 다시 읽어와야 차시 목록의 ✅ 가 바로 반영된다 — 사람이
+            # [목록 새로고침]을 따로 누를 일이 없게.
+            _reload_snapshot()
             # main.py 는 강의 1개가 실패해도 종료코드 0 으로 끝난다
             # (실패는 '=== 요약 ===' 의 failed 와 '✗' 로그로만 드러남).
             summary = state.get("summary") or {}

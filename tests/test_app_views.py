@@ -1355,3 +1355,69 @@ def test_status_label_watch_has_no_absent_state():
     # 영상은 '없음'이라는 개념이 없다 — 기존 3단계 그대로
     row = {"video_done": False, "watch_run": True, "watch_new": False}
     assert status_label(row, "watch") == ("실행함", "wait")
+
+
+# --- 실행이 끝나면 차시 목록이 저절로 갱신된다 -------------------------------
+# 실측 불편: 이수를 다 끝냈는데도 차시 목록에 ✅ 가 안 붙어 [목록 새로고침]을
+# 눌러야 했다. main.py 가 끝나며 lectures.json 을 새로 쓰므로, 앱은 그 파일을
+# 다시 읽어 드롭다운에 반영하기만 하면 된다.
+from app.views.run_view import refresh_lecture_options  # noqa: E402
+
+
+def _dds():
+    return ft.Dropdown(label="과목", options=[]), ft.Dropdown(label="차시", options=[])
+
+
+def _mixed_rows(done10=False):
+    return [LectureRow("컴퓨터구조", 10, "기억장치(I)", done10, done10),
+            LectureRow("컴퓨터구조", 11, "기억장치(II)", False, False)]
+
+
+def test_refresh_marks_completed_lectures():
+    course_dd, lecture_dd = _dds()
+    refresh_lecture_options(_mixed_rows(done10=False), course_dd, lecture_dd)
+    assert not any("✅" in o.text for o in lecture_dd.options)
+
+    refresh_lecture_options(_mixed_rows(done10=True), course_dd, lecture_dd)
+    texts = [o.text for o in lecture_dd.options]
+    assert texts[0].endswith("✅") and not texts[1].endswith("✅")
+
+
+def test_refresh_keeps_course_and_lecture_selection():
+    course_dd, lecture_dd = _dds()
+    refresh_lecture_options(_mixed_rows(), course_dd, lecture_dd)
+    course_dd.value, lecture_dd.value = "컴퓨터구조", "11"
+    refresh_lecture_options(_mixed_rows(done10=True), course_dd, lecture_dd)
+    assert course_dd.value == "컴퓨터구조"
+    assert lecture_dd.value == "11"
+
+
+def test_refresh_drops_a_selection_that_disappeared():
+    course_dd, lecture_dd = _dds()
+    refresh_lecture_options(_mixed_rows(), course_dd, lecture_dd)
+    lecture_dd.value = "11"
+    refresh_lecture_options([LectureRow("컴퓨터구조", 10, "기억장치(I)", True, True)],
+                            course_dd, lecture_dd)
+    assert lecture_dd.value is None
+
+
+def test_refresh_ignores_empty_rows():
+    # 목록 파일이 없거나 깨졌으면 멀쩡한 화면을 지우지 않는다
+    course_dd, lecture_dd = _dds()
+    refresh_lecture_options(_mixed_rows(), course_dd, lecture_dd)
+    before = [o.text for o in lecture_dd.options]
+    assert refresh_lecture_options([], course_dd, lecture_dd) is False
+    assert [o.text for o in lecture_dd.options] == before
+
+
+def test_refresh_after_run_uses_the_saved_snapshot(tmp_path):
+    # 실행이 끝난 뒤 파일만 바뀌어도 화면이 따라온다(로그인·네트워크 없음)
+    snap = tmp_path / "lectures.json"
+    snap.write_text(
+        '{"courses":[{"name":"컴퓨터구조","lectures":'
+        '[{"seq":10,"name":"기억장치(I)","video_done":true,"exam_done":true}]}]}',
+        encoding="utf-8")
+    course_dd, lecture_dd = _dds()
+    assert refresh_lecture_options(load_snapshot_rows(snap),
+                                   course_dd, lecture_dd) is True
+    assert lecture_dd.options[0].text.endswith("✅")

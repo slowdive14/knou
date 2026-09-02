@@ -536,6 +536,7 @@ def run(mode: str, course: str | None = None, seq=None,
     from config import load_config
     from discover import fetch_lectures, list_courses
     from recon import launch_context
+    from snapshot import refresh_snapshot
 
     stages = stages_for_mode(mode)
     if only_stages:
@@ -635,6 +636,12 @@ def run(mode: str, course: str | None = None, seq=None,
                 else:
                     processed += 1
         finally:
+            # 브라우저를 닫기 전에 강의 목록을 다시 받아 저장한다 — 이수 결과가
+            # 반영된 목록이라 앱의 차시 ✅·현황이 바로 최신이 된다(사람이
+            # [목록 새로고침]을 누를 일이 없어짐). 이미 로그인된 세션이라 공짜에
+            # 가깝고, 실패해도 실행 결과에는 영향을 주지 않는다.
+            if processed or failed_lec:
+                refresh_snapshot(page, on_event=lambda m: logger.info("  %s", m))
             try:
                 ctx.close()
             except Exception:
