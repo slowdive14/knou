@@ -69,15 +69,33 @@ def save_snapshot(snapshot: dict, path=SNAPSHOT_PATH) -> Path:
     return path
 
 
-def refresh_snapshot(page, path=SNAPSHOT_PATH, on_event=lambda m: None):
-    """**이미 로그인된** page 로 목록을 다시 받아 저장한다. 반환: 스냅샷 dict|None.
+def refresh_snapshot(page, path=SNAPSHOT_PATH, on_event=lambda m: None,
+                    cfg=None):
+    """실행이 끝난 뒤 목록을 다시 받아 저장한다. 반환: 스냅샷 dict|None.
 
-    실행이 끝난 뒤 부르면 이수 결과가 반영된 목록이 저장된다. 여기서 실패해도
-    실행 자체는 이미 끝났으므로 예외를 밖으로 내보내지 않는다(None 반환).
+    여기서 실패해도 실행 자체는 이미 끝났으므로 예외를 밖으로 내보내지 않는다
+    (None 반환).
+
+    ⚠️ `list_courses` 는 '나의 학습' 페이지의 DOM(.lecture-progress-item)을 읽는데,
+       실행 도중 page 는 강의자료실·플레이어 등으로 옮겨가 있다. 게다가 방송대는
+       **단일 세션**이라 그렇게 돌아다니는 사이 세션이 끊긴다 — 실측으로 확인했다:
+
+           goto 후 URL : …/retrieveUMYStudy.sdo   (주소는 '나의 학습')
+           페이지 제목  : 통합로그인               (내용은 로그인 화면)
+
+       주소만 되돌려서는 소용이 없으므로 **로그인을 다시 확보**한다. 실행이 이미
+       끝난 시점이라 재로그인해도 잃을 것이 없다. cfg 가 없으면 이동만 시도한다.
     """
+    from auth import MY_STUDY_URL
     from discover import fetch_lectures, list_courses
 
     try:
+        if cfg is not None:
+            from auth import ensure_logged_in
+            ensure_logged_in(page, cfg)
+        else:
+            page.goto(MY_STUDY_URL, wait_until="domcontentloaded",
+                      timeout=30000)
         pairs = []
         for course in list_courses(page):
             try:

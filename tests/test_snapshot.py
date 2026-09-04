@@ -96,6 +96,16 @@ def test_saved_snapshot_has_no_secrets(tmp_path):
 
 
 # --- refresh_snapshot(열린 세션으로 갱신) -------------------------------------
+class _Page:
+    """goto 만 받아 적는 가짜 page — 어디로 되돌아갔는지 확인하기 위함."""
+
+    def __init__(self):
+        self.visited = []
+
+    def goto(self, url, **kw):
+        self.visited.append(url)
+
+
 def _patch_discover(monkeypatch, courses, fetch):
     import discover
     monkeypatch.setattr(discover, "list_courses", lambda page: courses)
@@ -107,7 +117,7 @@ def test_refresh_writes_current_state(monkeypatch, tmp_path):
     _patch_discover(monkeypatch, [_Course("컴퓨터구조")],
                     lambda page, c: [_Lec(1, "개요", video_done=True)])
     out = tmp_path / "lectures.json"
-    snap = refresh_snapshot(object(), out)
+    snap = refresh_snapshot(_Page(), out)
     assert snap is not None
     saved = json.loads(out.read_text(encoding="utf-8"))
     assert saved["courses"][0]["lectures"][0]["video_done"] is True
@@ -123,7 +133,7 @@ def test_refresh_isolates_one_bad_course(monkeypatch, tmp_path):
 
     _patch_discover(monkeypatch, [ok, bad], _fetch)
     out = tmp_path / "l.json"
-    snap = refresh_snapshot(object(), out)
+    snap = refresh_snapshot(_Page(), out)
     assert [c["name"] for c in snap["courses"]] == ["좋은과목"]
 
 
@@ -135,7 +145,7 @@ def test_refresh_never_raises(monkeypatch, tmp_path):
         raise RuntimeError("세션 끊김")
 
     monkeypatch.setattr(discover, "list_courses", _boom)
-    assert refresh_snapshot(object(), tmp_path / "l.json") is None
+    assert refresh_snapshot(_Page(), tmp_path / "l.json") is None
 
 
 def test_refresh_does_not_write_empty_snapshot(monkeypatch, tmp_path):
@@ -144,5 +154,57 @@ def test_refresh_does_not_write_empty_snapshot(monkeypatch, tmp_path):
     out = tmp_path / "l.json"
     out.write_text('{"courses":[{"name":"기존","lectures":[]}]}',
                    encoding="utf-8")
-    assert refresh_snapshot(object(), out) is None
+    assert refresh_snapshot(_Page(), out) is None
     assert "기존" in out.read_text(encoding="utf-8")
+
+
+def test_refresh_without_cfg_only_navigates(monkeypatch, tmp_path):
+    """cfg 가 없으면 이동만 시도한다(하위 호환)."""
+    from auth import MY_STUDY_URL
+
+    _patch_discover(monkeypatch, [_Course("컴퓨터구조")],
+                    lambda page, c: [_Lec(1, "개요")])
+    page = _Page()
+    refresh_snapshot(page, tmp_path / "l.json")
+    assert page.visited == [MY_STUDY_URL]
+
+
+def test_refresh_restores_the_login_when_cfg_given(monkeypatch, tmp_path):
+    """세션을 다시 확보해야 목록을 읽을 수 있다.
+
+    실측: 주소만 '나의 학습'으로 되돌리면 URL 은 맞는데 화면은 통합로그인이었다.
+    방송대는 단일 세션이라 자료실을 다녀오는 사이 세션이 끊기기 때문이다.
+    """
+    import auth
+    seen = []
+    monkeypatch.setattr(auth, "ensure_logged_in",
+                        lambda page, cfg, **kw: seen.append("login") or True)
+    _patch_discover(monkeypatch, [_Course("컴퓨터구조")],
+                    lambda page, c: [_Lec(1, "개요")])
+    page = _Page()
+    snap = refresh_snapshot(page, tmp_path / "l.json", cfg=object())
+    assert seen == ["login"]
+    assert page.visited == []              # 이동은 ensure_logged_in 이 맡는다
+    assert snap is not None
+
+
+def test_refresh_survives_a_failed_login(monkeypatch, tmp_path):
+    import auth
+
+    def _boom(page, cfg, **kw):
+        raise RuntimeError("로그인 실패")
+
+    monkeypatch.setattr(auth, "ensure_logged_in", _boom)
+    _patch_discover(monkeypatch, [_Course("컴퓨터구조")],
+                    lambda page, c: [_Lec(1, "개요")])
+    assert refresh_snapshot(_Page(), tmp_path / "l.json", cfg=object()) is None
+
+
+def test_refresh_survives_a_failed_navigation(monkeypatch, tmp_path):
+    class _DeadPage:
+        def goto(self, url, **kw):
+            raise RuntimeError("세션 끊김")
+
+    _patch_discover(monkeypatch, [_Course("컴퓨터구조")],
+                    lambda page, c: [_Lec(1, "개요")])
+    assert refresh_snapshot(_DeadPage(), tmp_path / "l.json") is None

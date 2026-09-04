@@ -673,7 +673,8 @@ def _run(mode: str, course: str | None = None, seq=None,
             # [목록 새로고침]을 누를 일이 없어짐). 이미 로그인된 세션이라 공짜에
             # 가깝고, 실패해도 실행 결과에는 영향을 주지 않는다.
             if processed or failed_lec:
-                refresh_snapshot(page, on_event=lambda m: logger.info("  %s", m))
+                refresh_snapshot(page, on_event=lambda m: logger.info("  %s", m),
+                                 cfg=cfg)
             try:
                 ctx.close()
             except Exception:
