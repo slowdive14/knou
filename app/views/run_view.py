@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import time
@@ -100,6 +101,56 @@ def lecture_option_text(row: LectureRow) -> str:
     """드롭다운 표시문구: '13강 - 트랜잭션 ✅'(영상 이수면 체크)."""
     mark = " ✅" if row.video_done else ""
     return f"{row.seq}강 - {row.name}{mark}"
+
+
+# 영상 시청 중 15초마다 찍히는 재생 위치 덤프 — 로그의 대부분을 차지한다.
+# 로그 줄은 "10:41:47 INFO     {'pos': …}" 처럼 시각·수준이 앞에 붙으므로
+# 줄 처음이 아니라 **줄 안 어디든** 찾는다(앞을 고정하면 하나도 못 걸러낸다).
+_POS_DUMP_RE = re.compile(r"\{'(?:pos|evalErr|gone|none)'")
+
+
+def is_progress_dump(line: str) -> bool:
+    """`{'pos': …}` 처럼 재생 위치만 알려주는 줄인가(사람이 읽을 내용 아님)."""
+    return bool(_POS_DUMP_RE.search(str(line or "")))
+
+
+def condense_log_lines(lines, limit: int = 400, keep_tail: int = 3) -> list[str]:
+    """실행 로그에서 **읽을 만한 줄만** 남긴다(마지막 limit 줄).
+
+    영상 이수는 15초마다 재생 위치를 찍어, 마지막 500줄이 통째로
+    `{'pos': …}` 로 채워진다 → [최근 실행 로그 보기]를 눌러도 아무것도 안
+    보이는 것과 같아진다(실측 불편). 위치 덤프는 **가장 최근 몇 줄만** 남기고
+    접어서, 단계 전환·오류 같은 실제 사건이 화면에 들어오게 한다.
+    """
+    lines = list(lines or [])
+    dumps = [ln for ln in lines if is_progress_dump(ln)]
+    keep_from = len(dumps) - max(0, int(keep_tail))
+    kept, seen = [], 0
+    for ln in lines:
+        if is_progress_dump(ln):
+            seen += 1
+            if seen <= keep_from:
+                continue
+        kept.append(ln)
+    if dumps and keep_from > 0:
+        kept.insert(0, f"… 재생 위치 기록 {keep_from}줄 접음(마지막 것만 표시)")
+    return kept[-limit:] if limit and limit > 0 else kept
+
+
+def staleness_text(seconds, quiet_after: float = 180.0) -> str:
+    """마지막 로그 이후 흐른 시간 → 안내 문구(조용한 지 얼마 안 됐으면 빈 문자열).
+
+    영상 이수는 15초마다, 프레임 추출·요약은 몇 분씩 조용하다. 그래서 잠깐의
+    침묵은 정상이지만, 오래 조용하면 사람이 '멈춘 건가?' 하고 의심하게 된다
+    (실측: 랩탑을 닫았다 열고 나서). 마지막 소식이 언제였는지 그대로 보여준다.
+    """
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if s < quiet_after:
+        return ""
+    return f"마지막 소식 {format_elapsed(s)} 전"
 
 
 def refresh_lecture_options(rows, course_dd, lecture_dd) -> bool:
@@ -310,7 +361,13 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                     f"({pct}%){rtxt}")
         el = format_elapsed(time.monotonic() - t0)
         act = state.get("activity")
-        return f"경과 {el}" + (f" · {act}" if act else "")
+        base = f"경과 {el}" + (f" · {act}" if act else "")
+        return base + (f" · {stale}" if (stale := _stale_text()) else "")
+
+    def _stale_text() -> str:
+        """오래 조용하면 마지막 소식이 언제였는지 알려준다(멈춤 오해 방지)."""
+        ts = state.get("last_line_ts")
+        return staleness_text(time.monotonic() - ts) if ts else ""
 
     def _refresh_elapsed():
         elapsed_text.value = _activity_text()
@@ -401,6 +458,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
         _start_ticker()
 
         def on_line(line: str):
+            state["last_line_ts"] = time.monotonic()   # 살아있음의 근거
             log(line)
             ev = parse_progress_line(line)
             if not ev:
@@ -776,13 +834,17 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
             set_status("표시할 실행 로그가 없습니다 (logs/run_*.log).",
                        ft.Colors.GREY)
             return
-        lines = read_log_tail(p, _MAX_LOG_LINES)
+        raw = read_log_tail(p, 4000)          # 넉넉히 읽고 나서 추린다
+        lines = condense_log_lines(raw, _MAX_LOG_LINES - 1)
         log_view.controls.clear()
+        # 헤더를 **먼저** 넣고 본문은 그만큼 줄여 담는다 — 예전에는 헤더까지
+        # 501줄이 되어 트림에 밀려 사라지고, 남은 화면은 온통 위치 덤프라
+        # '눌러도 아무 일 없는' 것처럼 보였다.
         log(f"📄 최근 실행 로그: {Path(p).name}", ft.Colors.BLUE)
         for ln in lines:
             log(ln)
-        set_status(f"최근 실행 로그 표시 ({len(lines)}줄) — {Path(p).name}",
-                   ft.Colors.BLUE)
+        set_status(f"최근 실행 로그 표시 ({len(lines)}줄 · 원본 {len(raw)}줄) "
+                   f"— {Path(p).name}", ft.Colors.BLUE)
 
     def on_make_quiz(_):
         """모은 돌발퀴즈/형성평가 문항으로 복습용 HTML 페이지를 만들어 연다."""

@@ -1421,3 +1421,70 @@ def test_refresh_after_run_uses_the_saved_snapshot(tmp_path):
     assert refresh_lecture_options(load_snapshot_rows(snap),
                                    course_dd, lecture_dd) is True
     assert lecture_dd.options[0].text.endswith("✅")
+
+
+# --- 실행 로그 보기: 위치 덤프에 파묻히지 않게 -------------------------------
+# 실측 불편: [최근 실행 로그 보기]를 눌러도 아무것도 안 보였다. 영상 이수가
+# 15초마다 재생 위치를 찍어 마지막 500줄이 통째로 {'pos': …} 였고, 헤더까지
+# 501줄이 되어 트림에 밀려 사라졌기 때문(실제 로그: 500줄 중 437줄이 덤프).
+from app.views.run_view import (  # noqa: E402
+    condense_log_lines,
+    is_progress_dump,
+    staleness_text,
+)
+
+_DUMP = "10:41:47 INFO     {'pos': 548.5, 'dur': 4633.3, 'rate': 2}"
+_REAL = "12:13:21 INFO   ✓ summarize: 완료"
+
+
+def test_progress_dump_detected_with_log_prefix():
+    # 줄 앞에 시각·수준이 붙는다 — 앞을 고정하면 하나도 못 걸러낸다
+    assert is_progress_dump(_DUMP) is True
+    assert is_progress_dump("{'pos': 1}") is True
+    assert is_progress_dump("10:00:00 INFO {'evalErr': 'closed'}") is True
+
+
+def test_real_lines_are_not_dumps():
+    assert is_progress_dump(_REAL) is False
+    assert is_progress_dump("12:17:36 ERROR ✗ capture 예외: 어쩌고") is False
+    assert is_progress_dump("") is False
+
+
+def test_condense_folds_dumps_and_keeps_events():
+    lines = [_DUMP] * 400 + [_REAL]
+    out = condense_log_lines(lines, limit=500, keep_tail=3)
+    assert _REAL in out
+    assert sum(1 for ln in out if is_progress_dump(ln)) == 3
+    assert any("접음" in ln for ln in out)
+
+
+def test_condense_surfaces_old_events_that_were_buried():
+    # 예전에는 덤프 500줄에 밀려 첫 단계 로그가 화면에 못 들어왔다
+    lines = ["10:36:40 INFO ▶ 모드=전체"] + [_DUMP] * 600 + [_REAL]
+    out = condense_log_lines(lines, limit=500)
+    assert out[1].startswith("10:36:40")
+
+
+def test_condense_without_dumps_is_unchanged():
+    lines = [_REAL, "12:13:22 INFO 다음"]
+    assert condense_log_lines(lines, limit=500) == lines
+
+
+def test_condense_empty():
+    assert condense_log_lines([], limit=500) == []
+
+
+# --- '멈춘 건가?' 를 알 수 있게 ----------------------------------------------
+def test_staleness_quiet_for_a_while_is_silent():
+    # 영상 이수는 15초, 프레임 추출·요약은 몇 분씩 조용한 게 정상
+    assert staleness_text(10) == ""
+    assert staleness_text(120) == ""
+
+
+def test_staleness_reports_long_silence():
+    msg = staleness_text(4000)
+    assert "마지막 소식" in msg
+
+
+def test_staleness_bad_input_is_silent():
+    assert staleness_text(None) == "" and staleness_text("x") == ""
