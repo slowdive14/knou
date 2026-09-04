@@ -126,3 +126,48 @@ def test_match_pdf_post_ignores_non_lecture_categories():
 
 def test_match_pdf_post_empty_list():
     assert match_pdf_post([], 1) is None
+
+
+# --- 다운로드 결과를 반드시 로그로 남긴다 -----------------------------------
+# 실측 사고(logs/run_20260904_103640.log · C프로그래밍 8강):
+#   16:22:18 INFO  PDF 다운로드: C프로그래밍_8강.pdf ← C프로그래밍_8강_강의록.pdf
+# 이 줄만 보면 받아진 것 같지만 실제로는 파일이 없었다. 시도 직전에만 로그를
+# 찍고 결과를 확인하지 않았기 때문이다.
+from download import download_result_text  # noqa: E402
+
+
+def test_success_reports_name_and_size():
+    msg = download_result_text("강의록", {"ok": True, "bytes": 662662,
+                                          "path": "d/C_8강.pdf"})
+    assert "C_8강.pdf" in msg and "0.7MB" in msg
+    assert "실패" not in msg
+
+
+def test_skip_is_distinguished_from_a_fresh_download():
+    msg = download_result_text("MP3", {"ok": True, "skipped": True,
+                                       "path": "d/C_8강.mp3"})
+    assert "skip" in msg
+
+
+def test_http_failure_is_marked_clearly():
+    msg = download_result_text("강의록", {"ok": False, "status": 500,
+                                          "path": "d/C_8강.pdf"})
+    assert msg.startswith("⚠️")
+    assert "실패" in msg and "500" in msg
+
+
+def test_html_response_is_explained_in_plain_words():
+    # 에러 코드만 남기면 사용자가 원인을 알 수 없다
+    msg = download_result_text("강의록", {"ok": False, "error": "html_response",
+                                          "path": "d/C_8강.pdf"})
+    assert "로그인" in msg or "권한" in msg
+
+
+def test_unknown_failure_still_says_it_failed():
+    msg = download_result_text("강의록", {"ok": False, "path": "d/x.pdf"})
+    assert "실패" in msg
+
+
+def test_empty_result_does_not_crash():
+    assert "실패" in download_result_text("강의록", {})
+    assert "실패" in download_result_text("강의록", None)

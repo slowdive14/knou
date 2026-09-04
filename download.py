@@ -208,6 +208,32 @@ def download_url(ctx, url: str, dest, timeout: int = 180000) -> dict:
     return {"ok": True, "status": resp.status, "bytes": len(body), "path": str(dest)}
 
 
+_FAIL_REASON = {
+    "html_response": "로그인 만료나 권한 문제로 보이는 HTML 응답을 받음",
+}
+
+
+def download_result_text(kind: str, res: dict) -> str:
+    """다운로드 결과 → 로그 한 줄(순수).
+
+    예전에는 시도 직전에 "PDF 다운로드: …" 만 찍고 결과를 확인하지 않아,
+    **실패해도 성공한 것처럼 보였다**(실측: C프로그래밍 8강 강의록이 로그상
+    받아진 것으로 보였으나 파일이 없었다). 결과를 반드시 한 줄로 남긴다.
+    """
+    res = res or {}
+    name = Path(res.get("path") or "").name or kind
+    if res.get("ok"):
+        if res.get("skipped"):
+            return f"{kind} skip(이미 있음): {name}"
+        mb = (res.get("bytes") or 0) / 1_000_000
+        return f"{kind} 받음: {name} ({mb:.1f}MB)"
+    why = res.get("error") or ""
+    why = _FAIL_REASON.get(why, why)
+    status = res.get("status")
+    detail = why or (f"HTTP {status}" if status else "원인 불명")
+    return f"⚠️ {kind} 받기 실패: {name} — {detail}"
+
+
 def download_lecture(ctx, page, lec, subject: str, posts=None,
                      dest_dir="downloads", overwrite: bool = False,
                      on_event=None) -> dict:
@@ -235,8 +261,9 @@ def download_lecture(ctx, page, lec, subject: str, posts=None,
             out["mp3"] = {"ok": True, "skipped": True, "path": str(mp3_path)}
             log(f"MP3 skip(이미 있음): {mp3_path.name}")
         else:
-            log(f"MP3 다운로드: {mp3_path.name}")
+            log(f"MP3 다운로드 시작: {mp3_path.name}")
             out["mp3"] = download_url(ctx, lec.audio_url, mp3_path)
+            log(download_result_text("MP3", out["mp3"]))
     else:
         log("MP3 URL 없음(audio_url 비어있음)")
 
@@ -253,8 +280,9 @@ def download_lecture(ctx, page, lec, subject: str, posts=None,
             log(f"PDF skip(이미 있음): {pdf_path.name}")
         else:
             url = build_file_url(lec.sbjt_id, m["save_nm"], m["display_nm"])
-            log(f"PDF 다운로드: {pdf_path.name} ← {m['display_nm']}")
+            log(f"강의록 다운로드 시작: {pdf_path.name} ← {m['display_nm']}")
             out["pdf"] = download_url(ctx, url, pdf_path)
+            log(download_result_text("강의록", out["pdf"]))
     else:
         log(f"PDF 매칭 글 없음(seq={lec.seq})")
 

@@ -422,7 +422,14 @@ def _stage_download(c: _Ctx, course: str, lec) -> dict:
         on_event=lambda m: c.logger.info("    %s", m))
     c.posts_cache[course] = res.get("posts")
     mp3 = res.get("mp3") or {}
-    pdf_ok = bool((res.get("pdf") or {}).get("ok"))
+    pdf = res.get("pdf") or {}
+    pdf_ok = bool(pdf.get("ok"))
+    if pdf and not pdf_ok:
+        # 강의자료실에 글은 있는데 못 받은 경우 — 노트는 음성만으로도 만들 수
+        # 있으니 단계를 실패로 만들지는 않되, 조용히 넘어가지도 않는다.
+        # 다시 받으려면: --stages download --force
+        c.logger.warning("    강의록 없이 진행합니다 — 나중에 "
+                         "'--stages download --force' 로 다시 받을 수 있습니다")
     if mp3.get("ok"):
         return {"ok": True, "detail": {"pdf": pdf_ok}}
     # ① MP3 링크가 없거나 받기 실패 → 영상에서 오디오를 직접 뽑아 본다
