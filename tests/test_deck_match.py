@@ -109,3 +109,55 @@ def test_scrub_empty_embeds_keeps_missing_file(tmp_path):
     new_md, removed = scrub_empty_embeds(md, tmp_path)
     assert removed == set()
     assert "![[gone.png]]" in new_md
+
+
+# --- 모델이 번호 대신 설명을 보내도 무너지지 않는다 --------------------------
+# 실측 사고(logs/run_20260904_103640.log · C프로그래밍 7강):
+#   ✗ capture 예외: invalid literal for int() with base 10:
+#     '개념 1 [1.1 함수의 호출과 자료 전달]'
+# 번호만 달라고 요청해도 모델이 설명을 덧붙여 보내는 경우가 있는데, int() 가
+# 그대로 예외를 일으켜 capture 단계가 통째로 무너졌다(노트는 만들어졌는데
+# 슬라이드 이미지만 빠짐).
+from deck_match import as_index, index_map, matched_plan  # noqa: E402
+
+
+def test_as_index_reads_plain_numbers():
+    assert as_index(3) == 3
+    assert as_index("3") == 3
+    assert as_index(" 7 ") == 7
+
+
+def test_as_index_reads_number_inside_a_sentence():
+    assert as_index("개념 1 [1.1 함수의 호출과 자료 전달]") == 1
+    assert as_index("슬라이드 12번") == 12
+
+
+def test_as_index_gives_up_gracefully():
+    assert as_index("없음") is None
+    assert as_index(None) is None
+    assert as_index("") is None
+    assert as_index(True) is None          # bool 은 번호가 아니다
+
+
+def test_index_map_drops_unreadable_entries():
+    got = index_map([{"c": "개념 2 [제목]", "slide": 5},
+                     {"c": "알 수 없음", "slide": 1},
+                     {"c": 3, "slide": 7},
+                     "문자열", None])
+    assert sorted(got) == [2, 3]
+
+
+def test_matched_plan_survives_verbose_model_output():
+    deck = [{"n": 5, "sec": 100}, {"n": 7, "sec": 200}]
+    concepts = [{"heading": "가"}, {"heading": "나"}, {"heading": "다"}]
+    result = [{"c": "개념 1 [1.1 함수의 호출]", "slide": "슬라이드 5"},
+              {"c": 2, "slide": 7},
+              {"c": "설명만 있음", "slide": "없음"}]
+    plan = matched_plan(deck, concepts, result)
+    assert plan == {0: 100, 1: 200}        # 예외 없이 읽을 수 있는 것만 반영
+
+
+def test_matched_plan_ignores_unknown_slide_numbers():
+    deck = [{"n": 5, "sec": 100}]
+    concepts = [{"heading": "가"}]
+    assert matched_plan(deck, concepts, [{"c": 1, "slide": 99}]) == {}

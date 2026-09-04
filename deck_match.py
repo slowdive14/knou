@@ -369,15 +369,43 @@ def match_concepts(client, deck: list[dict], concepts: list[dict],
 # ---------------------------------------------------------------------------
 # 매칭 결과 → 계획(plan) + 전방채움
 # ---------------------------------------------------------------------------
+def as_index(value):
+    """Gemini 응답의 번호 필드를 정수로 바꾼다(못 바꾸면 None).
+
+    번호만 돌려달라고 요청해도 모델이 "개념 1 [1.1 함수의 호출과 자료 전달]"
+    처럼 설명을 덧붙여 보내는 경우가 있다. 예전에는 int() 가 그대로 예외를
+    일으켜 capture 단계 전체가 무너졌다(실측: C프로그래밍 7강에서 노트는
+    만들어졌는데 슬라이드 이미지만 통째로 빠졌다). 문자열에서 첫 번째 정수를
+    찾아 쓰고, 그마저 없으면 그 항목만 조용히 건너뛴다.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    m = re.search(r"-?\d+", str(value or ""))
+    return int(m.group(0)) if m else None
+
+
+def index_map(result) -> dict:
+    """매칭 응답 목록 → {개념번호: 항목}. 번호를 못 읽은 항목은 버린다."""
+    out = {}
+    for r in result or []:
+        if not isinstance(r, dict) or "c" not in r:
+            continue
+        k = as_index(r.get("c"))
+        if k is not None:
+            out[k] = r
+    return out
+
+
 def matched_plan(deck: list[dict], concepts: list[dict],
                  result: list[dict]) -> dict[int, int]:
     """Gemini 응답 → {concept_index(0base): slide_sec}. 매칭된 것만."""
-    by_c = {int(r.get("c")): r for r in result
-            if isinstance(r, dict) and "c" in r}
+    by_c = index_map(result)
     sec_of = {s["n"]: s["sec"] for s in deck}
     plan: dict[int, int] = {}
     for k in range(1, len(concepts) + 1):
-        slide = int((by_c.get(k, {}) or {}).get("slide", 0) or 0)
+        slide = as_index((by_c.get(k, {}) or {}).get("slide")) or 0
         if slide and slide in sec_of:
             plan[k - 1] = sec_of[slide]
     return plan
@@ -463,8 +491,7 @@ def _write_preview(preview_dir: Path, deck: list[dict], concepts: list[dict],
 def _print_table(concepts: list[dict], deck: list[dict], plan: dict[int, int],
                  filled: set[int], result: list[dict],
                  emit=print) -> None:
-    by_c = {int(r.get("c")): r for r in result
-            if isinstance(r, dict) and "c" in r}
+    by_c = index_map(result)
     n_of = {s["sec"]: s["n"] for s in deck}
     emit("\n=== 매칭 결과 ===")
     for ci, c in enumerate(concepts):

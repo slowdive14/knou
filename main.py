@@ -519,15 +519,37 @@ def _needs_gemini(stages) -> bool:
 # ---------------------------------------------------------------------------
 # 오케스트레이션 (IO)
 # ---------------------------------------------------------------------------
-def run(mode: str, course: str | None = None, seq=None,
-        state_path=DEFAULT_STATE, cfg=None, unwatched: bool = False,
-        limit: int | None = None, only_stages: list[str] | None = None,
-        force: bool = False) -> dict:
+def run(*args, **kwargs) -> dict:
+    """실행 내내 **시스템 절전을 억제**하면서 _run 을 돌린다.
+
+    예전에는 예약 실행만 keep_awake.py 를 거쳤고, 앱에서 누른 실행은 억제가
+    전혀 걸리지 않았다. 그래서 야간에 자리를 비우면 도중에 유휴 절전이 걸려
+    영상이 멈추고, 깨어났을 때는 HLS 토큰까지 만료되어 있었다(실측: 80분짜리
+    한 강의가 4시간 걸림). 이제 어떤 경로로 실행하든 여기서 직접 건다.
+
+    ⚠️ 이것은 **유휴 절전**만 막는다. 노트북 뚜껑을 닫는 것처럼 사람이 명시적으로
+       지시한 절전은 Windows 정책상 프로그램이 막을 수 없다(뚜껑 동작을 바꾸려면
+       사용자가 전원 설정을 직접 고쳐야 한다).
+    """
+    from keep_awake import begin_keep_awake, end_keep_awake
+
+    awake = begin_keep_awake()
+    try:
+        return _run(*args, awake=awake, **kwargs)
+    finally:
+        end_keep_awake()
+
+
+def _run(mode: str, course: str | None = None, seq=None,
+         state_path=DEFAULT_STATE, cfg=None, unwatched: bool = False,
+         limit: int | None = None, only_stages: list[str] | None = None,
+         force: bool = False, awake: bool = False) -> dict:
     """전과목 순회 오케스트레이션. 반환: 실행 요약 dict.
 
     unwatched=True 면 영상 미시청 강의만 / limit 이 있으면 처리 대상을 N개로 제한.
     only_stages 가 있으면 모드 단계 중 그 단계만 실행(예: ["capture"]).
     force=True(다시 만들기/덮어쓰기)면 이미 완료된 차시·단계도 무시하고 다시 처리한다.
+    awake 는 절전 억제가 실제로 걸렸는지(로그 표시용) — run() 이 채워 준다.
     """
     from google import genai
     from playwright.sync_api import sync_playwright
@@ -552,6 +574,9 @@ def run(mode: str, course: str | None = None, seq=None,
     logger.info("▶ 모드=%s 단계=%s 필터(course=%s, seq=%s, unwatched=%s, "
                 "limit=%s, force=%s)",
                 mode, stages, course, seq, unwatched, limit, force)
+    logger.info("절전 억제: %s (유휴 절전만 막습니다 — 노트북 뚜껑을 닫으면 "
+                "그래도 잠듭니다)",
+                "켜짐" if awake else "걸지 못함")
 
     processed = skipped_lec = failed_lec = 0
     with sync_playwright() as p:
