@@ -153,11 +153,13 @@ def short_course(name: str, limit: int = 9) -> str:
 # 화면 (Flet — 수동 스모크)
 # ---------------------------------------------------------------------------
 def build_status_view(page=None, on_open_quiz=None, on_open_pdf=None,
+                      on_fetch_doc=None,
                       snapshot_path=None, state_path=None) -> ft.Control:
     """현황 화면.
 
     on_open_quiz(과목, 차시)  — '형성평가 N문항' 칩 → 퀴즈 화면
     on_open_pdf(경로, 제목)   — 강의록 칩 → 앱 안 PDF 화면(없으면 기본 프로그램)
+    on_fetch_doc(과목, 차시)  — 강의록이 없는 줄의 '받기' 칩 → 그 강의록만 내려받기
     """
     snapshot_path = snapshot_path or SNAPSHOT_PATH
     state_path = state_path or STATE_PATH
@@ -240,10 +242,20 @@ def build_status_view(page=None, on_open_quiz=None, on_open_pdf=None,
                                lambda e, p=mp3.get("path"): _open_file(p, "MP3"))
                     if mp3 else None)
         doc = r.get("doc")
-        doc_cell = (_icon_chip(ft.Icons.PICTURE_AS_PDF,
-                               f"{doc.get('kind') or 'PDF'} 보기 — {doc.get('name')}",
-                               lambda e, d=doc: _open_pdf(d))
-                    if doc else None)
+        if doc:
+            doc_cell = _icon_chip(
+                ft.Icons.PICTURE_AS_PDF,
+                f"{doc.get('kind') or 'PDF'} 보기 — {doc.get('name')}",
+                lambda e, d=doc: _open_pdf(d))
+        elif on_fetch_doc is not None:
+            # 강의록이 없는 줄에서 **그것만** 바로 받을 수 있게 한다.
+            # (실측: 다운로드가 조용히 실패해 강의록만 빠진 차시가 생겼다)
+            doc_cell = _icon_chip(
+                ft.Icons.DOWNLOAD,
+                "강의록 받기 — 이 차시의 강의록만 내려받습니다",
+                lambda e, c=r.get("course"), q=r.get("seq"): on_fetch_doc(c, q))
+        else:
+            doc_cell = None
 
         lec = ft.Row([seq, name, mins], spacing=10, wrap=False,
                      vertical_alignment=ft.CrossAxisAlignment.CENTER)

@@ -1488,3 +1488,120 @@ def test_staleness_reports_long_silence():
 
 def test_staleness_bad_input_is_silent():
     assert staleness_text(None) == "" and staleness_text("x") == ""
+
+
+# --- 강의록만 따로 받기 -------------------------------------------------------
+# 실측 사고: 다운로드가 조용히 실패해 C프로그래밍 8강만 강의록이 빠졌다. 현황에서
+# 비어 보이는 그 자리에서 바로 다시 받을 수 있어야 한다.
+def _doc_btn(view):
+    return next(c for c in _walk(view)
+                if isinstance(c, ft.OutlinedButton) and c.content == "강의록만 받기")
+
+
+def test_run_view_has_doc_only_button(tmp_path):
+    view = build_run_view(snapshot_path=tmp_path / "none.json")
+    assert _doc_btn(view) is not None
+
+
+def test_doc_only_requires_course_and_lecture(tmp_path):
+    view = build_run_view(snapshot_path=tmp_path / "none.json")
+    _doc_btn(view).on_click(None)
+    msgs = [c.value for c in _walk(view)
+            if isinstance(c, ft.Text) and c.color == ft.Colors.RED]
+    assert any("과목과 차시" in (m or "") for m in msgs)
+
+
+def test_doc_only_needs_no_consent_dialog(tmp_path):
+    # 서버에 아무것도 제출하지 않는 읽기 작업이다
+    page = _DialogPage()
+    view = build_run_view(page, snapshot_path=tmp_path / "none.json")
+    dds = [c for c in _walk(view) if isinstance(c, ft.Dropdown)]
+    dds[0].value, dds[1].value = "C프로그래밍", "8"
+    _doc_btn(view).on_click(None)
+    assert page.dialogs == []
+
+
+def test_doc_only_command_is_download_stage_with_force():
+    # --stages download + --force. force 가 없으면 download 가 이미 '완료'로
+    # 기록돼 있어 단계 자체가 건너뛰어진다(강의록만 빠진 채 완료로 남는 경우).
+    from runner import build_command
+    argv = build_command("py.exe", "요약", course="C프로그래밍", seq=8,
+                         limit=1, stages=["download"], force=True)
+    assert "--stages" in argv and "download" in argv
+    assert "--force" in argv
+    assert argv[argv.index("--seq") + 1] == "8"
+    assert "이수" not in argv and "summarize" not in argv
+
+
+def test_run_view_exposes_fetch_doc_to_other_screens(tmp_path):
+    # 현황 화면이 실행을 요청할 통로가 열려 있어야 한다
+    api = {}
+    build_run_view(snapshot_path=tmp_path / "none.json", on_ready=api.update)
+    assert callable(api.get("fetch_doc"))
+
+
+def test_fetch_doc_selects_the_lecture_and_starts(tmp_path, monkeypatch):
+    import app.views.run_view as rv
+    _CapturingJob.argvs = []
+    monkeypatch.setattr(rv, "JobRunner", _CapturingJob)
+    snap = tmp_path / "lectures.json"
+    snap.write_text(
+        '{"courses":[{"name":"C프로그래밍","lectures":'
+        '[{"seq":7,"name":"함수","video_done":true,"exam_done":true},'
+        '{"seq":8,"name":"배열","video_done":true,"exam_done":true}]}]}',
+        encoding="utf-8")
+    api = {}
+    build_run_view(snapshot_path=snap, on_ready=api.update)
+    assert api["fetch_doc"]("C프로그래밍", 8) is True
+    argv = _CapturingJob.argvs[-1]
+    assert argv[argv.index("--seq") + 1] == "8"
+    assert "download" in argv and "--force" in argv
+
+
+def _download_chips(view):
+    """현황 화면의 '강의록 받기' 칩(내려받기 아이콘)."""
+    return [c for c in _walk(view)
+            if isinstance(c, ft.IconButton) and c.icon == ft.Icons.DOWNLOAD]
+
+
+def _snap_no_files(tmp_path):
+    """내려받은 파일이 하나도 없는 차시(seq 99)만 담은 스냅샷.
+
+    현황은 실제 downloads 폴더를 보므로, 파일이 없는 차시를 써야 '강의록 없음'
+    상태를 만들 수 있다.
+    """
+    import json
+    p = tmp_path / "lectures.json"
+    p.write_text(json.dumps({
+        "generated_at": "2026-08-17T12:09:22",
+        "courses": [{"name": "없는과목", "lectures": [
+            {"seq": 99, "name": "없는차시", "video_done": False}]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def test_status_view_offers_a_fetch_chip_when_the_doc_is_missing(tmp_path):
+    asked = []
+    view = build_status_view(on_fetch_doc=lambda c, q: asked.append((c, q)),
+                             snapshot_path=_snap_no_files(tmp_path),
+                             state_path=tmp_path / "s.json")
+    chips = _download_chips(view)
+    assert len(chips) == 1
+    chips[0].on_click(None)
+    assert asked == [("없는과목", 99)]      # 그 줄의 과목·차시가 전달된다
+
+
+def test_status_view_has_no_fetch_chip_without_the_callback(tmp_path):
+    # 연결이 없으면(HTML 저장 등) 누를 수 없는 칩을 만들지 않는다
+    view = build_status_view(snapshot_path=_snap_no_files(tmp_path),
+                             state_path=tmp_path / "s.json")
+    assert _download_chips(view) == []
+
+
+def test_existing_doc_shows_a_view_chip_not_a_fetch_chip(tmp_path):
+    # 강의록이 있는 줄은 예전처럼 '보기' 칩이어야 한다(받기 칩으로 바뀌면 안 됨)
+    view = build_status_view(on_fetch_doc=lambda c, q: None,
+                             snapshot_path=_snap(tmp_path),
+                             state_path=tmp_path / "s.json")
+    icons = [c.icon for c in _walk(view) if isinstance(c, ft.IconButton)]
+    assert ft.Icons.PICTURE_AS_PDF in icons

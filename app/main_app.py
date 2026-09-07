@@ -85,14 +85,15 @@ def _placeholder(title: str, note: str) -> ft.Control:
 
 
 def _build_view(index: int, page: ft.Page, go=None, quiz_start=None,
-                open_pdf=None) -> ft.Control:
+                open_pdf=None, fetch_doc=None) -> ft.Control:
     """네비 인덱스 → 해당 화면 컨트롤.
 
     go(과목, 차시) 는 화면 간 이동 콜백(현황의 '형성평가' 칩 → 퀴즈 화면),
     quiz_start=(과목, 차시) 면 퀴즈 화면이 그 강의부터 열린다.
     """
     if index == NAV_STATUS:
-        return build_status_view(page, on_open_quiz=go, on_open_pdf=open_pdf)
+        return build_status_view(page, on_open_quiz=go, on_open_pdf=open_pdf,
+                                 on_fetch_doc=fetch_doc)
     if index == NAV_QUIZ:
         return build_quiz_view(page, initial=quiz_start)
     if index == 0:
@@ -139,13 +140,14 @@ def main(page: ft.Page) -> None:
     # 남아 있어야 워커 스레드가 보내는 갱신이 계속 반영된다.
     run_box = ft.Container(expand=True, padding=24, visible=False)
     nav_state = {"quiz_start": None}
+    run_api: dict = {}          # 실행 화면이 넘겨주는 조작 함수(강의록만 받기 등)
 
     def show(index: int) -> None:
         start = nav_state.pop("quiz_start", None) if index == NAV_QUIZ else None
         nav_state["quiz_start"] = None
         if index == NAV_RUN:
             if run_box.content is None:      # 처음 들어올 때 한 번만 만든다
-                run_box.content = build_run_view(page)
+                run_box.content = build_run_view(page, on_ready=run_api.update)
             run_box.visible = True
             content.visible = False
             content.content = None
@@ -153,7 +155,8 @@ def main(page: ft.Page) -> None:
             run_box.visible = False
             content.visible = True
             content.content = _build_view(index, page, go=open_quiz,
-                                          quiz_start=start, open_pdf=open_pdf)
+                                          quiz_start=start, open_pdf=open_pdf,
+                                          fetch_doc=fetch_doc)
         rail.selected_index = index
         page.update()
 
@@ -170,6 +173,17 @@ def main(page: ft.Page) -> None:
         content.visible = True
         content.content = view
         page.update()
+
+    def fetch_doc(course, seq) -> None:
+        """현황의 '강의록 받기' 칩 → 실행 화면으로 옮겨 그 차시만 내려받는다.
+
+        실행 화면을 먼저 띄워야 진행 로그가 보이고, 아직 안 만들어졌다면
+        show() 가 여기서 만들면서 run_api 를 채워 준다.
+        """
+        show(NAV_RUN)
+        fn = run_api.get("fetch_doc")
+        if fn is not None:
+            fn(course, seq)
 
     def open_quiz(course, seq) -> None:
         """현황 화면의 '형성평가 N문항' 칩 → 퀴즈 화면의 그 강의로 이동."""

@@ -248,8 +248,13 @@ def build_extra_dialog(body_text, on_confirm, on_cancel,
 # ---------------------------------------------------------------------------
 # 뷰 빌더 (Flet UI — 수동 스모크)
 # ---------------------------------------------------------------------------
-def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
-    """실행 화면 컨트롤 트리 생성. page 가 없으면(테스트) update 는 무시."""
+def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH,
+                   on_ready=None) -> ft.Control:
+    """실행 화면 컨트롤 트리 생성. page 가 없으면(테스트) update 는 무시.
+
+    on_ready(api) 를 주면 화면이 만들어질 때 조작 함수 dict 를 넘겨준다. 다른
+    화면(현황)에서 '이 차시 강의록만 받아 줘' 처럼 실행을 요청할 통로다.
+    """
     state = {"rows": load_snapshot_rows(snapshot_path),
              "job": None, "note_path": None}
 
@@ -299,6 +304,10 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                              visible=False, disabled=True)
     view_log_btn = ft.OutlinedButton("최근 실행 로그 보기",
                                      icon=ft.Icons.DESCRIPTION)
+    doc_btn = ft.OutlinedButton(
+        "강의록만 받기", icon=ft.Icons.PICTURE_AS_PDF,
+        tooltip="선택한 차시의 강의록(PDF·PPT)만 다시 내려받습니다. "
+                "서버에 아무것도 남기지 않습니다")
     watch_btn = ft.OutlinedButton("영상 이수만 실행", icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
                                   tooltip="선택한 차시의 영상만 다시 이수합니다. "
                                           "예습노트는 그대로 두므로 노트는 멀쩡한데 "
@@ -395,6 +404,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
 
     def _set_running(running: bool):
         gen_btn.disabled = running
+        doc_btn.disabled = running
         watch_btn.disabled = running
         exam_btn.disabled = running
         refresh_btn.disabled = running
@@ -637,6 +647,23 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                 page.show_dialog(dlg)
             except Exception:
                 pass
+
+    # --- 강의록만 따로 받기 -----------------------------------------------
+    def on_doc_only(_):
+        """`main.py --stages download --force` 로 **강의록만** 다시 받는다.
+
+        서버에 아무것도 제출하지 않는 읽기 작업이라 동의 다이얼로그가 없다.
+        MP3 는 이미 있으면 건너뛰므로 사실상 강의록만 받는다. --force 가 필요한
+        이유는 download 가 이미 '완료'로 기록돼 있으면 단계 자체가 skip 되기
+        때문이다(강의록만 빠진 채 완료로 남는 경우가 실제로 있었다).
+        """
+        if not course_dd.value or not lecture_dd.value:
+            set_status("먼저 과목과 차시를 선택하세요.", ft.Colors.RED)
+            return
+        course, seq = course_dd.value, int(lecture_dd.value)
+        argv = build_command(_python_exe(), MODE_SUMMARY, course=course,
+                             seq=seq, limit=1, stages=["download"], force=True)
+        _start_job(argv, f"{course} {seq}강 강의록")
 
     # --- 영상 이수만 따로 -------------------------------------------------
     def _run_watch_only(course, seq, row):
@@ -898,11 +925,32 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
     open_btn.on_click = on_open
     view_log_btn.on_click = on_view_log
     quiz_btn.on_click = on_make_quiz
+    doc_btn.on_click = on_doc_only
     watch_btn.on_click = on_watch_only
     exam_btn.on_click = on_exam_only
     status_btn.on_click = on_make_status
 
+    def request_doc(course, seq) -> bool:
+        """바깥(현황 화면)에서 '이 차시 강의록만 받기'를 요청할 때 부른다.
+
+        차시를 골라 둔 뒤 [강의록만 받기] 와 똑같은 경로로 시작한다.
+        반환: 실제로 시작했으면 True.
+        """
+        job = state.get("job")
+        if job is not None and getattr(job, "running", False):
+            set_status("이미 실행 중입니다. 끝난 뒤 다시 시도하세요.",
+                       ft.Colors.ORANGE)
+            return False
+        course_dd.value = course
+        populate_lectures()
+        lecture_dd.value = str(int(seq))
+        _safe_update()
+        on_doc_only(None)
+        return True
+
     populate_courses()
+    if on_ready is not None:
+        on_ready({"fetch_doc": request_doc})
 
     log_panel = ft.Container(
         content=log_view,
@@ -930,8 +978,8 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH) -> ft.Control:
                    vertical_alignment=ft.CrossAxisAlignment.START),
             redo_chk,
             sleep_warn,
-            ft.Row([gen_btn, watch_btn, exam_btn, cancel_btn, open_btn],
-                   wrap=True),
+            ft.Row([gen_btn, watch_btn, exam_btn, doc_btn, cancel_btn,
+                    open_btn], wrap=True),
             progress,
             ft.Row([status_badge, elapsed_text], spacing=12),
             ft.Row([ft.Text("진행 로그", size=13, weight=ft.FontWeight.BOLD),
