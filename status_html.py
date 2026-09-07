@@ -132,9 +132,19 @@ def row_is_done(row: dict) -> bool:
 
     LMS 완료(video_done/exam_done)뿐 아니라 '목록 갱신 전에 실행함'도 완료로 본다
     (방금 이수했는데 목록이 아직 옛날이라 남은 것처럼 보이는 걸 막는다).
+
+    형성평가는 한 가지를 더 인정한다: **성공적으로 돌린 기록(exam_run)이 있으면
+    끝난 것으로 본다.** 형성평가가 아예 없는 과목은 몇 번을 다시 돌려도 exam_done
+    이 서지 않아서, 영상도 노트도 다 갖춘 과목이 '남은 것'에 통째로 남아 있었다
+    (실측: AI네이티브 13차시 전부). '없어서 건너뜀'을 기록하기 시작한 것은 나중
+    이라 옛 기록에는 exam_none 조차 없으므로, 그보다 넓은 exam_run 으로 받는다.
+
+    영상 이수(watch_run)는 일부러 여기에 넣지 않는다 — 돌렸는데 서버가 미이수라면
+    다시 돌려서 풀리는 문제이므로 남은 것에 보여야 한다.
     """
     watched = bool(row.get("video_done") or row.get("watch_new"))
-    examined = bool(row.get("exam_done") or row.get("exam_new"))
+    examined = bool(row.get("exam_done") or row.get("exam_new")
+                    or row.get("exam_run"))
     return bool(watched and examined and (row.get("notes") or []))
 
 

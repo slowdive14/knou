@@ -1605,3 +1605,56 @@ def test_existing_doc_shows_a_view_chip_not_a_fetch_chip(tmp_path):
                              state_path=tmp_path / "s.json")
     icons = [c.icon for c in _walk(view) if isinstance(c, ft.IconButton)]
     assert ft.Icons.PICTURE_AS_PDF in icons
+
+
+# --- 남은 것만 보기: 형성평가 없는 과목 -------------------------------------
+class _SwitchEv:
+    """Switch on_change 이벤트 대역 — 필터를 켜고 끄는 데 쓴다."""
+
+    def __init__(self, value):
+        self.control = type("C", (), {"value": value})()
+
+
+def _filter_switch(view):
+    return next(c for c in _walk(view) if isinstance(c, ft.Switch)
+                and "남은 것만" in (c.label or ""))
+
+
+def test_filter_hides_a_course_with_no_exam(tmp_path, monkeypatch):
+    """형성평가가 없는 과목이 '남은 것만 보기'에 통째로 남던 문제(실측: AI네이티브).
+
+    판정은 status_html.row_is_done 이 맡으므로, 여기서는 화면이 그 판정을
+    그대로 따라 카드를 지우는지만 본다.
+    """
+    import status_html
+    monkeypatch.setattr(status_html, "row_is_done", lambda r: True)
+    view = build_status_view(snapshot_path=_snap(tmp_path),
+                             state_path=tmp_path / "s.json")
+    names = [c.value for c in _walk(view) if isinstance(c, ft.Text)]
+    assert "C프로그래밍" in names
+    _filter_switch(view).on_change(_SwitchEv(True))
+    after = [c.value for c in _walk(view) if isinstance(c, ft.Text)]
+    assert "C프로그래밍" not in after and "자료구조" not in after
+
+
+def test_filter_explains_an_empty_result(tmp_path, monkeypatch):
+    # 전부 걸러지면 본문이 텅 비어 고장난 것처럼 보인다 — 이유를 적어야 한다
+    import status_html
+    monkeypatch.setattr(status_html, "row_is_done", lambda r: True)
+    view = build_status_view(snapshot_path=_snap(tmp_path),
+                             state_path=tmp_path / "s.json")
+    _filter_switch(view).on_change(_SwitchEv(True))
+    texts = [c.value or "" for c in _walk(view) if isinstance(c, ft.Text)]
+    assert any("남은 차시가 없습니다" in t for t in texts)
+
+
+def test_filter_off_brings_the_rows_back(tmp_path, monkeypatch):
+    import status_html
+    monkeypatch.setattr(status_html, "row_is_done", lambda r: True)
+    view = build_status_view(snapshot_path=_snap(tmp_path),
+                             state_path=tmp_path / "s.json")
+    sw = _filter_switch(view)
+    sw.on_change(_SwitchEv(True))
+    sw.on_change(_SwitchEv(False))
+    names = [c.value for c in _walk(view) if isinstance(c, ft.Text)]
+    assert "C프로그래밍" in names and "자료구조" in names

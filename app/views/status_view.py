@@ -366,10 +366,17 @@ def build_status_view(page=None, on_open_quiz=None, on_open_pdf=None,
             body.controls.append(ft.Text(
                 "표시할 강의가 없습니다. '실행' 탭의 [목록 새로고침]을 먼저 눌러 주세요.",
                 color=MUTE))
+        drawn = 0
         for c in shown:
             card = _course_card(c)
             if isinstance(card, ft.Container) and card.content is not None:
                 body.controls.append(card)
+                drawn += 1
+        # 필터가 전부 걸러내면 본문이 텅 비어 고장난 것처럼 보인다 — 이유를 적는다.
+        if shown and not drawn and state["only_todo"]:
+            body.controls.append(ft.Text(
+                "남은 차시가 없습니다 — 고른 범위는 영상 이수·형성평가·예습노트가 "
+                "모두 끝났습니다.", color=MINT))
         _safe_update()
 
     def refresh(_=None):

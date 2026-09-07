@@ -162,6 +162,25 @@ def test_row_is_done_accepts_fresh_runs():
                             exam_run=True, exam_new=True, notes=note))
 
 
+def test_row_is_done_accepts_course_without_exam():
+    """형성평가가 아예 없는 과목이 '남은 것'에 통째로 남던 문제(실측: AI네이티브).
+
+    몇 번을 다시 돌려도 exam_done 이 서지 않으므로, 성공적으로 돌린 기록이
+    있으면 형성평가 쪽은 끝난 것으로 본다. '없어서 건너뜀'(exam_none)을
+    기록하기 전의 옛 실행에는 그 표시조차 없어 exam_run 으로 받는다.
+    """
+    note = [{"part": 1}]
+    assert row_is_done(_row(video_done=True, exam_run=True,
+                            exam_none=True, notes=note))
+    assert row_is_done(_row(video_done=True, exam_run=True, notes=note))
+
+
+def test_row_is_done_still_flags_unwatched_video():
+    """영상은 반대다 — 돌렸는데 서버가 미이수면 다시 돌려서 풀리므로 남긴다."""
+    note = [{"part": 1}]
+    assert not row_is_done(_row(watch_run=True, exam_done=True, notes=note))
+
+
 def test_done_row_gets_done_class():
     note = [{"part": 1}]
     html = render_status_html([_course([_row(video_done=True, exam_done=True,
