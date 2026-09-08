@@ -267,6 +267,14 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH,
     sleep_warn = ft.Text(watch_sleep_warning(), size=12,
                          color=ft.Colors.ORANGE, visible=False)
     log_view = ft.ListView(expand=True, spacing=1, auto_scroll=True, padding=10)
+    # 파일에서 불러온 실행 로그는 진행 로그와 **따로** 담는다.
+    # 예전에는 진행 로그를 덮어썼는데, 지금 돌고 있는 실행의 로그 파일이 곧
+    # 화면 로그와 같은 내용이라 화면이 전혀 바뀌지 않았다 → 사람 눈에는
+    # '눌러도 아무것도 안 뜬다'(실측). 게다가 워커가 곧바로 새 줄을 붙이고
+    # 자동 스크롤이 맨 아래로 보내 머리글까지 묻혔다.
+    file_log_view = ft.ListView(expand=True, spacing=1, auto_scroll=True,
+                                padding=10, visible=False)
+    log_title = ft.Text("진행 로그", size=13, weight=ft.FontWeight.BOLD)
 
     mode_group = ft.RadioGroup(
         value=MODE_SUMMARY,
@@ -854,24 +862,50 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH,
         else:
             set_status("열 노트가 아직 없습니다.", ft.Colors.RED)
 
+    def _show_file_log(on: bool):
+        """로그 패널을 '파일 로그'와 '진행 로그' 사이에서 바꾼다.
+
+        컨트롤을 트리에서 빼지 않고 visible 로만 감춘다 — 빼 버리면 실행 중인
+        작업이 보내는 갱신이 갈 곳을 잃는다(main_app 의 실행 화면과 같은 이유).
+        """
+        file_log_view.visible = on
+        log_view.visible = not on
+        view_log_btn.content = "진행 로그로" if on else "최근 실행 로그 보기"
+        view_log_btn.icon = ft.Icons.ARROW_BACK if on else ft.Icons.DESCRIPTION
+        log_title.value = state.get("log_title", "진행 로그") if on else "진행 로그"
+        log_title.color = ft.Colors.BLUE if on else None
+        _safe_update()
+
     def on_view_log(_):
-        """예약(창 없이 실행)이 남긴 가장 최근 실행 로그를 로그 패널에 불러온다."""
+        """예약(창 없이 실행)이 남긴 가장 최근 실행 로그를 불러온다.
+
+        진행 로그를 덮어쓰지 않고 **따로** 보여주고, 다시 누르면 진행 로그로
+        돌아온다. 실행 중에도 진행 상황을 잃지 않는다.
+        """
+        if file_log_view.visible:              # 토글 — 진행 로그로 되돌린다
+            _show_file_log(False)
+            set_status("진행 로그로 돌아왔습니다.", ft.Colors.GREY)
+            return
         p = latest_log_path()
         if not p:
             set_status("표시할 실행 로그가 없습니다 (logs/run_*.log).",
                        ft.Colors.GREY)
             return
         raw = read_log_tail(p, 4000)          # 넉넉히 읽고 나서 추린다
-        lines = condense_log_lines(raw, _MAX_LOG_LINES - 1)
-        log_view.controls.clear()
-        # 헤더를 **먼저** 넣고 본문은 그만큼 줄여 담는다 — 예전에는 헤더까지
-        # 501줄이 되어 트림에 밀려 사라지고, 남은 화면은 온통 위치 덤프라
-        # '눌러도 아무 일 없는' 것처럼 보였다.
-        log(f"📄 최근 실행 로그: {Path(p).name}", ft.Colors.BLUE)
+        lines = condense_log_lines(raw, _MAX_LOG_LINES)
+        file_log_view.controls.clear()
         for ln in lines:
-            log(ln)
+            file_log_view.controls.append(
+                ft.Text(ln, size=12, selectable=True))
+        if not lines:
+            file_log_view.controls.append(
+                ft.Text(f"{Path(p).name} 이 비어 있습니다.", size=12,
+                        color=ft.Colors.GREY))
+        state["log_title"] = (f"📄 {Path(p).name} — {len(lines)}줄"
+                              f"(원본 {len(raw)}줄)")
+        _show_file_log(True)
         set_status(f"최근 실행 로그 표시 ({len(lines)}줄 · 원본 {len(raw)}줄) "
-                   f"— {Path(p).name}", ft.Colors.BLUE)
+                   f"— 다시 누르면 진행 로그로 돌아옵니다", ft.Colors.BLUE)
 
     def on_make_quiz(_):
         """모은 돌발퀴즈/형성평가 문항으로 복습용 HTML 페이지를 만들어 연다."""
@@ -953,7 +987,9 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH,
         on_ready({"fetch_doc": request_doc})
 
     log_panel = ft.Container(
-        content=log_view,
+        # 둘을 겹쳐 두고 visible 로 고른다 — 숨은 쪽도 트리에 남아 있어야
+        # 실행 중인 작업의 진행 로그가 그대로 쌓인다.
+        content=ft.Stack([log_view, file_log_view], expand=True),
         border_radius=8,
         bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
         expand=True,
@@ -982,7 +1018,7 @@ def build_run_view(page=None, snapshot_path=SNAPSHOT_PATH,
                     open_btn], wrap=True),
             progress,
             ft.Row([status_badge, elapsed_text], spacing=12),
-            ft.Row([ft.Text("진행 로그", size=13, weight=ft.FontWeight.BOLD),
+            ft.Row([log_title,
                     ft.Row([status_btn, quiz_btn, view_log_btn])],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),

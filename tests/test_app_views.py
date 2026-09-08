@@ -1658,3 +1658,80 @@ def test_filter_off_brings_the_rows_back(tmp_path, monkeypatch):
     sw.on_change(_SwitchEv(False))
     names = [c.value for c in _walk(view) if isinstance(c, ft.Text)]
     assert "C프로그래밍" in names and "자료구조" in names
+
+
+# --- 실행 로그 보기: 진행 로그를 덮지 않고 따로 보여준다 --------------------
+# 실측 불편: 눌러도 아무것도 안 뜨는 것처럼 보였다. 가장 최근 로그 파일이
+# 곧 지금 돌고 있는 실행의 로그라, 진행 로그를 덮어써도 내용이 같아 화면이
+# 전혀 바뀌지 않았기 때문. 이제 따로 담고 제목·버튼으로 전환을 알린다.
+def _log_parts(view):
+    """(진행 로그, 파일 로그, 보기 버튼, 패널 제목).
+
+    _walk 는 제너레이터라 한 번 돌면 비므로 리스트로 받아 둔다. 제목과 버튼은
+    글자가 바뀌므로 **객체를 잡아** 두고 값 변화를 확인한다.
+    """
+    nodes = list(_walk(view))
+    lvs = [c for c in nodes if isinstance(c, ft.ListView)]
+    btn = next(c for c in nodes if isinstance(c, ft.OutlinedButton)
+               and c.content == "최근 실행 로그 보기")
+    title = next(c for c in nodes if isinstance(c, ft.Text)
+                 and c.value == "진행 로그")
+    return lvs[0], lvs[1], btn, title
+
+
+def _logs_dir(tmp_path, body="12:00:00 INFO  ✓ watch: 완료\n"):
+    d = tmp_path / "logs"
+    d.mkdir()
+    (d / "run_20260908_010101.log").write_text(body, encoding="utf-8")
+    return d
+
+
+def test_view_log_keeps_the_running_log_intact(tmp_path, monkeypatch):
+    """실행 중 눌러도 진행 로그가 사라지면 안 된다 — 따로 담기 때문."""
+    import app.views.run_view as rv
+    d = _logs_dir(tmp_path)
+    monkeypatch.setattr(rv, "latest_log_path", lambda: d / "run_20260908_010101.log")
+    view = build_run_view(None)
+    live, filed, btn, _title = _log_parts(view)
+    live.controls.append(ft.Text("돌고 있는 중"))
+    btn.on_click(None)
+    assert len(live.controls) == 1          # 진행 로그는 그대로 남는다
+    assert len(filed.controls) == 1         # 파일 내용은 따로 담긴다
+    assert "watch" in filed.controls[0].value
+
+
+def test_view_log_swaps_which_panel_is_visible(tmp_path, monkeypatch):
+    # 눌렀는데 화면이 안 바뀌면 '아무것도 안 뜬' 것과 같다
+    import app.views.run_view as rv
+    d = _logs_dir(tmp_path)
+    monkeypatch.setattr(rv, "latest_log_path", lambda: d / "run_20260908_010101.log")
+    view = build_run_view(None)
+    live, filed, btn, title = _log_parts(view)
+    assert live.visible is not False and filed.visible is False
+    btn.on_click(None)
+    assert live.visible is False and filed.visible is True
+    assert btn.content == "진행 로그로"
+    assert title.value.startswith("📄") and "run_20260908_010101.log" in title.value
+
+
+def test_view_log_toggles_back(tmp_path, monkeypatch):
+    import app.views.run_view as rv
+    d = _logs_dir(tmp_path)
+    monkeypatch.setattr(rv, "latest_log_path", lambda: d / "run_20260908_010101.log")
+    view = build_run_view(None)
+    live, filed, btn, title = _log_parts(view)
+    btn.on_click(None)
+    btn.on_click(None)                      # 다시 누르면 진행 로그로
+    assert live.visible is True and filed.visible is False
+    assert btn.content == "최근 실행 로그 보기" and title.value == "진행 로그"
+
+
+def test_view_log_says_so_when_there_is_no_log(tmp_path, monkeypatch):
+    import app.views.run_view as rv
+    monkeypatch.setattr(rv, "latest_log_path", lambda: None)
+    view = build_run_view(None)
+    live, filed, btn, _t = _log_parts(view)
+    btn.on_click(None)
+    assert filed.visible is False and live.visible is not False
+    texts = [c.value or "" for c in _walk(view) if isinstance(c, ft.Text)]
+    assert any("표시할 실행 로그가 없습니다" in t for t in texts)
