@@ -110,29 +110,41 @@ def test_needs_capture_existing(tmp_path):
 
 
 # ---- embed_captures -------------------------------------------------------
+# 임베드는 `![[파일명|695]]` 로 폭을 지정한다(capture.EMBED_WIDTH). 폭이 없으면
+# 캡처마다 크기가 들쭉날쭉하고 본문 폭을 넘친다 — 아래 기대값의 |695 는 그
+# 규약을 지키는지 보는 것이므로, 폭을 바꿀 때만 함께 고친다.
 def test_embed_captures_inline_after_timestamp_line():
     md = "### 이산수학의 정의 🎬 [00:04:50] (교재 p.5)\n이산적인 구조.\n"
     out = embed_captures(md, {290: "이산수학_1강_00-04-50.jpg"})
     lines = out.splitlines()
     assert lines[0] == "### 이산수학의 정의 🎬 [00:04:50] (교재 p.5)"
-    assert lines[1] == "![[이산수학_1강_00-04-50.jpg]]"
+    assert lines[1] == "![[이산수학_1강_00-04-50.jpg|695]]"
     assert "이산적인 구조." in out
 
 
 def test_embed_captures_idempotent():
     md = ("### 정의 🎬 [00:04:50]\n"
+          "![[이산수학_1강_00-04-50.jpg|695]]\n본문\n")
+    out = embed_captures(md, {290: "이산수학_1강_00-04-50.jpg"})
+    assert out.count("![[이산수학_1강_00-04-50.jpg|695]]") == 1
+
+
+def test_embed_captures_upgrades_an_old_embed_without_width():
+    # 폭 없이 만들어 둔 옛 노트도 다시 돌리면 폭이 붙는다(중복 삽입 없이)
+    md = ("### 정의 🎬 [00:04:50]\n"
           "![[이산수학_1강_00-04-50.jpg]]\n본문\n")
     out = embed_captures(md, {290: "이산수학_1강_00-04-50.jpg"})
-    assert out.count("![[이산수학_1강_00-04-50.jpg]]") == 1
+    assert out.count("![[") == 1
+    assert "![[이산수학_1강_00-04-50.jpg|695]]" in out
 
 
 def test_embed_captures_replaces_existing():
     # 비전 검증으로 선택 프레임이 바뀌면 기존 임베드를 교체(중복 X)
     md = ("### 정의 🎬 [00:04:50]\n"
-          "![[이산수학_1강_00-04-50.jpg]]\n본문\n")
+          "![[이산수학_1강_00-04-50.jpg|695]]\n본문\n")
     out = embed_captures(md, {290: "이산수학_1강_00-05-05.jpg"})
-    assert "![[이산수학_1강_00-05-05.jpg]]" in out
-    assert "![[이산수학_1강_00-04-50.jpg]]" not in out  # 옛 임베드 제거
+    assert "![[이산수학_1강_00-05-05.jpg|695]]" in out
+    assert "이산수학_1강_00-04-50.jpg" not in out   # 옛 임베드 제거
     assert out.count("![[") == 1
     assert "본문" in out
 
@@ -147,11 +159,11 @@ def test_embed_captures_multiple():
     md = ("### A 🎬 [00:04:50]\n본문A\n"
           "### B 🎬 [12:05]\n본문B\n")
     out = embed_captures(md, {290: "a.jpg", 725: "b.jpg"})
-    assert "![[a.jpg]]" in out and "![[b.jpg]]" in out
+    assert "![[a.jpg|695]]" in out and "![[b.jpg|695]]" in out
     # 각각 해당 타임스탬프 줄 바로 다음에 위치
     lines = out.splitlines()
-    assert lines[lines.index("![[a.jpg]]") - 1].startswith("### A")
-    assert lines[lines.index("![[b.jpg]]") - 1].startswith("### B")
+    assert lines[lines.index("![[a.jpg|695]]") - 1].startswith("### A")
+    assert lines[lines.index("![[b.jpg|695]]") - 1].startswith("### B")
 
 
 # ---- candidate_seconds (비전 검증 후보 시점) -------------------------------
@@ -341,8 +353,8 @@ def test_plan_renormalize_rewrites_marker_embed_and_rename():
           "본문\n")
     new_md, renames = _plan_renormalize(md, "이산수학", 13, 7209)
     assert "[00:09:21]" in new_md and "[09:21:00]" not in new_md
-    assert "![[이산수학_13강_00-09-21.jpg]]" in new_md
-    assert "![[이산수학_13강_09-21-00.jpg]]" not in new_md
+    assert "![[이산수학_13강_00-09-21.jpg|695]]" in new_md
+    assert "이산수학_13강_09-21-00.jpg" not in new_md
     assert renames == [("이산수학_13강_09-21-00.jpg", "이산수학_13강_00-09-21.jpg")]
     assert "본문" in new_md
 
@@ -423,3 +435,63 @@ def test_wait_for_clips_tolerates_evaluate_errors():
 def test_wait_for_clips_polls_more_than_once_by_default():
     assert CLIPS_WAIT_MS >= 5000
     assert 0 < CLIPS_POLL_MS <= CLIPS_WAIT_MS // 3
+
+
+# ---- 임베드 폭 규약 (옵시디언 표시 크기) ----------------------------------
+# `![[그림.jpg|695]]` 의 |695 는 옵시디언 표시 폭이다. 파일명을 읽는 쪽이 이걸
+# 안 떼면 orphan_captures 가 '아무도 안 쓰는 캡처'로 오판해 **지워 버린다** —
+# 아래 테스트가 그 회귀를 막는다.
+from capture import (  # noqa: E402
+    EMBED_WIDTH,
+    embed_name,
+    embed_names,
+    embed_text,
+    set_embed_width,
+)
+
+
+def test_embed_text_writes_the_width():
+    assert embed_text("a.jpg") == f"![[a.jpg|{EMBED_WIDTH}]]"
+    assert embed_text("a.jpg", 400) == "![[a.jpg|400]]"
+
+
+def test_embed_text_omits_a_zero_width():
+    assert embed_text("a.jpg", 0) == "![[a.jpg]]"
+
+
+def test_embed_name_strips_the_width():
+    assert embed_name("![[이산수학_1강_00-04-50.jpg|695]]") == \
+        "이산수학_1강_00-04-50.jpg"
+    assert embed_name("![[a.jpg]]") == "a.jpg"
+    assert embed_name("그냥 본문") is None
+
+
+def test_embed_names_collects_filenames_only():
+    md = "글\n![[a.jpg|695]]\n글\n![[b.jpg]]\n![[c.jpg|400]]\n"
+    assert embed_names(md) == {"a.jpg", "b.jpg", "c.jpg"}
+
+
+def test_orphan_check_survives_the_width():
+    """폭이 붙어도 참조 중인 캡처를 고아로 보면 안 된다(이미지 삭제 방지)."""
+    md = "🎬 [00:04:50]\n![[이산수학_1강_00-04-50.jpg|695]]\n"
+    existing = ["이산수학_1강_00-04-50.jpg", "이산수학_1강_00-09-99.jpg"]
+    out = orphan_captures(existing, embed_names(md), "이산수학", 1)
+    assert out == ["이산수학_1강_00-09-99.jpg"]      # 참조 중인 것은 남는다
+
+
+def test_set_embed_width_adds_changes_and_removes():
+    md = "글\n![[a.jpg]]\n![[b.jpg|400]]\n글\n"
+    assert set_embed_width(md, 695) == "글\n![[a.jpg|695]]\n![[b.jpg|695]]\n글\n"
+    assert set_embed_width(md, 0) == "글\n![[a.jpg]]\n![[b.jpg]]\n글\n"
+
+
+def test_set_embed_width_is_idempotent():
+    md = "![[a.jpg|695]]\n"
+    assert set_embed_width(set_embed_width(md, 695), 695) == md
+
+
+def test_set_embed_width_leaves_other_text_alone():
+    md = "표는 |파이프| 를 쓴다\n[[링크]] 는 임베드가 아니다\n![[a.jpg]]\n"
+    out = set_embed_width(md, 695)
+    assert "표는 |파이프| 를 쓴다" in out and "[[링크]] 는" in out
+    assert "![[a.jpg|695]]" in out

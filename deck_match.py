@@ -49,6 +49,9 @@ from capture import (
     _EMBED_LINE_RE,
     capture_filename,
     collect_clips,
+    embed_name,
+    embed_names,
+    embed_text,
     orphan_captures,
     probe_duration,
     wait_for_clips,
@@ -209,11 +212,11 @@ def scrub_empty_embeds(md: str, out_dir, thresh: float = DEFAULT_EMPTY_THRESH):
     removed: set[str] = set()
     out: list[str] = []
     for line in (md or "").splitlines():
-        m = re.match(r"^\s*!\[\[(.+?)\]\]\s*$", line)
-        if m:
-            p = out_dir / m.group(1)
+        fn = embed_name(line) if _EMBED_LINE_RE.match(line) else None
+        if fn:
+            p = out_dir / fn
             if p.exists() and is_empty_slide(p, thresh):
-                removed.add(m.group(1))
+                removed.add(fn)
                 continue
         out.append(line)
     text = "\n".join(out)
@@ -455,7 +458,7 @@ def apply_to_note(md: str, concepts: list[dict], plan: dict[int, int],
         mi = c["marker_idx"]
         head = lines[mi].split("🎬")[0]
         lines[mi] = f"{head}🎬 [{ts}]"
-        embed = f"![[{fn}]]"
+        embed = embed_text(fn)
         if c["embed_idx"] is not None:
             lines[c["embed_idx"]] = embed
         else:
@@ -573,7 +576,7 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
         note_path.write_text(new_md, encoding="utf-8")
         on_event(f"노트 반영: {note_path.name}")
 
-    referenced = set(re.findall(r"!\[\[(.+?)\]\]", new_md))
+    referenced = embed_names(new_md)     # 폭 지정을 떼야 한다(안 그러면 삭제)
     existing = [p.name for p in out_dir.glob(f"{sanitize(course)}_{seq}강_*")]
     pruned = 0
     for fn in orphan_captures(existing, referenced, course, seq):

@@ -209,6 +209,43 @@ def needs_capture(path) -> bool:
 
 _EMBED_LINE_RE = re.compile(r"^\s*!\[\[.+?\]\]\s*$")
 
+# 옵시디언 임베드 폭(px). `![[그림.jpg|695]]` 처럼 파일명 뒤에 붙이면 노트 본문
+# 폭에 맞춰 보인다 — 원본 해상도 그대로면 화면을 넘치거나 들쭉날쭉하다.
+# 이미지 파일 자체는 건드리지 않는다(표시 폭만 지정).
+EMBED_WIDTH = 695
+
+# 임베드에서 **파일명만** 뽑는 정규식 — 폭 지정(`|695`)은 떼어 낸다.
+# ⚠️ 이걸 안 떼면 orphan_captures 가 참조 중인 캡처를 '아무도 안 쓴다'고
+#    판단해 **지워 버린다**. 임베드 파일명이 필요한 곳은 반드시 이걸 쓴다.
+_EMBED_NAME_RE = re.compile(r"!\[\[([^\]|]+?)\s*(?:\|[^\]]*)?\]\]")
+
+
+def embed_text(filename: str, width: int = EMBED_WIDTH) -> str:
+    """파일명 → 노트에 넣을 임베드 한 줄. width 가 0 이하면 폭을 붙이지 않는다."""
+    fn = str(filename or "")
+    return f"![[{fn}|{int(width)}]]" if width and int(width) > 0 else f"![[{fn}]]"
+
+
+def embed_name(line: str) -> str | None:
+    """임베드 한 줄 → 파일명(폭 지정 제외). 임베드가 아니면 None."""
+    m = _EMBED_NAME_RE.search(str(line or ""))
+    return m.group(1).strip() if m else None
+
+
+def embed_names(markdown: str) -> set[str]:
+    """노트에 임베드된 파일명 집합(폭 지정 제외)."""
+    return {n.strip() for n in _EMBED_NAME_RE.findall(str(markdown or ""))}
+
+
+def set_embed_width(markdown: str, width: int = EMBED_WIDTH) -> str:
+    """노트의 모든 이미지 임베드 폭을 width 로 맞춘다(파일명은 그대로).
+
+    폭이 없던 것에는 붙이고, 다른 폭이 붙어 있으면 바꾼다. width 가 0 이하면
+    폭 지정을 모두 뗀다. 이미 그 폭이면 글자 하나 바뀌지 않는다(멱등).
+    """
+    return _EMBED_NAME_RE.sub(
+        lambda m: embed_text(m.group(1).strip(), width), str(markdown or ""))
+
 
 def embed_captures(markdown: str, captures: dict) -> str:
     """타임스탬프가 있는 줄 바로 아래에 `![[파일명]]` 임베드를 삽입/갱신한다.
@@ -229,7 +266,7 @@ def embed_captures(markdown: str, captures: dict) -> str:
         if m:
             fn = captures.get(timestamp_to_seconds(m.group(1)))
             if fn:
-                out.append(f"![[{fn}]]")
+                out.append(embed_text(fn))
                 # 바로 아래가 기존 임베드 줄이면 그 줄은 소비(교체)
                 if i + 1 < n and _EMBED_LINE_RE.match(lines[i + 1]):
                     i += 2
@@ -678,7 +715,7 @@ def capture_lecture_verified(page, lec, subject, seq, name, mp3_path, note_path,
     # orphan 청소: 노트가 더 이상 참조 않는 이 차시 캡처 삭제
     pruned = 0
     if prune and out_dir.exists():
-        referenced = set(re.findall(r"!\[\[(.+?)\]\]", final_md))
+        referenced = embed_names(final_md)   # 폭 지정을 떼야 한다(안 그러면 삭제)
         existing = [p.name for p in out_dir.glob(f"{sanitize(subject)}_{seq}강_*")]
         for fn in orphan_captures(existing, referenced, subject, seq):
             try:
@@ -734,9 +771,10 @@ def _plan_renormalize(markdown: str, subject: str, seq: int, duration,
         old_fn = capture_filename(subject, seq, raw, ext)
         new_fn = capture_filename(subject, seq, norm, ext)
         if i + 1 < n:
-            em = re.match(r"^\s*!\[\[(.+?)\]\]\s*$", lines[i + 1])
-            if em and em.group(1) == old_fn:
-                out.append(f"![[{new_fn}]]")
+            em = embed_name(lines[i + 1]) if _EMBED_LINE_RE.match(
+                lines[i + 1]) else None
+            if em == old_fn:
+                out.append(embed_text(new_fn))
                 renames.append((old_fn, new_fn))
                 i += 2
                 continue
