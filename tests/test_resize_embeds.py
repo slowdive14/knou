@@ -114,3 +114,28 @@ def test_resized_note_still_finds_its_captures(tmp_path):
     md = p.read_text(encoding="utf-8")
     assert orphan_captures(["이산수학_1강_00-04-50.jpg"],
                            embed_names(md), "이산수학", 1) == []
+
+
+# --- 저장 관문 write_note ---------------------------------------------------
+def test_write_note_forces_the_width(tmp_path):
+    from note_embed import write_note
+    p = tmp_path / "a.md"
+    out = write_note(p, "![[x.jpg]]\n본문\n")
+    assert p.read_text(encoding="utf-8") == f"![[x.jpg|{EMBED_WIDTH}]]\n본문\n"
+    assert out == p.read_text(encoding="utf-8")   # 저장본을 돌려준다
+
+
+def test_write_note_accepts_another_width(tmp_path):
+    from note_embed import write_note
+    p = tmp_path / "a.md"
+    write_note(p, "![[x.jpg]]\n", 400)
+    assert p.read_text(encoding="utf-8") == "![[x.jpg|400]]\n"
+
+
+def test_capture_still_exports_the_embed_helpers():
+    """예전부터 `from capture import embed_text` 로 써 온 곳이 있다."""
+    import capture
+    import note_embed
+    for n in ("EMBED_WIDTH", "embed_text", "embed_name", "embed_names",
+              "set_embed_width", "write_note"):
+        assert getattr(capture, n) is getattr(note_embed, n)

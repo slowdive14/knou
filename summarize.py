@@ -375,11 +375,14 @@ def save_summary(markdown: str, out_dir, subject, seq, name, duration=None) -> d
     duration(매체 길이, 초)을 주면 Gemini 의 'MM:SS:00' 오형식 마커를 미리 교정해
     저장한다(노트 본문·timestamps.json 모두 올바른 시각으로 통일).
     """
+    from note_embed import write_note
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     markdown = normalize_markdown_timestamps(markdown, duration)
     md_path = out_dir / note_filename(subject, seq, name)
-    md_path.write_text(markdown, encoding="utf-8")
+    # write_note 가 이미지 임베드 폭을 맞춰 준다 — Gemini 응답에 임베드가
+    # 섞여 들어와도 폭이 빠지지 않게 하는 것이 여기 있는 이유다.
+    markdown = write_note(md_path, markdown)
 
     ts = extract_timestamps(markdown)
     ts_path = md_path.with_suffix(".timestamps.json")

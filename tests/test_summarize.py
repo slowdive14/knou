@@ -268,3 +268,22 @@ def test_both_prompts_keep_the_same_title_line():
     for has in (True, False):
         p = build_prompt("자료구조", 3, "연결 리스트", has_audio=has)
         assert "# 자료구조 3강 - 연결 리스트" in p
+
+
+# ---- 저장 관문: 이미지 임베드 폭 -------------------------------------------
+# 노트를 만드는 길은 여럿이라(요약 저장·캡처 반영·덱 매칭·마커 교정) 임베드를
+# 만드는 곳마다 폭을 챙기면 새 경로가 생길 때 빠진다. 저장이라는 한 길목에서
+# 보장한다 — Gemini 응답에 임베드가 섞여 들어와도 마찬가지다.
+def test_save_summary_gives_every_embed_a_width(tmp_path):
+    from note_embed import EMBED_WIDTH
+    md = "### 개념 🎬 [00:04:50]\n![[그림.jpg]]\n본문\n"
+    res = save_summary(md, tmp_path, "이산수학", 1, "집합")
+    saved = Path(res["md"]).read_text(encoding="utf-8")
+    assert f"![[그림.jpg|{EMBED_WIDTH}]]" in saved
+    assert "본문" in saved
+
+
+def test_save_summary_leaves_a_correct_width_alone(tmp_path):
+    md = "![[그림.jpg|695]]\n본문\n"
+    res = save_summary(md, tmp_path, "이산수학", 1, "집합")
+    assert Path(res["md"]).read_text(encoding="utf-8") == md

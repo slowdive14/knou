@@ -53,6 +53,7 @@ from capture import (
     embed_names,
     embed_text,
     orphan_captures,
+    write_note,
     probe_duration,
     wait_for_clips,
 )
@@ -573,7 +574,7 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
     if scrubbed:
         on_event(f"빈 슬라이드 임베드 {len(scrubbed)}개 청소")
     if new_md != md:
-        note_path.write_text(new_md, encoding="utf-8")
+        new_md = write_note(note_path, new_md)      # 저장본을 이어서 쓴다
         on_event(f"노트 반영: {note_path.name}")
 
     referenced = embed_names(new_md)     # 폭 지정을 떼야 한다(안 그러면 삭제)

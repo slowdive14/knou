@@ -31,6 +31,16 @@ from pathlib import Path
 
 from proc_util import run_hidden
 from download import sanitize
+# 임베드 규약은 note_embed 한 곳에 있다. 여기서 다시 내보내는 것은 예전부터
+# `from capture import embed_text` 로 써 온 곳들을 위해서다.
+from note_embed import (  # noqa: F401
+    EMBED_WIDTH,
+    embed_name,
+    embed_names,
+    embed_text,
+    set_embed_width,
+    write_note,
+)
 from summarize import (
     DEFAULT_MODEL,
     _TS_RE,
@@ -208,44 +218,6 @@ def needs_capture(path) -> bool:
 
 
 _EMBED_LINE_RE = re.compile(r"^\s*!\[\[.+?\]\]\s*$")
-
-# 옵시디언 임베드 폭(px). `![[그림.jpg|695]]` 처럼 파일명 뒤에 붙이면 노트 본문
-# 폭에 맞춰 보인다 — 원본 해상도 그대로면 화면을 넘치거나 들쭉날쭉하다.
-# 이미지 파일 자체는 건드리지 않는다(표시 폭만 지정).
-EMBED_WIDTH = 695
-
-# 임베드에서 **파일명만** 뽑는 정규식 — 폭 지정(`|695`)은 떼어 낸다.
-# ⚠️ 이걸 안 떼면 orphan_captures 가 참조 중인 캡처를 '아무도 안 쓴다'고
-#    판단해 **지워 버린다**. 임베드 파일명이 필요한 곳은 반드시 이걸 쓴다.
-_EMBED_NAME_RE = re.compile(r"!\[\[([^\]|]+?)\s*(?:\|[^\]]*)?\]\]")
-
-
-def embed_text(filename: str, width: int = EMBED_WIDTH) -> str:
-    """파일명 → 노트에 넣을 임베드 한 줄. width 가 0 이하면 폭을 붙이지 않는다."""
-    fn = str(filename or "")
-    return f"![[{fn}|{int(width)}]]" if width and int(width) > 0 else f"![[{fn}]]"
-
-
-def embed_name(line: str) -> str | None:
-    """임베드 한 줄 → 파일명(폭 지정 제외). 임베드가 아니면 None."""
-    m = _EMBED_NAME_RE.search(str(line or ""))
-    return m.group(1).strip() if m else None
-
-
-def embed_names(markdown: str) -> set[str]:
-    """노트에 임베드된 파일명 집합(폭 지정 제외)."""
-    return {n.strip() for n in _EMBED_NAME_RE.findall(str(markdown or ""))}
-
-
-def set_embed_width(markdown: str, width: int = EMBED_WIDTH) -> str:
-    """노트의 모든 이미지 임베드 폭을 width 로 맞춘다(파일명은 그대로).
-
-    폭이 없던 것에는 붙이고, 다른 폭이 붙어 있으면 바꾼다. width 가 0 이하면
-    폭 지정을 모두 뗀다. 이미 그 폭이면 글자 하나 바뀌지 않는다(멱등).
-    """
-    return _EMBED_NAME_RE.sub(
-        lambda m: embed_text(m.group(1).strip(), width), str(markdown or ""))
-
 
 def embed_captures(markdown: str, captures: dict) -> str:
     """타임스탬프가 있는 줄 바로 아래에 `![[파일명]]` 임베드를 삽입/갱신한다.
@@ -488,7 +460,7 @@ def capture_lecture(page, lec, subject, seq, name, mp3_path, note_path,
         md = note_path.read_text(encoding="utf-8")
         new_md = embed_captures(md, embeddable)
         if new_md != md:
-            note_path.write_text(new_md, encoding="utf-8")
+            write_note(note_path, new_md)
             log(f"노트 임베드 갱신: {note_path.name}")
 
     return {"clip": chosen.get("title") if chosen else None,
@@ -707,7 +679,7 @@ def capture_lecture_verified(page, lec, subject, seq, name, mp3_path, note_path,
         md = note_path.read_text(encoding="utf-8")
         final_md = embed_captures(md, embeddable)
         if final_md != md:
-            note_path.write_text(final_md, encoding="utf-8")
+            final_md = write_note(note_path, final_md)   # 저장본을 이어서 쓴다
             log(f"노트 임베드 갱신: {note_path.name}")
     elif note_path.exists():
         final_md = note_path.read_text(encoding="utf-8")
@@ -824,7 +796,7 @@ def renormalize_note(note_path, subject, seq, name, duration, out_dir=None,
 
     changed = new_md != md
     if changed:
-        note_path.write_text(new_md, encoding="utf-8")
+        write_note(note_path, new_md)
         log(f"노트 마커 교정: {note_path.name}")
 
     # timestamps.json 재생성(subject/seq/name 메타 보존)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from capture import EMBED_WIDTH, embed_names, set_embed_width
+from note_embed import EMBED_WIDTH, embed_names, set_embed_width, write_note
 
 
 def plan_resize(texts, width: int = EMBED_WIDTH) -> list[dict]:
@@ -50,7 +50,7 @@ def resize_notes(note_dir, width: int = EMBED_WIDTH, dry_run: bool = False,
         total += item["embeds"]
         on_event(f"{item['name']} — 임베드 {item['embeds']}개")
         if not dry_run:
-            by_name[item["name"]].write_text(item["new_text"], encoding="utf-8")
+            write_note(by_name[item["name"]], item["new_text"], width)
     return {"changed": [i["name"] for i in plan], "embeds": total,
             "scanned": len(notes)}
 
