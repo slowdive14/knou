@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import re
 import json
 import time
 
@@ -199,8 +200,16 @@ def open_player(page, lec: Lecture):
     return popup
 
 
+# 재생 프레임을 알아보는 규칙. 전자캠퍼스는 ViewPlayer iframe 이고,
+# knouon(바이오통계학)은 Kollus 임베드다. 둘을 같이 받으면 아래 감시 로직
+# (_clip_state · clip_inventory · _play_until_end · _reapply_speed)을 두 시스템이
+# 그대로 나눠 쓴다 — 오래 다듬은 완청 판정을 다시 만들지 않기 위해서다.
+_PLAYER_FRAME_RE = re.compile(r"ViewPlayer|kollus\.com", re.I)
+
+
 def _clip_frames(popup):
-    return [fr for fr in popup.frames if "ViewPlayer" in (fr.url or "")]
+    """재생 프레임 목록. popup 자리에는 팝업 창도, 보통 페이지도 올 수 있다."""
+    return [fr for fr in popup.frames if _PLAYER_FRAME_RE.search(fr.url or "")]
 
 
 # 재생기록 모달은 두 종류이며 '예/아니오'의 의미가 정반대다(실측 확인):
