@@ -339,6 +339,26 @@ def pause_others(page, keep_index: int) -> int:
     return n
 
 
+def effective_speed(page, frame_index: int, want: float,
+                    checks: int = 3, wait_s: float = 4.0) -> float:
+    """실제로 걸린 배속. 요청보다 낮으면 그 값을 돌려준다.
+
+    ⚠️ Kollus 는 영상에 따라 배속을 **거부하고 1.0x 로 되돌린다**(실측:
+    오리엔테이션은 2배속이 안 걸리고, 본강의는 걸린다). 그걸 모르고 폴링마다
+    배속을 다시 걸면 그 반복이 재생을 끊는다 — 실제로 오리엔테이션이 몇 초
+    만에 멈춰 버렸다. 걸리는 배속을 **받아들이고** 그 기준으로 예산을 잡는다.
+    """
+    from watch import _clip_state
+    seen = float(want)
+    for _ in range(max(1, checks)):
+        time.sleep(wait_s)
+        st = _clip_state(page, frame_index) or {}
+        r = st.get("rate")
+        if isinstance(r, (int, float)) and r > 0:
+            seen = min(seen, float(r))
+    return seen
+
+
 def solo_guard(page, keep_index: int, speed: float, inner=None):
     """폴링마다 **대상 영상만 살려 두는** 감시 콜백을 만든다.
 
@@ -469,15 +489,21 @@ def watch_week(page, week: Week, cfg=None, speed=None, poll=15,
         # 채워서 clip_inventory 시점에는 0 으로 나온다 — 그대로 쓰면 예산이
         # 60초가 되어 408초짜리가 108초에 '시간 초과'로 끝난다(실측 사고).
         dur = clip_duration(page, idx, fallback=c.get("dur") or 0)
+        # 요청한 배속이 실제로 걸렸는지 본다. 안 걸린 채로 계속 다시 걸면
+        # 재생이 끊긴다(effective_speed 설명 참고).
+        eff = effective_speed(page, idx, sp)
+        if eff < sp:
+            on_event(f"  영상 {idx}: {sp}배속이 안 걸린다 → {eff}배속으로 진행")
         if dur > 0:
-            budget = wall_clock_seconds(dur / 60.0, sp) * max_wait_factor + 60.0
+            budget = wall_clock_seconds(dur / 60.0, eff) * max_wait_factor + 60.0
         else:   # 끝내 못 읽으면 넉넉히 준다. 완청 판정은 예산이 아니라
                 # _play_until_end 가 하므로, 예산은 상한 노릇만 한다.
             budget = UNKNOWN_BUDGET_S
-        on_event(f"  영상 {idx}: {int(dur)}초 · {sp}배속 · 예산 {int(budget)}초")
-        # 대상 영상만 살려 두면서 끝까지 민다(solo_guard 설명 참고)
-        ended = _play_until_end(page, idx, sp, budget, poll,
-                                solo_guard(page, idx, sp, on_progress))
+        on_event(f"  영상 {idx}: {int(dur)}초 · {eff}배속 · 예산 {int(budget)}초")
+        # ⚠️ 여기에 '폴링마다 다시 재생' 같은 감시를 끼우지 말 것. 그렇게 했더니
+        # (solo_guard) 오히려 재생이 8초 만에 끊겼다 — 재생 시작 때 다른 영상을
+        # 한 번 멈추는 것으로 충분하다(실측).
+        ended = _play_until_end(page, idx, eff, budget, poll, on_progress)
         trigger_save(page)
         results.append({"clip": idx, "status": "ended" if ended else "timeout",
                         "dur": dur})

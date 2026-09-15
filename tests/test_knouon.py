@@ -181,3 +181,58 @@ def test_watch_recognises_a_kollus_frame():
     assert _PLAYER_FRAME_RE.search(     # 전자캠퍼스도 계속 인식해야 한다
         "https://ucampus.knou.ac.kr/.../ViewPlayer.jsp?x=1")
     assert not _PLAYER_FRAME_RE.search("https://knouon.knou.ac.kr/lctr/x.do")
+
+
+# --- 배속 수용 (오리엔테이션이 멈추던 원인) --------------------------------
+# 실측: Kollus 는 영상에 따라 배속을 거부하고 1.0x 로 되돌린다. 그런데
+# watch._play_until_end 는 배속이 낮으면 폴링마다 다시 건다 — 그 반복이 재생을
+# 끊었다. 걸리는 배속을 받아들여야 끝까지 간다.
+class _FakeFrames:
+    """_clip_state 가 보는 프레임 대역."""
+
+    def __init__(self, rate):
+        self.rate = rate
+        self.url = "https://v.kr.kollus.com/s?custom_key=x"
+
+    def evaluate(self, js, *a):
+        import json as _j
+        return _j.dumps({"pos": 1.0, "dur": 400.0, "rate": self.rate,
+                         "paused": False, "ended": False})
+
+
+class _FakePage:
+    def __init__(self, rate):
+        self.frames = [_FakeFrames(rate)]
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def test_effective_speed_accepts_a_refused_rate(monkeypatch):
+    import knouon
+    monkeypatch.setattr(knouon.time, "sleep", lambda s: None)
+    # 2배속을 요청했지만 플레이어가 1.0 으로 돌려놓은 상황
+    assert knouon.effective_speed(_FakePage(1.0), 0, 2.0, checks=2) == 1.0
+
+
+def test_effective_speed_keeps_a_rate_that_stuck(monkeypatch):
+    import knouon
+    monkeypatch.setattr(knouon.time, "sleep", lambda s: None)
+    assert knouon.effective_speed(_FakePage(2.0), 0, 2.0, checks=2) == 2.0
+
+
+def test_effective_speed_never_exceeds_the_request(monkeypatch):
+    """플레이어가 더 빠르게 잡아도 우리가 요청한 값을 넘기지 않는다."""
+    import knouon
+    monkeypatch.setattr(knouon.time, "sleep", lambda s: None)
+    assert knouon.effective_speed(_FakePage(4.0), 0, 2.0, checks=1) == 2.0
+
+
+def test_watch_week_does_not_reforce_playback():
+    """폴링마다 재생을 강제하면 오히려 끊긴다 — 그 감시를 걸지 않는다."""
+    import inspect
+
+    import knouon
+    src = inspect.getsource(knouon.watch_week)
+    assert "solo_guard(" not in src
+    assert "effective_speed(" in src
