@@ -360,3 +360,27 @@ def test_snapshot_entry_accepts_a_week():
     assert e["seq"] == 3 and e["name"] == "추정"
     assert e["video_done"] is True          # percent 100 → 이수
     assert e["exam_done"] is False and e["total_min"] == 0
+
+
+# --- 예습 노트 (강의록 기반) -----------------------------------------------
+# knouon 은 MP3 가 없지만 자료실에 강의 슬라이드 ZIP 이 있다. 풀어서 들여오면
+# '강의록만으로 요약' 경로(AI네이티브에 쓴 그것)가 그대로 돈다.
+def test_summarize_is_not_blocked_for_knouon():
+    """요약 단계에는 knouon 가드를 걸지 않는다 — PDF 만 있으면 돌아간다."""
+    import inspect
+
+    import main
+    assert "_knouon_unsupported" not in inspect.getsource(main._stage_summarize)
+
+
+def test_slide_names_map_to_lectures():
+    """ZIP 안 파일명이 그대로 차시로 읽혀야 한다(실측 파일명)."""
+    from import_docs import parse_seq
+    assert parse_seq("바이오통계학_1강_강의록.pdf") == 1
+    assert parse_seq("바이오통계학_15강_강의록.pdf") == 15
+
+
+def test_the_zip_itself_is_skipped():
+    """묶음 파일은 차시를 알 수 없으니 들여오지 않는다."""
+    from import_docs import parse_seq
+    assert parse_seq("Biostat_lecturenotes.zip") is None
