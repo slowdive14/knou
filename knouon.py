@@ -356,6 +356,11 @@ def effective_speed(page, frame_index: int, want: float,
     from watch import _clip_state
     best = 0.0
     for _ in range(max(1, checks)):
+        # ⚠️ 여기서는 **읽기만 한다.** 배속을 다시 걸어 보았더니 2배속이 붙기는
+        # 했는데 곧바로 `<video>` 가 통째로 사라졌다(실측: 2주차 본강의).
+        # 오리엔테이션이 멈추던 것과 같은 현상이다 — 배속을 억지로 맞추려는
+        # 시도 자체가 플레이어를 깨뜨린다. start_clip 에서 한 번 건 것으로
+        # 끝내고, 붙는 배속을 그대로 받아들인다.
         time.sleep(wait_s)
         st = _clip_state(page, frame_index) or {}
         r = st.get("rate")
