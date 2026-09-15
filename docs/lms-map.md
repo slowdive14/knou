@@ -205,3 +205,40 @@
 
 ## 10. 기타 메모
 -
+
+---
+
+## 11. knouon (통합학습관리시스템) — 바이오통계학  🔶 정찰 진행중 (probe_knouon.py, 2026-09-15)
+
+2026-2학기부터 **바이오통계학만** 전자캠퍼스(ucampus)가 아니라 별도 시스템
+`knouon.knou.ac.kr` 에서 돌아간다. 나머지 과목은 그대로다.
+
+### 11-1. 확인된 것 ✅
+
+| 항목 | 내용 |
+|---|---|
+| 세션 | **ucampus 로그인이 그대로 통한다**(별도 로그인 불필요) |
+| 과목 발견 | '나의 학습'에 이미 뜬다 — `sbjtId=KNOU2092001`. 단 차시 AJAX 는 **빈 목록**(그래서 지금 파이프라인이 못 본다) |
+| 진입 | 대시보드(`/dashboard/stuDashboard.do`) → `moveClassRoom('SBJCT_KNOU2092001')` |
+| ⚠️ encParams | 학기 컨텍스트(`yrSmstr`,`smstrChrtId`,`orgId`,`userTycd`)를 base64+URL 인코딩한 값. **페이지 전역변수 `EPARAM` 에 박혀 있다** — 직접 조립하지 말고 대시보드에서 읽어 쓸 것(학기가 바뀌면 값이 달라진다) |
+| 강의실 | `/subject/subject.do?encParams=…&addParams=…`(`addParams` = `{"sbjctId":"SBJCT_KNOU2092001"}` 인코딩) |
+| 단위 | **차시(N강)가 아니라 주차(N주차)**. 15주차 |
+| 목록 DOM | `ul.accordion.course_week > li[data-week="N"]` · 제목 `.title strong` · 진도 `진도율 <strong>0.52%</strong>` |
+| 재생 | `openWknoLectureViewPopup('WS_KNOU20920010N', 'SBJCT_KNOU2092001')` — 콘텐츠ID = `WS_` + sbjctId 숫자부 + 2자리 주차 |
+| 강의자료실 | `/bbs/bbsLect/bbsAtclListView.do?bbsTycd=DATARM` (대시보드 쪽은 `bbsTycd=DATA`) |
+| 학습/출결 | `/lrnsts/selectLrnStsClassDetailView.do` |
+| 강의계획서 | `loadLctrPlandocPopView()` |
+
+15주차 제목: 1 통계학의 기본 개념과 데이터 요약 / 2 확률과 확률분포 / 3 추정 /
+4 가설검정 / 5~6 연속형 데이터의 비교 / 7 범주형 데이터의 비교 / 8~10 선형회귀분석 /
+11 진단 검사의 평가 / 12~13 로지스틱 회귀분석 / 14~15 생존분석
+
+### 11-2. 아직 모르는 것 ❓
+
+- **플레이어 팝업 내부** — HLS 인가, MP3(음성)가 따로 있는가, 진도는 무엇으로 적립되는가.
+  전자캠퍼스는 `strVidoAudoUrl`(MP3)과 `ifrmVODPlayer_dataN`(HLS)이 있었는데 여기는 미확인.
+- **형성평가** 존재 여부·제출 방식
+- **강의자료실** 파일 형식(주차별 강의록이 있는가)
+- 이수 판정 기준(전자캠퍼스는 `stdyCmyn=='Y'`)
+
+> ⚠️ 플레이어 조사는 재생 기록을 남길 수 있어 **사용자 동의 후** 진행한다.
