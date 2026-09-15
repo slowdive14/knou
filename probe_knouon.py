@@ -18,7 +18,9 @@
 """
 from __future__ import annotations
 
+import base64
 import json
+import re
 import sys
 
 try:
@@ -38,6 +40,18 @@ SUBJECT_URL = (
     "?encParams=JTdCJTIyeXJTbXN0ciUyMiUzQSUyMjIwMjYwMiUyMiUyQyUyMnNtc3RyQ2hydEdibmNkJTIyJTNBJTIyU01TVFIlMjIlMkMlMjJzbXN0ckNocnRJZCUyMiUzQSUyMk9SU0NPX2JocGtjY2RkaGVpMmE2NWE1NTklMjIlMkMlMjJvcmdJZCUyMiUzQSUyMk9SRzAwMDAwMDElMjIlMkMlMjJ1c2VyVHljZCUyMiUzQSUyMlNURE5UJTIyJTdE"
     "&addParams=eyJzYmpjdElkIjoiU0JKQ1RfS05PVTIwOTIwMDEifQ%3D%3D"
 )
+
+def _safe(text: str) -> str:
+    """정찰 기록에서 비밀값을 가린다 — 화면·파일 어디에도 남기지 않는다.
+
+    · 미디어 URL 의 `token=<JWT>` 는 시한부 재생 자격증명이다.
+    · Kollus iframe 의 `uservalue1=` 에는 **학번(사용자 ID)** 이 실려 있다.
+    """
+    s = str(text or "")
+    s = re.sub(r"(token=)[^&\s\"']+", r"\1<가림:JWT>", s)
+    s = re.sub(r"(uservalue1=)[^&\s\"']+", r"\1<가림:사용자ID>", s)
+    return s
+
 
 # 페이지가 차시를 어떻게 담고 있는지 넓게 훑는다(셀렉터를 모르므로 구조부터).
 _SCAN_JS = """
@@ -182,6 +196,106 @@ def main() -> int:
         (SHOTS_DIR / "knouon_room_xhr.json").write_text(
             json.dumps(calls, ensure_ascii=False, indent=1), encoding="utf-8")
         page.screenshot(path=str(SHOTS_DIR / "knouon_room.png"), full_page=True)
+
+        # 4) 플레이어 팝업 — **재생 버튼은 누르지 않는다**. 창이 열리면서
+        #    무엇을 불러오는지(HLS·MP3·MP4)와 전역 데이터만 살핀다.
+        print("\n4) 플레이어 팝업 열기(재생하지 않음)…", flush=True)
+        media: list[dict] = []
+
+        def on_media(req):
+            try:
+                u = req.url
+                if any(k in u.lower() for k in
+                       (".m3u8", ".mp3", ".mp4", ".m4a", ".ts?", "/hls", "manifest")):
+                    media.append({"method": req.method, "url": _safe(u)[:300],
+                                  "type": req.resource_type})
+            except Exception:
+                pass
+
+        ctx.on("request", on_media)
+        calls.clear()
+        # openWknoLectureViewPopup 은 새 창이 아니라 **같은 페이지의 모달
+        # iframe**(jQuery UI Dialog)을 띄운다. 그 iframe 의 주소는
+        #     /lctr/wknoLectureView.do?encParams=makeEncParams({...})
+        # 이고 makeEncParams 는 base64(UTF-8 JSON) 일 뿐이라(ui-common.js),
+        # 파이썬에서 그대로 만들어 새 탭으로 연다 — 자동화가 훨씬 쉽다.
+        enc = base64.b64encode(json.dumps(
+            {"lctrWknoSchdlId": "WS_KNOU209200101",
+             "sbjctId": "SBJCT_KNOU2092001"},
+            separators=(",", ":"), ensure_ascii=False).encode("utf-8")).decode()
+        lect_url = f"https://knouon.knou.ac.kr/lctr/wknoLectureView.do?encParams={enc}"
+        print(f"   주소: {lect_url[:120]}", flush=True)
+        popup = ctx.new_page()
+        try:
+            popup.goto(lect_url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:  # noqa: BLE001
+            print(f"   열기 실패: {str(e)[:120]}", flush=True)
+
+        if popup is None:
+            print("   플레이어 창을 못 찾았다", flush=True)
+        else:
+            try:
+                popup.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            popup.wait_for_timeout(8000)      # 플레이어가 스스로 채울 시간
+            print(f"   URL   : {popup.url[:140]}", flush=True)
+            print(f"   제목  : {popup.title()}", flush=True)
+            frames = popup.frames
+            print(f"   프레임 {len(frames)}개:", flush=True)
+            for fr in frames:
+                print(f"     {(fr.name or '(주)')[:24]} {fr.url[:100]}", flush=True)
+
+            # 전역 변수에 영상 목록이 담기는지(전자캠퍼스의 ifrmVODPlayer_dataN 처럼)
+            globs = popup.evaluate("""
+              () => {
+                const out = {};
+                for (const k of Object.keys(window)) {
+                  if (!/player|vod|video|cnts|media|hls|lect|stdy/i.test(k)) continue;
+                  let v; try { v = window[k]; } catch (e) { continue; }
+                  const t = typeof v;
+                  if (t === 'function') continue;
+                  try { out[k] = JSON.parse(JSON.stringify(v)); }
+                  catch (e) { out[k] = String(v).slice(0, 200); }
+                }
+                const vids = [...document.querySelectorAll('video, audio')].map(v => ({
+                  tag: v.tagName.toLowerCase(), src: v.currentSrc || v.src || '',
+                  dur: v.duration, paused: v.paused,
+                  sources: [...v.querySelectorAll('source')].map(s => s.src),
+                }));
+                return {globals: out, mediaEls: vids,
+                        bodyLen: document.body ? document.body.innerHTML.length : 0};
+              }
+            """)
+            print(f"   본문 {globs['bodyLen']} 글자 · "
+                  f"video/audio 요소 {len(globs['mediaEls'])}개", flush=True)
+            for v in globs["mediaEls"]:
+                print(f"     <{v['tag']}> src={str(v['src'])[:90]} "
+                      f"길이={v['dur']} 멈춤={v['paused']}", flush=True)
+            keys = list(globs["globals"])
+            print(f"   관련 전역변수 {len(keys)}개: {keys[:18]}", flush=True)
+            for k in keys[:8]:
+                val = json.dumps(globs["globals"][k], ensure_ascii=False)[:200]
+                print(f"     {k} = {val}", flush=True)
+
+            print(f"   미디어 요청 {len(media)}건:", flush=True)
+            for m in media[:14]:
+                print(f"     {m['type']:9s} {m['url'][:120]}", flush=True)
+            print(f"   XHR {len(calls)}건:", flush=True)
+            for c in calls[:18]:
+                print(f"     {c['status']} {c['method']} {c['url'][:110]}",
+                      flush=True)
+
+            (SHOTS_DIR / "knouon_player.json").write_text(
+                json.dumps({"url": popup.url, "globals": globs,
+                            "media": media, "xhr": calls},
+                           ensure_ascii=False, indent=1), encoding="utf-8")
+            try:
+                (SHOTS_DIR / "knouon_player.html").write_text(
+                    popup.content(), encoding="utf-8")
+                popup.screenshot(path=str(SHOTS_DIR / "knouon_player.png"))
+            except Exception:
+                pass
 
         (SHOTS_DIR / "knouon_scan.json").write_text(
             json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")

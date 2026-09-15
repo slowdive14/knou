@@ -233,12 +233,33 @@
 4 가설검정 / 5~6 연속형 데이터의 비교 / 7 범주형 데이터의 비교 / 8~10 선형회귀분석 /
 11 진단 검사의 평가 / 12~13 로지스틱 회귀분석 / 14~15 생존분석
 
-### 11-2. 아직 모르는 것 ❓
+### 11-3. 플레이어  ✅ 확인 (2026-09-15, 재생 버튼은 누르지 않음)
 
-- **플레이어 팝업 내부** — HLS 인가, MP3(음성)가 따로 있는가, 진도는 무엇으로 적립되는가.
-  전자캠퍼스는 `strVidoAudoUrl`(MP3)과 `ifrmVODPlayer_dataN`(HLS)이 있었는데 여기는 미확인.
-- **형성평가** 존재 여부·제출 방식
-- **강의자료실** 파일 형식(주차별 강의록이 있는가)
-- 이수 판정 기준(전자캠퍼스는 `stdyCmyn=='Y'`)
+**팝업 창이 아니다.** `openWknoLectureViewPopup(콘텐츠ID, 과목ID)` 는 jQuery UI
+Dialog(같은 페이지의 **모달 iframe**)를 띄운다 — `expect_popup` 은 타임아웃 난다.
+그 iframe 주소는 파이썬에서 그대로 만들 수 있다:
 
-> ⚠️ 플레이어 조사는 재생 기록을 남길 수 있어 **사용자 동의 후** 진행한다.
+    /lctr/wknoLectureView.do?encParams=<base64(UTF-8 JSON)>
+    JSON = {"lctrWknoSchdlId": "WS_KNOU20920010N", "sbjctId": "SBJCT_KNOU2092001"}
+
+`UiComm.makeEncParams`(ui-common.js)는 **base64(UTF-8 JSON)** 일 뿐이다
+(대시보드의 `encParams` 는 URL 인코딩이 한 겹 더 있는 서버 생성값이라 다르다).
+
+| 항목 | 내용 |
+|---|---|
+| 재생기 | **Kollus** — `v.kr.kollus.com/s?custom_key=…` iframe |
+| custom_key | 영상마다 같다(채널 키). 영상 구분은 `uservalue0=SBCN_…` |
+| 콘텐츠ID | `SBCN_KNOU2092001` + 순번. 1주차에 **영상 2개**(011, 015) |
+| 영상 | **HLS 가 아니라 progressive MP4** — `master-web.knou.ac.kr/knou/knou…h-pc1-high.mp4?token=<JWT>` |
+| 음성(MP3) | **따로 없다.** 전자캠퍼스의 `strVidoAudoUrl` 에 해당하는 것이 없으므로 영상에서 뽑아야 한다 |
+| 돌발퀴즈 | **있다** — `/quiz/sddnQuizUnsolvedSelectAjax.do` (POST: `sbjctId`,`lctrWknoSchdlId`,`userId`), 문항구분 `qstnGbncd=EXRCS_QSTN` |
+
+> ⚠️ 비밀값: MP4 URL 의 `token=` 은 시한부 JWT 이고, Kollus iframe 의
+> `uservalue1=` 에는 **학번**이 실린다. 둘 다 state.json·로그·스냅샷에 남기지
+> 않는다(probe_knouon.py 의 `_safe()` 가 정찰 기록에서 가린다).
+
+### 11-4. 아직 모르는 것 ❓
+
+- 진도 적립 방식(Kollus 가 자체 보고하는지, knouon 으로 별도 POST 하는지)
+- 이수 판정 기준과 그것을 읽는 곳(`/lrnsts/selectLrnStsClassDetailView.do` 추정)
+- 강의자료실(`bbsTycd=DATARM`)의 주차별 강의록 유무
