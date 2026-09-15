@@ -50,6 +50,12 @@ COMPLETE_PERCENT = 95.0
 # watch._play_until_end 가 하므로, 이 값은 '무한정 붙잡지 않기' 위한 상한이다.
 UNKNOWN_BUDGET_S = 5400.0
 
+# 벽시계 예산 여유배수. 전자캠퍼스는 1.5 로 충분했지만 여기는 더 줘야 한다 —
+# **배속을 2 로 걸어도 실제로는 그만큼 안 나온다**(실측: 15초에 12초 진행,
+# 약 0.8배). HLS 가 아니라 progressive MP4 라 버퍼가 2배속을 못 따라간다.
+# 예산은 '멈췄을 때 빠져나오기 위한 상한'일 뿐이라, 완청하면 일찍 끝난다.
+WAIT_FACTOR = 3.0
+
 
 @dataclass(frozen=True)
 class Week:
@@ -319,6 +325,49 @@ def trigger_save(page, settle: float = 6.0) -> int:
     return paused
 
 
+def pause_others(page, keep_index: int) -> int:
+    """대상 말고 다른 영상을 멈춘다. 반환: 멈춘 개수."""
+    from watch import _clip_frames
+    n = 0
+    for i, fr in enumerate(_clip_frames(page)):
+        if i == keep_index:
+            continue
+        try:
+            n += int(fr.evaluate(_PAUSE_JS) or 0)
+        except Exception:
+            pass
+    return n
+
+
+def solo_guard(page, keep_index: int, speed: float, inner=None):
+    """폴링마다 **대상 영상만 살려 두는** 감시 콜백을 만든다.
+
+    실측 문제: 오리엔테이션을 재생하면 잠깐 나아가다(0→45초) 멈춰 버리고,
+    그 뒤로는 상태조차 못 읽는다. 본강의가 되살아나 밀어내는 것으로 보인다
+    (Kollus 는 한 페이지에서 한 영상만 돌린다). 재생 시작 때 한 번 멈추는
+    것으로는 모자라, 매 폴링에서 다시 멈추고 대상을 다시 밀어 준다.
+
+    inner 가 있으면 그대로 이어서 부른다(진행 출력 등).
+    """
+    from watch import _clip_frames
+
+    def guard(st):
+        try:
+            pause_others(page, keep_index)
+            frames = _clip_frames(page)
+            if keep_index < len(frames):
+                frames[keep_index].evaluate(_PLAY_JS, speed)
+        except Exception:
+            pass
+        if inner is not None:
+            try:
+                inner(st)
+            except Exception:
+                pass
+
+    return guard
+
+
 def clip_duration(page, frame_index: int, fallback: float = 0,
                   timeout_ms: int = 20000, poll_ms: int = 1000) -> float:
     """재생 중인 영상의 길이(초). 못 읽으면 fallback.
@@ -349,6 +398,17 @@ def start_clip(page, frame_index: int, speed: float) -> bool:
     frames = _clip_frames(page)
     if frame_index >= len(frames):
         return False
+    # ⚠️ 다른 영상을 **먼저 멈춘다**. 페이지를 열면 본강의가 저절로 재생되기
+    # 시작하는데, 그 상태에서 오리엔테이션을 play() 하면 `paused=True` 인 채로
+    # 위치가 한 발짝도 안 나간다(실측: 13초에서 정체 → 예산만 소진).
+    # Kollus 는 한 페이지에서 한 영상만 돌리는 것으로 보인다.
+    for i, fr in enumerate(frames):
+        if i == frame_index:
+            continue
+        try:
+            fr.evaluate(_PAUSE_JS)
+        except Exception:
+            pass
     try:
         frames[frame_index].evaluate(_PLAY_JS, speed)
     except Exception:
@@ -358,7 +418,8 @@ def start_clip(page, frame_index: int, speed: float) -> bool:
 
 
 def watch_week(page, week: Week, cfg=None, speed=None, poll=15,
-               max_wait_factor=1.5, on_progress=None, on_event=lambda m: None):
+               max_wait_factor=WAIT_FACTOR, on_progress=None,
+               on_event=lambda m: None, only=None):
     """한 주차의 모든 영상을 끝까지 자동 시청한다.
 
     감시·완청 판정은 watch.py 의 검증된 로직을 그대로 쓴다(`_clip_frames` 가
@@ -394,6 +455,10 @@ def watch_week(page, week: Week, cfg=None, speed=None, poll=15,
         return {"seq": week.seq, "speed": sp, "clips": [],
                 "note": "no_active_clip"}
 
+    if only is not None:    # 한 영상만 시험할 때(검증용)
+        actives = [c for c in actives if c["index"] in set(only)]
+        on_event(f"  대상 영상만: {[c['index'] for c in actives]}")
+
     results = []
     for c in actives:
         idx = c["index"]
@@ -410,7 +475,9 @@ def watch_week(page, week: Week, cfg=None, speed=None, poll=15,
                 # _play_until_end 가 하므로, 예산은 상한 노릇만 한다.
             budget = UNKNOWN_BUDGET_S
         on_event(f"  영상 {idx}: {int(dur)}초 · {sp}배속 · 예산 {int(budget)}초")
-        ended = _play_until_end(page, idx, sp, budget, poll, on_progress)
+        # 대상 영상만 살려 두면서 끝까지 민다(solo_guard 설명 참고)
+        ended = _play_until_end(page, idx, sp, budget, poll,
+                                solo_guard(page, idx, sp, on_progress))
         trigger_save(page)
         results.append({"clip": idx, "status": "ended" if ended else "timeout",
                         "dur": dur})

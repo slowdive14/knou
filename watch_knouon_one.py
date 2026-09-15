@@ -36,6 +36,8 @@ COURSE = "바이오통계학"
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     target = int(argv[0]) if argv else 1
+    # 두 번째 인자로 영상 번호를 주면 그것만 돌린다(검증용)
+    only = [int(x) for x in argv[1:]] or None
     cfg = load_config()
     sbjct = knouon.sbjct_id_for(COURSE)
     if not sbjct:
@@ -70,7 +72,8 @@ def main(argv=None) -> int:
 
         print("3) 자동 시청 시작(2배속)…", flush=True)
         res = knouon.watch_week(page, week, cfg=cfg, on_progress=on_progress,
-                                on_event=lambda m: print(f"   {m}", flush=True))
+                                on_event=lambda m: print(f"   {m}", flush=True),
+                                only=only)
         for c in res["clips"]:
             print(f"   영상 {c['clip']}: {c['status']} "
                   f"({int(c.get('dur') or 0)}초)", flush=True)
