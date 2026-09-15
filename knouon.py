@@ -340,23 +340,30 @@ def pause_others(page, keep_index: int) -> int:
 
 
 def effective_speed(page, frame_index: int, want: float,
-                    checks: int = 3, wait_s: float = 4.0) -> float:
-    """실제로 걸린 배속. 요청보다 낮으면 그 값을 돌려준다.
+                    checks: int = 8, wait_s: float = 5.0) -> float:
+    """실제로 걸린 배속. 요청만큼 안 걸리면 걸린 값을 돌려준다.
 
     ⚠️ Kollus 는 영상에 따라 배속을 **거부하고 1.0x 로 되돌린다**(실측:
     오리엔테이션은 2배속이 안 걸리고, 본강의는 걸린다). 그걸 모르고 폴링마다
     배속을 다시 걸면 그 반복이 재생을 끊는다 — 실제로 오리엔테이션이 몇 초
     만에 멈춰 버렸다. 걸리는 배속을 **받아들이고** 그 기준으로 예산을 잡는다.
+
+    ⚠️ 관찰한 값 중 **가장 높은 것**을 쓰고, 요청한 배속이 잡히면 곧바로
+    끝낸다. 배속은 재생 시작 직후 잠깐은 1.0 이다가 나중에 올라간다(실측:
+    29초에 1.0, 44초에 2.0). 짧게 보고 최솟값을 취했더니 2배속이 걸리는
+    영상까지 1배속으로 낮춰 잡아, 59분짜리를 두 배로 보게 만들 뻔했다.
     """
     from watch import _clip_state
-    seen = float(want)
+    best = 0.0
     for _ in range(max(1, checks)):
         time.sleep(wait_s)
         st = _clip_state(page, frame_index) or {}
         r = st.get("rate")
         if isinstance(r, (int, float)) and r > 0:
-            seen = min(seen, float(r))
-    return seen
+            best = max(best, min(float(r), float(want)))
+            if best >= float(want) - 0.01:
+                return float(want)      # 원하는 배속이 잡혔다 — 더 볼 것 없다
+    return best or float(want)
 
 
 def solo_guard(page, keep_index: int, speed: float, inner=None):

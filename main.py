@@ -32,6 +32,8 @@ try:
 except Exception:
     pass
 
+import knouon          # 바이오통계학(knouon) 전용 경로 — docs/lms-map.md §11
+
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_STATE = PROJECT_DIR / "state.json"
 LOG_DIR = PROJECT_DIR / "logs"
@@ -294,8 +296,44 @@ class _Ctx:
         self.posts_cache: dict[str, list] = {}  # 과목별 강의자료실 글목록 재사용
 
 
+def _knouon_weeks(page, course: str, logger) -> list:
+    """knouon 과목의 주차 목록. 실패해도 실행을 멈추지 않는다(빈 목록)."""
+    try:
+        sbjct = knouon.sbjct_id_for(course)
+        weeks = knouon.fetch_weeks(page, sbjct, course)
+        logger.info("%s: knouon 에서 %d주차 확인", course, len(weeks))
+        return weeks
+    except Exception as e:  # noqa: BLE001 - 한 과목 실패가 전체를 막지 않게
+        logger.warning("%s: knouon 주차 조회 실패 — %s", course, str(e)[:120])
+        return []
+
+
+def _knouon_unsupported(c: _Ctx, stage: str, course: str) -> dict:
+    """knouon 에서 아직 안 되는 단계 — 조용히 실패하지 않고 건너뛴다.
+
+    강의자료실·형성평가·화면캡처는 전자캠퍼스와 구조가 달라 아직 손대지
+    않았다(docs/lms-map.md §11-6). 실패로 기록하면 뒤따르는 단계까지 막히므로
+    '할 게 없어서 건너뜀'으로 남긴다.
+    """
+    c.logger.info("    %s: knouon(%s)에서는 아직 지원하지 않습니다 — 건너뜁니다",
+                  stage, course)
+    return {"ok": True, "skipped": True, "detail": {"knouon_unsupported": True}}
+
+
 def _stage_watch(c: _Ctx, course: str, lec) -> dict:
     from watch import watch_lecture
+
+    if knouon.is_knouon_course(course):
+        # knouon 은 플레이어도 진도 적립도 달라 전용 경로로 간다.
+        # 감시·완청 판정은 watch.py 의 로직을 그대로 쓴다(knouon.watch_week).
+        res = knouon.watch_week(
+            c.page, lec, c.cfg,
+            on_progress=lambda m: c.logger.info("    %s", m),
+            on_event=lambda m: c.logger.info("    %s", m))
+        ended = [x for x in res.get("clips") or [] if x.get("status") == "ended"]
+        ok = bool(ended) and len(ended) == len(res.get("clips") or [])
+        return {"ok": ok, "detail": res,
+                "error": None if ok else "일부 영상이 끝까지 재생되지 않음"}
 
     def _capture_quiz(popup):
         # 돌발퀴즈 복습 캡처(부수효과·예외 격리) — 정답·해설 노출 직후 호출됨.
@@ -318,6 +356,8 @@ def _stage_exam(c: _Ctx, course: str, lec) -> dict:
     무관). 플레이어를 열어 `.exam-content-box` 의 문항을 모두 응답 등록하고 닫는다.
     연습문제가 없는 차시는 skip(ok)으로 처리한다.
     """
+    if knouon.is_knouon_course(course):
+        return _knouon_unsupported(c, "exam", course)
     from exercise import (EXAM_WAIT_MS, _exam_frame, solve_exercises,
                           wait_for_exam_frame)
     from watch import open_player
@@ -415,6 +455,8 @@ def _mp3_from_video(c: _Ctx, course: str, lec) -> bool:
 
 
 def _stage_download(c: _Ctx, course: str, lec) -> dict:
+    if knouon.is_knouon_course(course):
+        return _knouon_unsupported(c, "download", course)
     from download import download_lecture
     res = download_lecture(
         c.ctx, c.page, lec, course,
@@ -472,6 +514,8 @@ def _stage_capture(c: _Ctx, course: str, lec) -> dict:
     옛 비전윈도우 경로(capture.capture_lecture_verified)는 보존되어 있으나
     더 정확한 콘텐츠 매칭을 위해 이 경로로 대체했다(롤백은 이 함수만 되돌림).
     """
+    if knouon.is_knouon_course(course):
+        return _knouon_unsupported(c, "capture", course)
     from deck_match import deck_capture_lecture
     from summarize import note_filename
     note = c.summary_dir / note_filename(course, lec.seq, lec.name)
@@ -502,6 +546,8 @@ def _stage_extra(c: _Ctx, course: str, lec) -> dict:
     기본 모드에는 들어있지 않다. 실행이 끝난 뒤 사용자가 '만들기'를 고르면
     `--stages extra` 로 이 단계만 따로 돈다(app/views/run_view.py).
     """
+    if knouon.is_knouon_course(course):
+        return _knouon_unsupported(c, "extra", course)
     from extra_video import make_extra_notes
     return make_extra_notes(
         c.page, lec, course, client=c.client,
@@ -598,11 +644,18 @@ def _run(mode: str, course: str | None = None, seq=None,
         pairs = []
         for course_obj in list_courses(page):
             try:
-                for lec in fetch_lectures(page, course_obj):
-                    pairs.append((course_obj.name, lec))
+                got = list(fetch_lectures(page, course_obj))
             except Exception as e:  # noqa: BLE001
                 logger.warning("과목 '%s' 강의목록 조회 실패: %s",
                                course_obj.name, str(e)[:120])
+                got = []
+            # 전자캠퍼스가 차시를 못 주는 과목은 knouon 쪽을 본다.
+            # 바이오통계학은 '나의 학습'에 뜨지만 차시 AJAX 가 빈 목록을 준다
+            # (2026-2학기부터 별도 시스템으로 옮겨감 — docs/lms-map.md §11).
+            if not got and knouon.is_knouon_course(course_obj.name):
+                got = _knouon_weeks(page, course_obj.name, logger)
+            for lec in got:
+                pairs.append((course_obj.name, lec))
         pairs = select_lectures(pairs, course=course, seq=seq)
         if unwatched:
             before = len(pairs)

@@ -211,8 +211,43 @@ class _FakePage:
 def test_effective_speed_accepts_a_refused_rate(monkeypatch):
     import knouon
     monkeypatch.setattr(knouon.time, "sleep", lambda s: None)
-    # 2배속을 요청했지만 플레이어가 1.0 으로 돌려놓은 상황
-    assert knouon.effective_speed(_FakePage(1.0), 0, 2.0, checks=2) == 1.0
+    # 2배속을 요청했지만 플레이어가 끝내 1.0 으로 돌려놓는 상황
+    assert knouon.effective_speed(_FakePage(1.0), 0, 2.0, checks=3) == 1.0
+
+
+class _SlowPage:
+    """배속이 **늦게** 걸리는 플레이어 — 처음 몇 번은 1.0 이다가 올라간다."""
+
+    def __init__(self, late_after=2, rate=2.0):
+        self.calls = 0
+        self.late_after = late_after
+        self.rate = rate
+        page = self
+
+        class _F:
+            url = "https://v.kr.kollus.com/s?custom_key=x"
+
+            def evaluate(self, js, *a):
+                import json as _j
+                page.calls += 1
+                r = page.rate if page.calls > page.late_after else 1.0
+                return _j.dumps({"pos": 1.0, "dur": 400.0, "rate": r,
+                                 "paused": False, "ended": False})
+
+        self.frames = [_F()]
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def test_effective_speed_waits_for_a_late_rate(monkeypatch):
+    """배속은 재생 직후 잠깐 1.0 이다가 올라간다(실측: 29초 1.0 → 44초 2.0).
+
+    짧게 보고 최솟값을 잡으면 2배속이 걸리는 영상을 1배속으로 낮춰 버린다.
+    """
+    import knouon
+    monkeypatch.setattr(knouon.time, "sleep", lambda s: None)
+    assert knouon.effective_speed(_SlowPage(), 0, 2.0, checks=8) == 2.0
 
 
 def test_effective_speed_keeps_a_rate_that_stuck(monkeypatch):
@@ -236,3 +271,92 @@ def test_watch_week_does_not_reforce_playback():
     src = inspect.getsource(knouon.watch_week)
     assert "solo_guard(" not in src
     assert "effective_speed(" in src
+
+
+# --- 파이프라인 통합 (main.py) ---------------------------------------------
+# 바이오통계학은 '나의 학습'에 뜨지만 차시 AJAX 가 빈 목록을 준다. 그럴 때
+# knouon 주차로 채우고, 아직 손대지 않은 단계는 조용히 실패하지 않고 건너뛴다.
+class _Logged:
+    """_Ctx.logger 대역 — 남긴 말을 모아 둔다."""
+
+    def __init__(self):
+        self.said: list[str] = []
+
+    def info(self, msg, *a):
+        self.said.append(str(msg) % a if a else str(msg))
+
+    warning = error = info
+
+
+class _Ctx:
+    def __init__(self):
+        self.logger = _Logged()
+        self.page = None
+        self.cfg = None
+
+
+def test_unsupported_stage_is_skipped_not_failed():
+    """실패로 기록하면 의존하는 뒤 단계까지 막힌다 — 건너뜀으로 남긴다."""
+    import main
+    c = _Ctx()
+    r = main._knouon_unsupported(c, "download", "바이오통계학")
+    assert r["ok"] is True and r["skipped"] is True
+    assert any("지원하지 않" in m for m in c.logger.said)
+
+
+def test_knouon_stages_are_guarded():
+    """아직 안 되는 단계는 knouon 과목에서 곧장 건너뛴다."""
+    import inspect
+
+    import main
+    for fn in (main._stage_exam, main._stage_download,
+               main._stage_capture, main._stage_extra):
+        src = inspect.getsource(fn)
+        assert "_knouon_unsupported" in src, fn.__name__
+
+
+def test_watch_stage_routes_biostat_to_knouon():
+    import inspect
+
+    import main
+    src = inspect.getsource(main._stage_watch)
+    assert "knouon.is_knouon_course" in src and "knouon.watch_week" in src
+
+
+def test_watch_stage_keeps_the_old_path_for_other_courses():
+    import inspect
+
+    import main
+    assert "watch_lecture" in inspect.getsource(main._stage_watch)
+
+
+def test_knouon_weeks_survives_a_failure():
+    """주차 조회가 깨져도 실행 전체를 멈추지 않는다."""
+    import main
+
+    class _Boom:
+        def goto(self, *a, **k):
+            raise RuntimeError("끊김")
+
+    log = _Logged()
+    assert main._knouon_weeks(_Boom(), "바이오통계학", log) == []
+    assert any("실패" in m for m in log.said)
+
+
+def test_snapshot_fills_a_knouon_course():
+    """앱 목록(lectures.json)에도 주차가 들어가야 고를 수 있다."""
+    import inspect
+
+    import snapshot
+    src = inspect.getsource(snapshot.refresh_snapshot)
+    assert "knouon.is_knouon_course" in src and "knouon.fetch_weeks" in src
+
+
+def test_snapshot_entry_accepts_a_week():
+    """Week 는 Lecture 자리에 그대로 들어간다(없는 필드는 기본값)."""
+    from snapshot import lecture_entry
+    e = lecture_entry(Week(seq=3, name="추정", percent=100.0,
+                           content_id="WS_X", sbjct_id=SBJCT))
+    assert e["seq"] == 3 and e["name"] == "추정"
+    assert e["video_done"] is True          # percent 100 → 이수
+    assert e["exam_done"] is False and e["total_min"] == 0

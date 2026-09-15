@@ -96,13 +96,33 @@ def refresh_snapshot(page, path=SNAPSHOT_PATH, on_event=lambda m: None,
         else:
             page.goto(MY_STUDY_URL, wait_until="domcontentloaded",
                       timeout=30000)
+        import knouon
         pairs = []
         for course in list_courses(page):
+            cname = getattr(course, "name", "") or ""
+            broke = False
             try:
-                pairs.append((course, list(fetch_lectures(page, course))))
+                got = list(fetch_lectures(page, course))
             except Exception as e:  # noqa: BLE001 - 과목 단위 격리
-                on_event(f"목록 갱신: 과목 '{getattr(course, 'name', '?')}' "
-                         f"조회 실패 — {str(e)[:100]}")
+                on_event(f"목록 갱신: 과목 '{cname}' 조회 실패 — {str(e)[:100]}")
+                got, broke = [], True
+            # 전자캠퍼스가 차시를 못 주는 과목은 knouon 쪽을 본다(바이오통계학).
+            # 이게 없으면 앱 목록에 '차시 0개'로 남아 고를 수조차 없다.
+            if not got and knouon.is_knouon_course(cname):
+                try:
+                    got = knouon.fetch_weeks(
+                        page, knouon.sbjct_id_for(cname), cname)
+                    on_event(f"목록 갱신: '{cname}' knouon 에서 {len(got)}주차")
+                except Exception as e:  # noqa: BLE001
+                    on_event(f"목록 갱신: '{cname}' knouon 조회 실패 "
+                             f"— {str(e)[:100]}")
+                    got = []
+            # 조회가 **깨진** 과목은 스냅샷에서 뺀다 — 빈 채로 남기면 현황에
+            # '차시 0개'인 유령 과목이 생긴다. 정상 조회로 빈 목록인 것과는
+            # 다르게 다룬다.
+            if broke and not got:
+                continue
+            pairs.append((course, got))
         if not pairs:
             return None
         snap = build_snapshot(pairs)
