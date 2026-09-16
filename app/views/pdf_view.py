@@ -38,7 +38,14 @@ MUTE = "#8b9198"
 RENDER_SHARPNESS = 1.4
 PAGE_GAP = 12          # 페이지 사이 여백(스크롤 위치 계산에 포함)
 EAGER_PAGES = 2        # 열자마자 보여줄 쪽(나머지는 배경에서)
-NOTIFY_EVERY = 3       # 배경에서 이만큼 그릴 때마다 화면에 반영
+NOTIFY_EVERY = 3       # 배경에서 이만큼 자리를 만들 때마다 화면에 반영
+
+# 보이는 쪽 앞뒤로 이만큼만 실제 이미지를 채운다. 전 쪽을 채우면 큰 PDF 에서
+# 전송량이 한계에 닿아 중간부터 안 내려간다(실측: 58쪽 중 41쪽에서 멈춤).
+WINDOW = 4
+# 화면용이라 JPEG 로 충분하다 — PNG 대비 70% 안팎으로 작아진다.
+RENDER_FORMAT = "jpeg"
+RENDER_QUALITY = 90
 
 
 def page_label(index: int, total: int) -> str:
@@ -85,7 +92,7 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
     total = page_count(pdf_path)
     pw, ph = page_size(pdf_path)
     aspect = (ph / pw) if pw else 1.4
-    st = {"i": 0, "total": total, "loaded": 0, "closed": False,
+    st = {"i": 0, "total": total, "loaded": 0, "drawn": 0, "closed": False,
           "w": float(width), "h": float(width) * aspect}
 
     label = ft.Text(page_label(0, total), size=12, color=MUTE,
@@ -107,32 +114,61 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
         except Exception:  # noqa: BLE001
             pass
 
-    def _page_control(i: int) -> ft.Control:
-        w, h = st["w"], st["h"]
+    def _slot(i: int) -> ft.Control:
+        """쪽 **자리**. 높이를 미리 잡아 두면 스크롤 길이가 처음부터 정확하다."""
         return ft.Container(
-            content=ft.Image(
-                src=render_page(pdf_path, i, (w / max(pw, 1.0)) * RENDER_SHARPNESS),
-                width=w, height=h, fit=ft.BoxFit.CONTAIN),
-            width=w, height=h,
+            width=st["w"], height=st["h"],
             bgcolor=ft.Colors.with_opacity(.04, ft.Colors.ON_SURFACE),
             border_radius=8,
         )
 
+    def _image(i: int) -> ft.Control:
+        w, h = st["w"], st["h"]
+        return ft.Image(
+            src=render_page(pdf_path, i, (w / max(pw, 1.0)) * RENDER_SHARPNESS,
+                            fmt=RENDER_FORMAT, quality=RENDER_QUALITY),
+            width=w, height=h, fit=ft.BoxFit.CONTAIN)
+
     def _add_pages(upto: int):
-        """앞에서부터 upto 쪽까지 그려 붙인다(이미 그린 건 건너뜀)."""
+        """앞에서부터 upto 쪽까지 **자리**를 만든다(이미 있는 건 건너뜀)."""
         upto = min(int(upto), st["total"])
         while st["loaded"] < upto and not st["closed"]:
-            stack.controls.append(_page_control(st["loaded"]))
+            stack.controls.append(_slot(st["loaded"]))
             st["loaded"] += 1
 
+    def _window(center: int):
+        """보이는 쪽 앞뒤 WINDOW 만큼만 실제로 그리고, 멀어진 쪽은 비운다.
+
+        ⚠️ 예전에는 전 쪽을 이미지로 채웠는데, 58쪽짜리 슬라이드에서 **41쪽에서
+        더 안 내려갔다**(실측). 41쪽까지가 6.44MB 라 전송 한계에 닿은 것으로
+        보인다. 자리는 다 만들어 두고 이미지만 근처에 채우면, 쪽수가 몇이든
+        오가는 양은 창 크기(약 9쪽)로 일정하다.
+        """
+        if st["closed"]:
+            return
+        lo = max(0, int(center) - WINDOW)
+        hi = min(st["total"], int(center) + WINDOW + 1)
+        drawn = 0
+        for i, c in enumerate(stack.controls):
+            want = lo <= i < hi
+            has = getattr(c, "content", None) is not None
+            if want and not has:
+                c.content = _image(i)
+            elif not want and has:
+                c.content = None        # 멀어진 쪽은 비워 전송량을 돌려준다
+            if want:
+                drawn += 1
+        st["drawn"] = drawn
+
     def _fill_rest():
-        """나머지 쪽을 배경에서 이어 붙인다 — 스크롤이 중간에 막히지 않게."""
+        """나머지 쪽 **자리**를 배경에서 이어 붙인다 — 스크롤이 막히지 않게."""
         while st["loaded"] < st["total"] and not st["closed"]:
             _add_pages(st["loaded"] + NOTIFY_EVERY)
             note.value = loading_text(st["loaded"], st["total"])
             _upd()
         if not st["closed"]:
             note.value = ""
+            _window(st["i"])
             _upd()
 
     def on_scroll(e):
@@ -140,6 +176,7 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
         if i != st["i"]:
             st["i"] = i
             label.value = page_label(i, st["total"])
+            _window(i)
             _upd()
 
     stack.on_scroll = on_scroll
@@ -148,6 +185,7 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
         def _h(_=None):
             st["i"] = clamp_page(st["i"] + delta, st["total"])
             label.value = page_label(st["i"], st["total"])
+            _window(st["i"])
             _upd()
             _scroll(page_offset(st["i"], st["h"]))
         return _h
@@ -173,12 +211,14 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
     elif total <= 0:
         note.value = "PDF 를 열 수 없습니다(손상되었거나 암호가 걸린 파일)."
     else:
-        _add_pages(eager)                       # 앞 몇 쪽은 즉시
+        _add_pages(eager)                       # 앞 몇 쪽 자리부터
+        _window(0)                              # 보이는 곳은 바로 그린다
         note.value = loading_text(st["loaded"], st["total"])
         if background and st["loaded"] < total:
             threading.Thread(target=_fill_rest, daemon=True).start()
         elif not background:
             _add_pages(total)
+            _window(st["i"])
             note.value = ""
 
     header = ft.Row(

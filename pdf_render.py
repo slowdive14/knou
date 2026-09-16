@@ -79,8 +79,13 @@ def page_size(pdf_path, index: int = 0) -> tuple[float, float]:
         return (595.0, 842.0)
 
 
-def render_page(pdf_path, index: int = 0, zoom: float = DEFAULT_ZOOM) -> bytes:
-    """PDF 한 페이지를 PNG bytes 로(실패하면 빈 bytes)."""
+def render_page(pdf_path, index: int = 0, zoom: float = DEFAULT_ZOOM,
+                fmt: str = "png", quality: int = 90) -> bytes:
+    """PDF 한 페이지를 이미지 bytes 로(실패하면 빈 bytes).
+
+    fmt="jpeg" 면 용량이 PNG 의 70% 안팎으로 줄어든다(실측: 58쪽 슬라이드
+    8.88MB → 6.43MB). 화면에 띄우는 용도라 이 정도 손실은 눈에 띄지 않는다.
+    """
     fitz = _fitz()
     p = Path(pdf_path)
     if fitz is None or not p.exists():
@@ -92,6 +97,8 @@ def render_page(pdf_path, index: int = 0, zoom: float = DEFAULT_ZOOM) -> bytes:
             page = doc.load_page(clamp_page(index, doc.page_count))
             z = clamp_zoom(zoom)
             pix = page.get_pixmap(matrix=fitz.Matrix(z, z), alpha=False)
+            if str(fmt).lower() in ("jpeg", "jpg"):
+                return pix.tobytes("jpeg", jpg_quality=int(quality))
             return pix.tobytes("png")
     except Exception:  # noqa: BLE001
         return b""

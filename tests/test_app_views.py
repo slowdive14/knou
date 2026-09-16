@@ -1174,12 +1174,32 @@ def test_page_offset_is_inverse_of_visible_page():
         assert visible_page(page_offset(i, h), h, 50) == i
 
 
-def test_all_pages_are_rendered_so_scroll_never_stalls(tmp_path):
-    # 중간에 끊기던 원인(느린 지연 로딩) 제거 — 결국 전 쪽이 다 붙는다
-    from app.views.pdf_view import build_pdf_view
+def test_every_page_gets_a_slot_so_scroll_never_stalls(tmp_path):
+    """쪽 **자리**는 전부 만든다 — 그래야 스크롤이 끝까지 내려간다.
+
+    이미지까지 전부 채우지는 않는다. 58쪽짜리 슬라이드에서 41쪽부터 더
+    안 내려가던 실측 사고가 그것 때문이었다(41쪽까지 6.44MB → 전송 한계).
+    자리만 잡아 두면 스크롤 길이는 정확하고, 이미지는 보이는 근처에만 둔다.
+    """
+    from app.views.pdf_view import WINDOW, build_pdf_view
     panel, st = build_pdf_view(_pdf(tmp_path, pages=12), page=_ScrollPage(),
                                 background=False)
-    assert st["loaded"] == 12 and len(_imgs(panel)) == 12
+    assert st["loaded"] == 12                    # 자리는 전 쪽
+    assert len(_imgs(panel)) <= WINDOW * 2 + 1   # 이미지는 창 크기만큼만
+    assert _imgs(panel)                          # 보이는 곳은 그려져 있다
+
+
+def test_scrolling_moves_the_drawn_window(tmp_path):
+    """스크롤하면 그리는 창이 따라온다 — 뒤쪽도 결국 그려진다."""
+    from app.views.pdf_view import build_pdf_view, page_offset
+    panel, st = build_pdf_view(_pdf(tmp_path, pages=30), page=_ScrollPage(),
+                                background=False)
+    stack = next(c for c in _walk(panel)
+                 if isinstance(c, ft.Column) and c.on_scroll)
+    assert stack.controls[25].content is None    # 처음엔 멀어서 비어 있다
+    stack.on_scroll(type("E", (), {"pixels": page_offset(25, st["h"])})())
+    assert stack.controls[25].content is not None
+    assert stack.controls[0].content is None     # 멀어진 쪽은 비워진다
 
 
 def test_opens_fast_with_first_pages_then_fills(tmp_path):
@@ -1255,7 +1275,8 @@ def test_pdf_view_renders_real_pdf(tmp_path):
     panel, st = build_pdf_view(p, title="강의록")
     imgs = [c for c in _walk(panel) if isinstance(c, ft.Image)]
     assert st["total"] == 1 and imgs
-    assert bytes(imgs[0].src[:4]) == bytes([0x89, 0x50, 0x4E, 0x47])
+    # 화면용이라 JPEG 로 그린다(PNG 대비 70% 안팎) — 전송량을 아끼기 위함
+    assert bytes(imgs[0].src[:3]) == bytes([0xFF, 0xD8, 0xFF])
 
 
 # --- 앱 화면 밝기(시스템/밝게/어둡게) --------------------------------------
