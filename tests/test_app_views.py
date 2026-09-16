@@ -1146,9 +1146,20 @@ def _imgs(panel):
     return [c for c in _walk(panel) if isinstance(c, ft.Image)]
 
 
+def _pbox(panel):
+    """뷰어의 쪽수 입력칸 — 지금 보는 쪽이 여기 들어 있다."""
+    return next(c for c in _walk(panel) if isinstance(c, ft.TextField))
+
+
 def _plabel(panel):
-    return next(c.value for c in _walk(panel)
-                if isinstance(c, ft.Text) and "/" in str(c.value or ""))
+    """'현재 쪽 / 전체'. 쪽 번호는 입력칸에, 전체는 그 옆 표시에 있다.
+
+    (예전에는 '3 / 51' 을 한 덩어리 Text 로 보여줬는데, 쪽수를 직접 쳐서
+    뛰어갈 수 있게 하면서 입력칸으로 바뀌었다.)
+    """
+    tot = next(c.value for c in _walk(panel)
+               if isinstance(c, ft.Text) and str(c.value or "").startswith("/"))
+    return f"{_pbox(panel).value} {tot}"
 
 
 def _pbtn(panel, tip):
@@ -1756,3 +1767,76 @@ def test_view_log_says_so_when_there_is_no_log(tmp_path, monkeypatch):
     assert filed.visible is False and live.visible is not False
     texts = [c.value or "" for c in _walk(view) if isinstance(c, ft.Text)]
     assert any("표시할 실행 로그가 없습니다" in t for t in texts)
+
+
+# --- 쪽수 입력으로 바로 가기 ------------------------------------------------
+def test_parse_page_input_reads_a_human_number():
+    from app.views.pdf_view import parse_page_input
+    assert parse_page_input("42", 58) == 41       # 사람은 1부터 센다
+    assert parse_page_input("1", 58) == 0
+    assert parse_page_input("  7  ", 58) == 6
+
+
+def test_parse_page_input_clamps_instead_of_refusing():
+    """0 이나 999 를 넣어도 튕기지 않고 처음·마지막으로 간다."""
+    from app.views.pdf_view import parse_page_input
+    assert parse_page_input("0", 58) == 0
+    assert parse_page_input("999", 58) == 57
+
+
+def test_parse_page_input_gives_up_on_junk():
+    from app.views.pdf_view import parse_page_input
+    for s in ("", "   ", "abc", None):
+        assert parse_page_input(s, 58) is None
+    assert parse_page_input("3", 0) is None       # 빈 문서
+
+
+def test_typing_a_page_jumps_there(tmp_path):
+    from app.views.pdf_view import build_pdf_view, page_offset
+    page = _ScrollPage()
+    panel, st = build_pdf_view(_pdf(tmp_path, pages=30), page=page,
+                                background=False)
+    box = _pbox(panel)
+    box.value = "25"
+    box.on_submit(None)
+    assert st["i"] == 24
+    assert page.tasks[-1][1]["offset"] == page_offset(24, st["h"])
+    assert _plabel(panel) == "25 / 30"
+
+
+def test_typing_a_page_draws_it(tmp_path):
+    """뛰어간 쪽은 실제로 그려져 있어야 한다(빈 칸이 아니라)."""
+    from app.views.pdf_view import build_pdf_view
+    panel, st = build_pdf_view(_pdf(tmp_path, pages=30), page=_ScrollPage(),
+                                background=False)
+    stack = next(c for c in _walk(panel)
+                 if isinstance(c, ft.Column) and c.on_scroll)
+    assert stack.controls[24].content is None
+    box = _pbox(panel)
+    box.value = "25"
+    box.on_submit(None)
+    assert stack.controls[24].content is not None
+
+
+def test_bad_page_input_restores_the_current_page(tmp_path):
+    """글자를 넣으면 움직이지 않고 원래 쪽 번호가 되살아난다."""
+    from app.views.pdf_view import build_pdf_view
+    panel, st = build_pdf_view(_pdf(tmp_path, pages=30), page=_ScrollPage(),
+                                background=False)
+    box = _pbox(panel)
+    box.value = "12"
+    box.on_submit(None)
+    box.value = "어디로"
+    box.on_submit(None)
+    assert st["i"] == 11 and box.value == "12"
+
+
+def test_scrolling_updates_the_page_box(tmp_path):
+    """스크롤로 넘겨도 입력칸이 따라온다."""
+    from app.views.pdf_view import build_pdf_view, page_offset
+    panel, st = build_pdf_view(_pdf(tmp_path, pages=30), page=_ScrollPage(),
+                                background=False)
+    stack = next(c for c in _walk(panel)
+                 if isinstance(c, ft.Column) and c.on_scroll)
+    stack.on_scroll(type("E", (), {"pixels": page_offset(17, st["h"])})())
+    assert _pbox(panel).value == "18"

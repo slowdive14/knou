@@ -24,6 +24,7 @@ Flet 에 PDF 컨트롤이 없어 PyMuPDF(pdf_render)로 페이지를 그려 `ft.
 """
 from __future__ import annotations
 
+import re
 import threading
 
 import flet as ft
@@ -74,6 +75,21 @@ def visible_page(pixels, page_height: float, total: int) -> int:
     return clamp_page(idx, total)
 
 
+def parse_page_input(text, total: int):
+    """쪽수 입력칸의 글자 → 0-based 쪽 인덱스. 못 읽으면 None.
+
+    사람은 1부터 세므로 '42' 는 41번째다. 범위를 넘는 수는 **가장 가까운 쪽**
+    으로 맞춘다(0 이나 999 를 넣어도 튕기지 않고 처음·마지막으로 간다).
+    """
+    s = str(text or "").strip()
+    if not s or total <= 0:
+        return None
+    m = re.search(r"\d+", s)
+    if not m:
+        return None
+    return clamp_page(int(m.group()) - 1, total)
+
+
 def loading_text(done: int, total: int) -> str:
     """배경 렌더 진행 안내(다 되면 빈 문자열)."""
     if total <= 0 or done >= total:
@@ -95,8 +111,15 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
     st = {"i": 0, "total": total, "loaded": 0, "drawn": 0, "closed": False,
           "w": float(width), "h": float(width) * aspect}
 
-    label = ft.Text(page_label(0, total), size=12, color=MUTE,
-                    font_family="Consolas")
+    # 쪽수를 직접 쳐서 뛰어갈 수 있게. 58쪽짜리를 화살표로 넘기면 너무 멀다.
+    page_box = ft.TextField(
+        value="1" if total else "", width=62, height=38, text_size=13,
+        text_align=ft.TextAlign.CENTER, content_padding=6,
+        keyboard_type=ft.KeyboardType.NUMBER,
+        tooltip="쪽수를 입력하고 Enter",
+        border_color=ft.Colors.with_opacity(.25, ft.Colors.ON_SURFACE))
+    total_label = ft.Text(f"/ {total}" if total else "/ 0", size=12,
+                          color=MUTE, font_family="Consolas")
     note = ft.Text("", size=12, color=MUTE)
     stack = ft.Column(spacing=PAGE_GAP, scroll=ft.ScrollMode.AUTO, expand=True)
 
@@ -171,34 +194,53 @@ def build_pdf_view(pdf_path, title: str = "강의록", on_back=None,
             _window(st["i"])
             _upd()
 
+    def _mark(i: int):
+        """지금 보는 쪽을 화면 곳곳에 반영한다(쪽 표시·입력칸·그리는 창)."""
+        st["i"] = clamp_page(i, st["total"])
+        page_box.value = str(st["i"] + 1) if st["total"] else ""
+        _window(st["i"])
+
     def on_scroll(e):
         i = visible_page(getattr(e, "pixels", 0), st["h"], st["total"])
         if i != st["i"]:
-            st["i"] = i
-            label.value = page_label(i, st["total"])
-            _window(i)
+            _mark(i)
             _upd()
 
     stack.on_scroll = on_scroll
 
+    def jump_to(i: int):
+        """그 쪽으로 옮기고 화면도 거기로 스크롤한다."""
+        _mark(i)
+        _upd()
+        _scroll(page_offset(st["i"], st["h"]))
+
+    def on_page_input(e=None):
+        """쪽수 입력 → 그 쪽으로. 못 읽은 입력은 지금 쪽으로 되돌린다."""
+        i = parse_page_input(getattr(page_box, "value", ""), st["total"])
+        if i is None:                   # 빈 칸·글자 → 원래 쪽 번호를 되살린다
+            page_box.value = str(st["i"] + 1) if st["total"] else ""
+            _upd()
+            return
+        jump_to(i)
+
+    page_box.on_submit = on_page_input
+    page_box.on_blur = on_page_input    # 엔터를 안 쳐도 칸을 벗어나면 이동
+
     def goto(delta: int):
         def _h(_=None):
-            st["i"] = clamp_page(st["i"] + delta, st["total"])
-            label.value = page_label(st["i"], st["total"])
-            _window(st["i"])
-            _upd()
-            _scroll(page_offset(st["i"], st["h"]))
+            jump_to(st["i"] + delta)
         return _h
 
     tools = ft.Row(
         [
             ft.IconButton(ft.Icons.KEYBOARD_ARROW_UP, tooltip="이전 쪽",
                           on_click=goto(-1)),
-            label,
+            page_box,
+            total_label,
             ft.IconButton(ft.Icons.KEYBOARD_ARROW_DOWN, tooltip="다음 쪽",
                           on_click=goto(1)),
             ft.Container(expand=True),
-            ft.Text("스크롤로 넘겨 보세요", size=11, color=MUTE),
+            ft.Text("스크롤로 넘기거나 쪽수를 입력하세요", size=11, color=MUTE),
             ft.TextButton("기본 프로그램으로 열기", icon=ft.Icons.OPEN_IN_NEW,
                           on_click=(lambda e: on_fallback()) if on_fallback else None),
         ],
