@@ -206,9 +206,30 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                         color=MINT, font_family="Consolas", expand=True),
                 ft.Text(str(q.get("source") or ""), size=11, color=MUTE),
             ]),
-            ft.Text(str(q.get("question") or ""), size=15,
-                    weight=ft.FontWeight.BOLD),
         ]
+        # ⚠️ 여러 문항이 함께 쓰는 지문과 코드를 **반드시** 보여준다. 이게 없으면
+        # '다음 프로그램의 실행결과는?' 같은 문항을 아예 풀 수 없다.
+        intro = str(q.get("intro") or "").strip()
+        if intro:
+            items.append(ft.Container(
+                content=ft.Text(intro, size=13, color=MUTE, selectable=True),
+                bgcolor=ft.Colors.with_opacity(.04, ft.Colors.ON_SURFACE),
+                padding=12, border_radius=8))
+        items.append(ft.Text(str(q.get("question") or ""), size=15,
+                             weight=ft.FontWeight.BOLD))
+        code = str(q.get("code") or "").strip()
+        if code:
+            items.append(ft.Container(
+                content=ft.Text(code, size=13, font_family="Consolas",
+                                selectable=True),
+                bgcolor=ft.Colors.with_opacity(.06, ft.Colors.ON_SURFACE),
+                padding=12, border_radius=8,
+                border=ft.Border.all(1, ft.Colors.with_opacity(
+                    .10, ft.Colors.ON_SURFACE))))
+        # 코드가 있는데 실행으로 확인하지 못한 변형은 그 사실을 알린다
+        if code and q.get("source") == "기출변형" and not q.get("verified"):
+            items.append(ft.Text("⚠️ 실행으로 확인하지 못한 문제입니다", size=11,
+                                 color=ROSE))
         items += [_option_button(q, o) for o in (q.get("options") or [])]
         items.append(ft.TextButton(
             "정답 숨기기" if opened else "정답 보기",

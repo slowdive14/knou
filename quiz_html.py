@@ -45,11 +45,19 @@ def _render_card(num: int, q: dict) -> str:
         correct = "정답 정보 없음"
     badge = _esc(q.get("source") or "")
     badge_html = f'<span class="badge">{badge}</span>' if badge else ""
+    # ⚠️ 지문과 코드를 반드시 실어야 한다 — 없으면 '이 프로그램의 실행결과는?'
+    # 같은 문항을 풀 수가 없다(기출을 담으면서 드러난 빠짐).
+    intro = str(q.get("intro") or "").strip()
+    intro_html = f'<div class="q-intro">{_esc(intro)}</div>' if intro else ""
+    code = str(q.get("code") or "").strip()
+    code_html = f'<pre class="q-code">{_esc(code)}</pre>' if code else ""
     return (
         f'<div class="q-card card" data-qid="{_escattr(q.get("qid"))}" '
         f'data-answer-no="{ans_attr}">'
         f'<div class="q-head"><span class="qnum">Q{num:02d}</span>{badge_html}</div>'
+        f'{intro_html}'
         f'<div class="q-text">{_esc(q.get("question"))}</div>'
+        f'{code_html}'
         f'<div class="opts">{opts}</div>'
         f'<div class="q-actions"><button class="chip btn-reveal">'
         f'{_icon("i-eye")}<span>정답 보기</span></button></div>'
@@ -173,6 +181,13 @@ _CSS = r"""
   font-weight:700; padding:4px 10px; border-radius:99px; }
 .q-text { font-size:17px; font-weight:700; margin:12px 0 16px; line-height:1.55;
   letter-spacing:-.018em; }
+/* 여러 문항이 함께 쓰는 지문과, 실행결과를 묻는 문항의 코드 */
+.q-intro { font-size:14px; color:var(--mute); background:rgba(0,0,0,.035);
+  border-radius:8px; padding:11px 13px; margin:10px 0 0; white-space:pre-wrap; }
+.q-code { font-family:Consolas,"D2Coding",monospace; font-size:13.5px;
+  line-height:1.5; background:rgba(0,0,0,.055); border:1px solid rgba(0,0,0,.09);
+  border-radius:8px; padding:12px 14px; margin:0 0 16px; overflow-x:auto;
+  white-space:pre; }
 .opts { display:flex; flex-direction:column; gap:9px; }
 .opt { display:flex; align-items:center; gap:12px; text-align:left; font:inherit;
   font-size:15px; width:100%; cursor:pointer; padding:13px 15px; border-radius:11px;
