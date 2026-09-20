@@ -99,6 +99,52 @@ def answer_files(zip_path: Path, dest_dir: Path) -> dict:
     return out
 
 
+def bank_exists(quiz_dir, year, term, course: str = COURSE) -> bool:
+    """이 회차를 이미 만들어 두었는가."""
+    return (Path(quiz_dir) / eb.bank_filename(course, year, term)).exists()
+
+
+def plan_imports(rows, quiz_dir, want_all: bool = False, year=None,
+                 course: str = COURSE) -> tuple[list, list]:
+    """가져올 회차와 건너뛸 회차를 가른다 → (가져올 것, [(행, 사유)]).
+
+    - 이미 만든 회차는 건너뛴다(버튼을 다시 눌러도 다시 만들지 않는다)
+    - PDF 첨부가 없으면 못 읽는다. HWP 는 **배포용 문서**라 본문이 안 열린다
+      (실측: 본문 대신 '최신 버전의 한글이 필요합니다' 한 줄만 나온다)
+    - 정답표가 없는 회차는 want_all 일 때만 — 정답 없이 외우면 헛공부다
+    """
+    todo, skip = [], []
+    for r in rows or []:
+        key = r.get("key")
+        if not key:
+            skip.append((r, "연도·학기를 못 읽었습니다"))
+            continue
+        if year and key[0] != int(year):
+            continue
+        if bank_exists(quiz_dir, key[0], key[1], course):
+            skip.append((r, "이미 가져왔습니다"))
+            continue
+        if not r.get("pdf"):
+            skip.append((r, "PDF 첨부가 없습니다(HWP 는 배포용 문서라 못 읽습니다)"))
+            continue
+        if not r.get("ans") and not want_all:
+            skip.append((r, "정답표가 없습니다"))
+            continue
+        todo.append(r)
+    todo.sort(key=lambda x: x["key"], reverse=True)
+    return todo, skip
+
+
+def summary_text(done) -> str:
+    """가져오기 결과 한 줄."""
+    ok = [d for d in done or [] if d.get("ok")]
+    if not done:
+        return "새로 가져올 회차가 없습니다"
+    return (f"{len(ok)}/{len(done)}회차 · 문항 "
+            f"{sum(d.get('n', 0) for d in ok)}개"
+            f"(정답 있는 것 {sum(d.get('scored', 0) for d in ok)}개)")
+
+
 def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
               work: Path) -> dict:
     """기출 한 회차 → 은행 JSON 저장. 반환: 요약 dict."""
@@ -133,6 +179,100 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
             "path": str(out)}
 
 
+def survey(page, ctx, work: Path, on_event=None) -> tuple:
+    """자료실을 훑어 (과목, 회차 행 목록) 을 만든다. 아무것도 만들지 않는다."""
+    log = on_event or _log
+    course, exams, answers = fetch_posts(page, COURSE)
+    log(f"   기출 {len(exams)}건 · 정답표 {len(answers)}건")
+
+    # 정답표 ZIP 을 먼저 풀어 (연도, 학기) → 파일 로 만들어 둔다
+    table: dict = {}
+    for ap_post in answers:
+        z = download_attachment(ctx, course.sbjt_id, ap_post, (".zip",), work)
+        if z:
+            table.update(answer_files(z, work / "정답표"))
+    log(f"   정답표에 든 회차: {sorted(f'{y}-{t}' for y, t in table)}")
+
+    rows = []
+    for post in exams:
+        got = eb.parse_exam_title(_title(post))
+        dn, _sn = _pick_file(post, (".pdf",))
+        rows.append({"post": post, "key": got, "pdf": dn,
+                     "ans": table.get(got) if got else None,
+                     "title": _title(post)})
+    return course, rows
+
+
+def import_exams(on_event=None, want_all: bool = False, year=None,
+                 quiz_dir=None) -> dict:
+    """로그인 → 자료실 → **아직 없는 회차만** 만든다. 화면에서도 부른다.
+
+    반환: {"done": [회차별 결과], "skip": [(제목, 사유)], "made": 만든 회차 수}
+    ⚠️ 자료를 읽기만 한다. 서버에 아무것도 제출하지 않는다.
+    """
+    from google import genai
+    from playwright.sync_api import sync_playwright
+
+    from auth import ensure_logged_in
+    from config import load_config
+    from recon import launch_context
+
+    log = on_event or _log
+    cfg = load_config()
+    qd = Path(quiz_dir) if quiz_dir else Path(cfg.summary_dir) / "퀴즈"
+    qd.mkdir(parents=True, exist_ok=True)
+    work = Path(cfg.downloads_dir) / "_기출"
+    work.mkdir(parents=True, exist_ok=True)
+
+    done, skip = [], []
+    with sync_playwright() as p:
+        ctx = launch_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        log("1) 로그인·자료실…")
+        ensure_logged_in(page, cfg)
+        course, rows = survey(page, ctx, work, log)
+        todo, skipped = plan_imports(rows, qd, want_all, year)
+        skip = [(r.get("title") or "?", why) for r, why in skipped]
+        log(f"\n2) 새로 가져올 회차 {len(todo)}개")
+        if todo:
+            client = genai.Client(api_key=cfg.gemini_api_key)
+            for r in todo:
+                try:
+                    done.append(build_one(client, ctx, course, r["post"],
+                                          r["ans"], qd, work))
+                except Exception as e:  # noqa: BLE001 - 회차 단위 격리
+                    log(f"  ✗ 실패: {str(e)[:140]}")
+                    done.append({"title": r.get("title") or "?", "ok": False,
+                                 "why": str(e)[:100]})
+        ctx.close()
+
+    log(f"\n■ 완료: {summary_text(done)}")
+    return {"done": done, "skip": skip,
+            "made": sum(1 for d in done if d.get("ok"))}
+
+
+def list_exams(on_event=None) -> list:
+    """자료실의 회차 목록만 읽어 온다(아무것도 만들지 않는다)."""
+    from playwright.sync_api import sync_playwright
+
+    from auth import ensure_logged_in
+    from config import load_config
+    from recon import launch_context
+
+    log = on_event or _log
+    cfg = load_config()
+    work = Path(cfg.downloads_dir) / "_기출"
+    work.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as p:
+        ctx = launch_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        log("1) 로그인·자료실…")
+        ensure_logged_in(page, cfg)
+        _course, rows = survey(page, ctx, work, log)
+        ctx.close()
+    return rows
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="기출문제 은행 만들기")
     ap.add_argument("--year", type=int, help="이 연도만")
@@ -141,81 +281,23 @@ def main(argv=None) -> int:
                     help="정답표가 없는 회차도 만든다(정답 없이 저장)")
     a = ap.parse_args(argv)
 
-    from google import genai
-    from playwright.sync_api import sync_playwright
+    if a.list:
+        from config import load_config
+        quiz_dir = Path(load_config().summary_dir) / "퀴즈"
+        rows = list_exams()
+        _log("\n연도-학기 | PDF | 정답표 | 가져옴 | 제목")
+        for r in sorted(rows, key=lambda x: x["key"] or (0, 0), reverse=True):
+            k = f"{r['key'][0]}-{r['key'][1]}" if r["key"] else "?"
+            have = (r["key"] and bank_exists(quiz_dir, *r["key"]))
+            _log(f"  {k:>8s} | {'O' if r['pdf'] else '-'}   | "
+                 f"{'O' if r['ans'] else '-'}      | {'O' if have else '-'}     "
+                 f"| {r['title'][:40]}")
+        return 0
 
-    from auth import ensure_logged_in
-    from config import load_config
-
-    cfg = load_config()
-    quiz_dir = Path(cfg.summary_dir) / "퀴즈"
-    quiz_dir.mkdir(parents=True, exist_ok=True)
-    work = Path(cfg.downloads_dir) / "_기출"
-    work.mkdir(parents=True, exist_ok=True)
-
-    with sync_playwright() as p:
-        from recon import launch_context
-        ctx = launch_context(p)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        _log("1) 로그인·자료실…")
-        ensure_logged_in(page, cfg)
-        course, exams, answers = fetch_posts(page, COURSE)
-        _log(f"   기출 {len(exams)}건 · 정답표 {len(answers)}건")
-
-        # 정답표 ZIP 을 먼저 풀어 (연도, 학기) → 파일 로 만들어 둔다
-        table: dict = {}
-        for ap_post in answers:
-            z = download_attachment(ctx, course.sbjt_id, ap_post, (".zip",), work)
-            if z:
-                table.update(answer_files(z, work / "정답표"))
-        _log(f"   정답표에 든 회차: "
-             f"{sorted(f'{y}-{t}' for y, t in table)}")
-
-        rows = []
-        for post in exams:
-            got = eb.parse_exam_title(_title(post))
-            dn, _sn = _pick_file(post, (".pdf",))
-            rows.append({"post": post, "key": got, "pdf": dn,
-                         "ans": table.get(got) if got else None})
-
-        if a.list:
-            _log("\n연도-학기 | PDF | 정답표 | 제목")
-            for r in sorted(rows, key=lambda x: x["key"] or (0, 0), reverse=True):
-                k = f"{r['key'][0]}-{r['key'][1]}" if r["key"] else "?"
-                _log(f"  {k:>8s} | {'O' if r['pdf'] else '-'}   | "
-                     f"{'O' if r['ans'] else '-'}      | {_title(r['post'])[:44]}")
-            ctx.close()
-            return 0
-
-        todo = [r for r in rows if r["pdf"] and (r["ans"] or a.all)]
-        if a.year:
-            todo = [r for r in todo if r["key"] and r["key"][0] == a.year]
-        _log(f"\n2) 만들 회차 {len(todo)}개")
-        if not todo:
-            _log("   조건에 맞는 회차가 없습니다(--list 로 확인하세요).")
-            ctx.close()
-            return 1
-
-        client = genai.Client(api_key=cfg.gemini_api_key)
-        done = []
-        for r in todo:
-            try:
-                done.append(build_one(client, ctx, course, r["post"], r["ans"],
-                                      quiz_dir, work))
-            except Exception as e:  # noqa: BLE001 - 회차 단위 격리
-                _log(f"  ✗ 실패: {str(e)[:140]}")
-                done.append({"title": _title(r["post"]), "ok": False,
-                             "why": str(e)[:100]})
-        ctx.close()
-
-    ok = [d for d in done if d.get("ok")]
-    _log(f"\n■ 완료: {len(ok)}/{len(done)}회차 · "
-         f"문항 {sum(d.get('n', 0) for d in ok)}개 "
-         f"(정답 있는 것 {sum(d.get('scored', 0) for d in ok)}개)")
-    for d in done:
-        if not d.get("ok"):
-            _log(f"   건너뜀: {d['title'][:40]} — {d.get('why')}")
-    return 0
+    res = import_exams(want_all=a.all, year=a.year)
+    for title, why in res["skip"]:
+        _log(f"   건너뜀: {title[:40]} — {why}")
+    return 0 if res["made"] else 1
 
 
 if __name__ == "__main__":

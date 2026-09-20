@@ -47,6 +47,8 @@ def parse_exam_title(title) -> tuple[int, int] | None:
         '[2015학년도 1학기] 기말시험'
         '[2014.1학기 기말시험] C프로그래밍'
         '[2017 동계계절수업시험] C프로그래밍'   ← 학기가 없다(동계=0)
+        '3. 2014-1기말시험정답표(최종).hwp'     ← '학기' 글자가 없다
+        '[2004.2]기말시험/C프로그래밍'          ← 연도.학기 로만 적혀 있다
     """
     s = str(title or "")
     m = re.search(r"(20\d{2}|19\d{2})", s)
@@ -56,6 +58,12 @@ def parse_exam_title(title) -> tuple[int, int] | None:
     if re.search(r"동계|계절", s):
         return (year, 0)            # 계절수업은 학기 대신 0
     t = re.search(r"([12])\s*학기", s)
+    if t:
+        return (year, int(t.group(1)))
+    # '학기' 글자 없이 '2014-1' '2004.2' 처럼 연도에 학기를 붙여 적기도 한다.
+    # ⚠️ 연도 **바로 뒤**에 붙은 것만 본다. 아무 데나 있는 1·2 를 학기로 읽으면
+    #    엉뚱한 회차가 된다(파일명에 '3.' '최종' 같은 숫자가 흔하다).
+    t = re.match(r"[-.]\s*([12])(?!\d)", s[m.end():])
     return (year, int(t.group(1))) if t else None
 
 

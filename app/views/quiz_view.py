@@ -6,6 +6,7 @@
 
   - 강의 고르기(드롭다운) · 진행률 · 현재 강/전체 초기화
   - 출제 모드 — 전체 · 오답만 · 안 푼 것만 · 복습할 것
+  - [기출 더 가져오기] — 자료실에서 아직 안 담은 회차를 찾아 담는다
   - 'N강 모아보기' — 회차가 달라도 그 강의 문항을 한 자리에 모은다
   - 풀이 기록은 앱이 켜져 있는 동안 유지(HTML 페이지는 브라우저에 저장)
 
@@ -96,6 +97,29 @@ def lecture_chip(q) -> list:
         bgcolor=MINT_BG, padding=ft.Padding(9, 2, 9, 2), border_radius=99)]
 
 
+IMPORT_BODY = """자료실의 기출문제를 훑어 **아직 안 담은 회차만** 가져옵니다.
+
+  · 로그인해서 기출 PDF 를 받고, 문항은 AI 가 읽어 만듭니다(몇 분 걸립니다)
+  · 이미 담은 회차는 건너뜁니다
+  · 자료를 읽기만 합니다 — 서버에 아무것도 제출하지 않습니다
+
+정답표가 없는 회차는 정답 없이 담깁니다. 문제는 읽을 수 있지만 채점도 해설도
+되지 않습니다."""
+
+
+def import_done_text(res) -> str:
+    """가져오기 결과 한 줄 — 무엇을 담았고 무엇을 건너뛰었는지."""
+    res = res or {}
+    made = int(res.get("made") or 0)
+    done = res.get("done") or []
+    n = sum(int(d.get("n") or 0) for d in done if d.get("ok"))
+    if made:
+        return f"기출 {made}회차 · 문항 {n}개를 새로 담았습니다."
+    if res.get("skip"):
+        return "새로 가져올 회차가 없습니다(이미 다 담았거나 읽을 수 없는 자료입니다)."
+    return "새로 가져올 회차가 없습니다."
+
+
 def progress_text(answered: int, total: int) -> str:
     return f"{int(answered)} / {int(total)}"
 
@@ -156,7 +180,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
           "answers": {}, "revealed": set(),
           "prog": qp.load(prog_path) if prog_path else {},
           "mode": "all", "order": [], "busy": None,
-          "lec": 0, "virtual": {}}
+          "lec": 0, "virtual": {}, "importing": False}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -165,6 +189,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     bar = ft.ProgressBar(value=0, height=4, color=MINT,
                          bgcolor=ft.Colors.with_opacity(.08, ft.Colors.ON_SURFACE))
     cards = ft.Column(spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
+    # 기출을 가져오는 동안에는 문제 대신 진행 기록을 보여준다(몇 분 걸린다).
+    import_log = ft.ListView(expand=True, spacing=1, auto_scroll=True,
+                             padding=10, visible=False)
     picker = ft.Dropdown(label="강의", width=400, options=[])
     # 회차를 가로질러 '3강 문제만' 모아 보는 손잡이. 방금 들은 강의의 기출을
     # 곧바로 풀어보려면 회차별 은행을 25문항씩 훑어야 했다.
@@ -216,6 +243,85 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             _render_cards()
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _import_exams(want_all: bool):
+        """자료실에서 아직 안 담은 기출을 가져온다 — 워커 스레드에서 돈다."""
+        if st.get("importing"):
+            return
+        st["importing"] = True
+        import_log.controls.clear()
+        import_log.visible = True
+        cards.visible = False
+        sub.value = "기출 가져오는 중… 창을 닫지 마세요."
+        _safe_update()
+
+        def log(m):
+            import_log.controls.append(
+                ft.Text(str(m), size=12, font_family="Consolas",
+                        selectable=True))
+            if len(import_log.controls) > 400:
+                del import_log.controls[:len(import_log.controls) - 400]
+            _safe_update()
+
+        def work():
+            note = ""
+            try:
+                from build_exam_bank import import_exams
+                res = import_exams(on_event=log, want_all=want_all,
+                                   quiz_dir=quiz_dir)
+                for title, why in res.get("skip") or []:
+                    log(f"   건너뜀: {title[:40]} — {why}")
+                note = import_done_text(res)
+                if res.get("made"):
+                    # 새 은행을 화면에 올린다 — 앱을 다시 켜지 않아도 되게.
+                    banks[:] = collect_banks(quiz_dir) if quiz_dir else []
+                    picker.options = [
+                        ft.DropdownOption(key=str(i), text=bank_title(b))
+                        for i, b in enumerate(banks)]
+            except Exception as ex:  # noqa: BLE001 - 실패해도 퀴즈는 계속 푼다
+                note = f"가져오지 못했습니다: {str(ex)[:120]}"
+                log(note)
+            st["importing"] = False
+            import_log.visible = False
+            cards.visible = True
+            _load_bank(st["idx"])
+            sub.value = f"{sub.value} · {note}" if note else sub.value
+            _safe_update()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _close_dialog():
+        if page is not None:
+            try:
+                page.pop_dialog()
+            except Exception:  # noqa: BLE001 - 창이 이미 닫혔을 수 있다
+                pass
+
+    def on_import(_):
+        """무엇을 가져올지 고르게 한다 — 정답 없는 회차는 값이 반쪽이다."""
+        def pick(want_all):
+            def _h(_e=None):
+                _close_dialog()
+                _import_exams(want_all)
+            return _h
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("📄 기출 더 가져오기"),
+            content=ft.Column([ft.Text(IMPORT_BODY, size=13)], tight=True,
+                              spacing=10),
+            actions=[
+                ft.TextButton("취소", on_click=lambda _e: _close_dialog()),
+                ft.TextButton("정답 없는 회차도", on_click=pick(True)),
+                ft.FilledButton("정답표 있는 것만", icon=ft.Icons.DOWNLOAD,
+                                on_click=pick(False)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END)
+        if page is not None:
+            try:
+                page.show_dialog(dlg)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _save_progress():
         """기록을 파일에 남긴다 — 실패해도 풀이를 막지 않는다."""
@@ -536,6 +642,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                               on_click=on_reset_all),
             ft.TextButton("HTML로 저장", icon=ft.Icons.SAVE_ALT,
                           on_click=on_save_html),
+            ft.TextButton("기출 더 가져오기", icon=ft.Icons.CLOUD_DOWNLOAD,
+                          tooltip="자료실에서 아직 안 담은 회차를 찾아 담습니다",
+                          on_click=on_import),
         ],
         spacing=10, wrap=True,
     )
@@ -549,7 +658,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                               spacing=0)],
                    vertical_alignment=ft.CrossAxisAlignment.END, spacing=14,
                    wrap=True),
-            bar, tools, ft.Divider(height=1), cards,
+            bar, tools, ft.Divider(height=1),
+            ft.Stack([cards, import_log], expand=True),
         ],
         spacing=10, expand=True,
     )

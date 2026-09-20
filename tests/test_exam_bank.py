@@ -45,8 +45,24 @@ def test_parse_title_marks_a_winter_session():
     assert parse_exam_title("[2011학년도 동계계절수업시험] C프로그래밍") == (2011, 0)
 
 
+def test_parse_title_reads_a_year_glued_to_the_term():
+    """'학기' 글자 없이 연도에 학기를 붙여 적기도 한다.
+
+    실측: 정답표 압축 안의 '3. 2014-1기말시험정답표(최종).hwp' 를 못 읽어
+    2014 회차가 통째로 빠져 있었다.
+    """
+    assert parse_exam_title("3. 2014-1기말시험정답표(최종).hwp") == (2014, 1)
+    assert parse_exam_title("2014-2기말시험정답표(전학년) 최종.hwp") == (2014, 2)
+    assert parse_exam_title("[2004.2]기말시험/C프로그래밍") == (2004, 2)
+
+
+def test_parse_title_only_reads_a_term_glued_to_the_year():
+    """아무 데나 있는 1·2 를 학기로 읽으면 엉뚱한 회차가 된다."""
+    assert parse_exam_title("2016 기출문제 1차 배포") is None
+    assert parse_exam_title("붙임1_2018. 1학기 기말시험 정답표") == (2018, 1)
+
+
 def test_parse_title_gives_up_without_a_year():
-    assert parse_exam_title("[2004.2]기말시험/C프로그래밍") is None  # 학기 표기 없음
     assert parse_exam_title("기출문제") is None
     assert parse_exam_title("") is None
 
