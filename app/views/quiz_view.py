@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import flet as ft
 
+import quiz_progress as qp
 from quiz_page import collect_banks, default_quiz_paths
 
 MINT = "#00a37a"
@@ -90,8 +91,13 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             quiz_dir = None
 
     banks = collect_banks(quiz_dir) if quiz_dir else []
+    # 풀이 기록은 **파일에 남긴다** — 예전에는 화면 메모리에만 있어서 앱을 끄면
+    # 무엇을 틀렸는지 사라졌고, 그래서 '틀린 것부터 다시' 가 불가능했다.
+    prog_path = qp.progress_path(quiz_dir) if quiz_dir else None
     st = {"idx": bank_index(banks, *(initial or (None, None))),
-          "answers": {}, "revealed": set()}
+          "answers": {}, "revealed": set(),
+          "prog": qp.load(prog_path) if prog_path else {},
+          "mode": "all", "order": []}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -109,11 +115,28 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             except Exception:
                 pass
 
+    def _save_progress():
+        """기록을 파일에 남긴다 — 실패해도 풀이를 막지 않는다."""
+        if prog_path is None:
+            return
+        try:
+            qp.save(prog_path, st["prog"])
+        except Exception:  # noqa: BLE001 - 볼트가 잠깐 안 보일 수 있다
+            pass
+
     def _cur_bank() -> dict:
         return banks[st["idx"]] if 0 <= st["idx"] < len(banks) else {}
 
-    def _questions() -> list:
+    def _all_questions() -> list:
         return _cur_bank().get("questions") or []
+
+    def _questions() -> list:
+        """지금 화면에 낼 문항 — 모드로 거르고 **틀린 것부터** 정렬한다."""
+        return st["order"]
+
+    def _reorder():
+        st["order"] = qp.pick(_all_questions(), st["prog"], _cur_bank(),
+                              st["mode"])
 
     def _refresh_progress():
         qs = _questions()
@@ -134,7 +157,15 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         badge_bg = {"correct": MINT, "wrong": ROSE}.get(tone)
 
         def choose(_):
+            if st["answers"].get(qid) is not None:
+                return                      # 이미 고른 문항은 기록을 덮지 않는다
             st["answers"][qid] = no
+            ans = q.get("answer_no")
+            if ans:                         # 정답을 모르는 문항은 채점하지 않는다
+                key = qp.record_key(_cur_bank(), qid)
+                st["prog"][key] = qp.mark(st["prog"].get(key),
+                                          int(no) == int(ans))
+                _save_progress()
             _render_cards()
             _refresh_progress()
 
@@ -209,17 +240,23 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                 "저장된 문제가 없습니다. 이수를 실행하면 돌발퀴즈·형성평가 문항이 모입니다.",
                 color=MUTE))
         elif not qs:
-            cards.controls.append(ft.Text("이 강의에 저장된 문제가 없습니다.",
-                                          color=MUTE))
+            msg = {
+                "wrong": "틀린 문항이 없습니다. 잘하고 계십니다.",
+                "due": "지금 복습할 문항이 없습니다. 나중에 다시 오세요.",
+            }.get(st["mode"], "이 강의에 저장된 문제가 없습니다.")
+            cards.controls.append(ft.Text(msg, color=MUTE))
         for i, q in enumerate(qs, start=1):
             cards.controls.append(_card(i, q))
         _safe_update()
 
     def _load_bank(idx: int):
         st["idx"] = max(0, min(int(idx), max(0, len(banks) - 1)))
+        st["answers"].clear()
+        st["revealed"].clear()
         b = _cur_bank()
-        sub.value = (f"{bank_title(b)} · {len(_questions())}문제"
-                     if b else "저장된 문제가 없습니다")
+        _reorder()
+        s = qp.stats_text(qp.bank_stats(_all_questions(), st["prog"], b))
+        sub.value = (f"{bank_title(b)} · {s}" if b else "저장된 문제가 없습니다")
         picker.value = str(st["idx"])
         _render_cards()
         _refresh_progress()
@@ -233,15 +270,23 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             pass
 
     def on_reset_lec(_):
-        for q in _questions():
-            st["answers"].pop(q.get("qid"), None)
-            st["revealed"].discard(q.get("qid"))
-        _render_cards()
-        _refresh_progress()
+        """이 회차를 처음부터 — 화면뿐 아니라 **쌓인 기록도** 지운다."""
+        b = _cur_bank()
+        for q in _all_questions():
+            qid = q.get("qid")
+            st["answers"].pop(qid, None)
+            st["revealed"].discard(qid)
+            st["prog"].pop(qp.record_key(b, qid), None)
+        _save_progress()
+        _load_bank(st["idx"])
 
     def on_reset_all(_):
+        """전부 처음부터 — 모든 회차의 기록을 지운다."""
         st["answers"].clear()
         st["revealed"].clear()
+        st["prog"].clear()
+        _save_progress()
+        _load_bank(st["idx"])
         _render_cards()
         _refresh_progress()
 
@@ -263,8 +308,35 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     # (없는 속성에 붙이면 조용히 무시되어 강의를 바꿔도 문제가 안 바뀐다)
     picker.on_select = on_pick
 
+    def on_mode(mode: str):
+        def _h(_=None):
+            st["mode"] = mode
+            st["answers"].clear()
+            st["revealed"].clear()
+            _reorder()
+            for m, b in mode_btns.items():      # 고른 것만 채운 버튼으로
+                b.style = ft.ButtonStyle(
+                    bgcolor=MINT if m == mode else None,
+                    color="#ffffff" if m == mode else None)
+            _render_cards()
+            _refresh_progress()
+        return _h
+
+    # 반복 학습의 핵심 — '오답만' 을 눌러 틀린 것만 다시 푼다.
+    mode_btns = {
+        "all": ft.OutlinedButton("전체", tooltip="틀린 것부터 차례로"),
+        "wrong": ft.OutlinedButton("오답만", tooltip="아직 못 맞힌 문항만"),
+        "due": ft.OutlinedButton("복습할 것",
+                                 tooltip="안 푼 것 · 틀린 것 · 다시 볼 때가 된 것"),
+    }
+    for m, b in mode_btns.items():
+        b.on_click = on_mode(m)
+    mode_btns["all"].style = ft.ButtonStyle(bgcolor=MINT, color="#ffffff")
+
     tools = ft.Row(
         [
+            *mode_btns.values(),
+            ft.Container(width=8),
             ft.OutlinedButton("현재 강 초기화", icon=ft.Icons.RESTART_ALT,
                               on_click=on_reset_lec),
             ft.OutlinedButton("전체 초기화", icon=ft.Icons.REFRESH,
