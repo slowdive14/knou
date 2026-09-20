@@ -163,35 +163,42 @@ def summary_text(done) -> str:
 
 
 def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
-              work: Path, name: str = DEFAULT_COURSE) -> dict:
-    """기출 한 회차 → 은행 JSON 저장. 반환: 요약 dict."""
+              work: Path, name: str = DEFAULT_COURSE, on_event=None) -> dict:
+    """기출 한 회차 → 은행 JSON 저장. 반환: 요약 dict.
+
+    ⚠️ 진행 상황은 **넘겨받은 통로**로 보낸다. 콘솔에만 찍으면 앱에서는 가장
+       오래 걸리는 구간이 통째로 잠잠해 멈춘 것처럼 보인다.
+    """
+    log = on_event or _log
     title = _title(post)
     got = eb.parse_exam_title(title)
     if not got:
         return {"title": title, "ok": False, "why": "연도·학기를 못 읽음"}
     year, term = got
 
+    log(f"── {title}")
+    log("   PDF 받는 중…")
     pdf = download_attachment(ctx, course.sbjt_id, post, (".pdf",), work)
     if pdf is None:
         return {"title": title, "ok": False, "why": "PDF 첨부가 없음(HWP 뿐)"}
 
-    _log(f"── {title}  ({pdf.name})")
+    log(f"   받음: {pdf.name} — 문항을 읽습니다(몇 분 걸립니다)")
     questions = eb.extract_questions(client, pdf, name, year, term,
-                                     on_event=_log)
+                                     on_event=log)
     if not questions:
         return {"title": title, "ok": False, "why": "문항을 읽지 못함"}
 
     answers = eb.answers_from_hwp(ans_path, name) if ans_path else []
     questions, warn = eb.attach_answers(questions, answers)
     for w in warn:
-        _log(f"  ⚠️ {w}")
+        log(f"  ⚠️ {w}")
 
     bank = eb.make_bank(name, year, term, questions)
     out = quiz_dir / eb.bank_filename(name, year, term)
     out.write_text(json.dumps(bank, ensure_ascii=False, indent=1),
                    encoding="utf-8")
     scored = sum(1 for q in questions if q.get("answer_no"))
-    _log(f"  저장: {out.name} — 문항 {len(questions)}개 (정답 있는 것 {scored}개)")
+    log(f"  저장: {out.name} — 문항 {len(questions)}개 (정답 있는 것 {scored}개)")
     return {"title": title, "ok": True, "n": len(questions), "scored": scored,
             "path": str(out)}
 
@@ -257,7 +264,7 @@ def import_exams(on_event=None, want_all: bool = False, year=None,
             for r in todo:
                 try:
                     done.append(build_one(client, ctx, obj, r["post"],
-                                          r["ans"], qd, work, course))
+                                          r["ans"], qd, work, course, log))
                 except Exception as e:  # noqa: BLE001 - 회차 단위 격리
                     log(f"  ✗ 실패: {str(e)[:140]}")
                     done.append({"title": r.get("title") or "?", "ok": False,

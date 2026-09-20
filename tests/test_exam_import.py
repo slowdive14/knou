@@ -204,3 +204,27 @@ def test_the_notice_names_the_course():
 def test_the_post_count_is_high_enough_to_see_old_exams():
     """실측: 기본값 100 이면 딱 100건에 잘려 오래된 기출이 안 보인다."""
     assert bx.POST_COUNT >= 300
+
+
+# --- 진행이 화면에 보이는가 --------------------------------------------------
+# 실측: 앱에서 '새로 가져올 회차 4개' 까지만 뜨고, 정작 오래 걸리는 구간(PDF
+# 받기 + AI 가 문항 읽기, 회차당 2~3분)에서 아무 소식이 없어 멈춘 것처럼 보였다.
+def test_building_a_round_reports_through_the_given_channel():
+    import inspect
+    src = inspect.getsource(bx.build_one)
+    assert "log = on_event or _log" in src
+    assert "_log(" not in src.split('"""', 2)[-1]   # 몸통에서는 콘솔로 안 찍는다
+
+
+def test_the_slow_steps_say_what_they_are_doing():
+    import inspect
+    src = inspect.getsource(bx.build_one)
+    assert "PDF 받는 중" in src
+    assert "몇 분 걸립니다" in src
+
+
+def test_the_page_by_page_progress_is_passed_along():
+    """비전은 쪽마다 보고한다 — 그 보고가 화면까지 와야 한다."""
+    import inspect
+    src = inspect.getsource(bx.build_one)
+    assert "on_event=log" in src
