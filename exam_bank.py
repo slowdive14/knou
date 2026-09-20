@@ -189,18 +189,52 @@ def parse_answer_lines(lines, course: str, expect: int = 25) -> list[list[int]]:
     return out[:expect] if expect else out
 
 
+def question_no(q) -> int:
+    """시험지에 적힌 문항번호 — qid 끝의 숫자('2019-2-38' → 38). 못 읽으면 0."""
+    m = re.search(r"(\d+)\s*$", str((q or {}).get("qid") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def answer_slots(questions, answers) -> list:
+    """문항마다 정답표의 몇 번째 칸을 볼지 → [칸 번호 또는 None].
+
+    ⚠️ 위치로 짝지으면 안 된다. 시험지는 여러 과목이 묶여 있어 과목마다 번호가
+       다른 데서 시작하고(자료구조는 36~60번), 비전이 두어 문항을 놓치면 그
+       뒤가 통째로 한 칸씩 밀린다.
+
+    번호의 **폭**이 정답 개수와 같을 때만 번호로 맞춘다. 첫 문항이나 끝 문항을
+    놓쳐 폭이 줄었으면 어디서부터 세는지 알 수 없으므로 맞추지 않는다.
+    """
+    qs, ans = list(questions or []), list(answers or [])
+    nos = [question_no(q) for q in qs]
+    if not qs or not ans or not all(nos):
+        return []
+    if max(nos) - min(nos) + 1 != len(ans):
+        return []
+    base = min(nos)
+    return [n - base for n in nos]
+
+
 def attach_answers(questions, answers) -> tuple[list, list[str]]:
     """문항에 정답 번호를 채운다. 반환: (문항, 경고 목록).
 
-    개수가 어긋나면 **채우지 않고 알린다** — 한 칸 밀린 정답으로 공부하는 것이
-    정답 없이 공부하는 것보다 나쁘다.
+    시험지에 적힌 **문항번호로** 맞춘다. 번호로 맞출 수 없으면 개수가 꼭 같을
+    때만 순서대로 붙인다 — 한 칸 밀린 정답으로 공부하는 것이 정답 없이
+    공부하는 것보다 나쁘다.
     """
     qs = list(questions or [])
     ans = list(answers or [])
     warn: list[str] = []
     if not ans:
         return qs, ["정답표에서 이 과목을 찾지 못했습니다"]
-    if len(qs) != len(ans):
+    slots = answer_slots(qs, ans)
+    if slots:
+        if len(qs) != len(ans):
+            warn.append(f"문항 {len(qs)}개 · 정답 {len(ans)}개 — 시험지 번호"
+                        f"({question_no(qs[0])}~{question_no(qs[-1])})로 "
+                        f"맞췄습니다(못 읽은 문항 자리는 비워 둡니다)")
+        ans = [ans[i] for i in slots]
+    elif len(qs) != len(ans):
         warn.append(f"문항 {len(qs)}개인데 정답은 {len(ans)}개 — 정답을 붙이지 "
                     f"않았습니다(어긋난 채로 풀면 잘못 외웁니다)")
         return qs, warn

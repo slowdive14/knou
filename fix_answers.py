@@ -131,7 +131,10 @@ def main(argv=None) -> int:
         ex = b.get("exam") or {}
         year, term = int(ex.get("year") or 0), int(ex.get("term") or 0)
         qs = b.get("questions") or []
-        ans = read_answers(a.root, year, term, a.course, len(qs))
+        # ⚠️ 정답 개수는 **시험지 번호 폭**으로 잡는다. 못 읽은 문항이 있으면
+        #    len(qs) 로 물어보면 25개짜리 표를 22개로 잘라 읽게 된다.
+        span = eb.question_no(qs[-1]) - eb.question_no(qs[0]) + 1 if qs else 0
+        ans = read_answers(a.root, year, term, a.course, max(span, len(qs)))
         if not ans:
             _log(f"── {b.get('name')} — 정답표를 찾지 못했습니다")
             continue

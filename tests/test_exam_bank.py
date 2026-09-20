@@ -314,3 +314,58 @@ def test_attach_leaves_an_unreadable_mark_empty():
     got, warn = attach_answers([{"qid": "a", "options": []}], [[]])
     assert not got[0].get("answer_no")
     assert any("비웠습니다" in w for w in warn)
+
+
+# --- 정답은 위치가 아니라 문항번호로 맞춘다 ----------------------------------
+# 실측(자료구조): 시험지는 여러 과목이 묶여 있어 자료구조는 36~60번을 쓴다.
+# 비전이 두어 문항을 놓쳐 22개가 남자 '개수가 안 맞는다' 며 정답을 아예 안
+# 붙였고, 세 회차가 통째로 정답 없이 저장됐다.
+def _nq(no, course="자료구조", year=2019, term=2):
+    return {"qid": f"{year}-{term}-{no:02d}",
+            "options": [{"no": i, "text": f"보기{i}"} for i in range(1, 5)]}
+
+
+def test_question_no_reads_the_printed_number():
+    from exam_bank import question_no
+    assert question_no({"qid": "2019-2-38"}) == 38
+    assert question_no({"qid": "2019-1-01"}) == 1
+    assert question_no({"qid": "없음"}) == 0 and question_no({}) == 0
+
+
+def test_answers_line_up_by_number_even_with_gaps():
+    from exam_bank import answer_slots
+    qs = [_nq(36), _nq(37), _nq(39), _nq(60)]      # 38 을 놓쳤다
+    slots = answer_slots(qs, [[i] for i in range(1, 26)])
+    assert slots == [0, 1, 3, 24]              # 36→첫 칸, 60→스물다섯째 칸
+
+
+def test_numbers_are_not_used_when_the_span_is_wrong():
+    """첫 문항이나 끝 문항을 놓치면 어디서부터 세는지 알 수 없다."""
+    from exam_bank import answer_slots
+    qs = [_nq(37), _nq(38)]                      # 폭 2, 정답은 25개
+    assert answer_slots(qs, [[i] for i in range(1, 26)]) == []
+
+
+def test_attach_fills_what_it_can_and_says_so():
+    from exam_bank import attach_answers
+    qs = [_nq(36), _nq(37), _nq(39)] + [_nq(n) for n in range(40, 61)]
+    got, warn = attach_answers(qs, [[(i % 4) + 1] for i in range(25)])
+    assert all(q.get("answer_no") for q in got)
+    assert any("시험지 번호" in w for w in warn)
+
+
+def test_attach_still_refuses_when_it_cannot_line_up():
+    """한 칸 밀린 정답으로 외우는 것이 정답 없는 것보다 나쁘다."""
+    from exam_bank import attach_answers
+    got, warn = attach_answers([_nq(37), _nq(38)], [[1]] * 25)
+    assert not any(q.get("answer_no") for q in got)
+    assert any("붙이지 않았습니다" in w for w in warn)
+
+
+def test_a_course_that_starts_at_one_is_unchanged():
+    """C프로그래밍은 1~25번이다 — 예전과 똑같이 붙어야 한다."""
+    from exam_bank import attach_answers
+    qs = [_nq(n, year=2019, term=1) for n in range(1, 26)]
+    got, warn = attach_answers(qs, [[3]] * 25)
+    assert [q["answer_no"] for q in got] == [3] * 25
+    assert not any("번호로 맞췄습니다" in w for w in warn)
