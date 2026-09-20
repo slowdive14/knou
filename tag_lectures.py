@@ -79,13 +79,14 @@ def main(argv=None) -> int:
         _log(f"'{a.course}' 은행이 없습니다: {quiz_dir}")
         return 1
 
-    lectures = ql.catalog([b for _p, b in rows], a.course)
+    # 목차는 **강의 목록**에서 — 퀴즈 은행에는 형성평가를 담은 차시만 있다
+    lectures = ql.load_catalog(a.course, [b for _p, b in rows])
     # 목차 제목만으로는 '(1)' 과 '(2)' 를 가를 수 없다 — 그 강 형성평가가
     # 무엇을 묻는지 함께 보여 준다.
     hints = ql.topic_hints([b for _p, b in rows], a.course)
     if not lectures:
-        _log("강의 목차를 만들 수 없습니다 — 강의 퀴즈 은행(N강.json)이 있어야 "
-             "'몇 강의 내용인지' 를 가릴 기준이 생깁니다.")
+        _log("강의 목차를 만들 수 없습니다 — list_lectures.py 를 한 번 돌려 "
+             "lectures.json 을 만들거나, 그 과목 형성평가를 담아 주세요.")
         return 1
     _log(f"■ {a.course} — 강의 목차 {len(lectures)}강, 은행 {len(rows)}개")
 

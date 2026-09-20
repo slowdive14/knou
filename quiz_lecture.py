@@ -16,6 +16,7 @@
 순수 로직(단위테스트 대상):
   - lecture_no(q) / has_lecture(q) / lecture_label(n) : 읽기와 표기
   - catalog(banks, 과목)        : 강의 목차 [(차시, 제목), …]
+  - load_catalog(과목, banks)   : 강의 목록(lectures.json)을 먼저 본 목차
   - topic_hints(banks, 과목)    : 강마다 대표 문항 — 이어지는 단원을 가른다
   - question_brief(q)           : 분류에 쓸 문항 요약
   - classify_prompt(…)          : 여러 문항을 한 번에 묻는 지시문
@@ -118,6 +119,43 @@ def catalog(banks, course=None) -> list:
         if seq > 0 and seq not in out:
             out[seq] = str(b.get("name") or "")
     return [(n, out[n]) for n in sorted(out)]
+
+
+LECTURE_LIST = "lectures.json"      # 프로젝트 루트의 강의 목록
+
+
+def catalog_from_list(data, course=None) -> list:
+    """강의 목록(lectures.json 내용) → 목차 [(차시, 제목), …].
+
+    ⚠️ 이쪽이 **완전한 목차**다. 강의 퀴즈 은행에서 만든 목차는 형성평가를
+       담은 차시까지만 있어서, 안 담은 과목은 5~15강 문항이 1~4강에 억지로
+       배정된다.
+    """
+    out = {}
+    for c in ((data or {}).get("courses") or []):
+        if course and str(c.get("name") or "") != str(course):
+            continue
+        for lec in (c.get("lectures") or []):
+            try:
+                seq = int(lec.get("seq") or 0)
+            except (TypeError, ValueError):
+                continue
+            if seq > 0:
+                out.setdefault(seq, str(lec.get("name") or ""))
+    return [(n, out[n]) for n in sorted(out)]
+
+
+def load_catalog(course, banks=None, path=None) -> list:
+    """그 과목의 목차 — 강의 목록을 먼저 보고, 없으면 퀴즈 은행에서."""
+    import json
+
+    p = Path(path) if path else Path(__file__).resolve().parent / LECTURE_LIST
+    try:
+        got = catalog_from_list(json.loads(p.read_text(encoding="utf-8")),
+                                course)
+    except (OSError, ValueError):
+        got = []
+    return got or catalog(banks, course)
 
 
 def lecture_name(lectures, n) -> str:

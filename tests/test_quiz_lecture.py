@@ -304,3 +304,47 @@ def test_make_lectures_passes_the_hints_along():
     ql.make_lectures(c, [_q(qid="a")], [(7, "함수(2)")],
                      hints={7: "변수의 유효범위"})
     assert "변수의 유효범위" in c.prompts[0]
+
+
+# --- 목차는 강의 목록에서 -----------------------------------------------------
+# 실측: 퀴즈 은행에서 목차를 만들면 형성평가를 담은 차시까지만 잡힌다. 자료구조는
+# 1~4강뿐이고 컴퓨터구조는 아예 없어서, 그대로 분류를 돌리면 5~15강 문항이
+# 1~4강에 억지로 배정된다. lectures.json 에는 15강 목차가 제목까지 들어 있다.
+_LIST = {"courses": [
+    {"name": "자료구조", "lectures": [{"seq": 1, "name": "자료구조란 무엇인가?"},
+                                      {"seq": 2, "name": "배열"},
+                                      {"seq": 15, "name": "정렬"}]},
+    {"name": "C프로그래밍", "lectures": [{"seq": 1, "name": "C 언어의 개요"}]}]}
+
+
+def test_the_catalog_comes_from_the_lecture_list():
+    got = ql.catalog_from_list(_LIST, "자료구조")
+    assert got == [(1, "자료구조란 무엇인가?"), (2, "배열"), (15, "정렬")]
+
+
+def test_the_catalog_keeps_one_course():
+    assert ql.catalog_from_list(_LIST, "C프로그래밍") == [(1, "C 언어의 개요")]
+    assert ql.catalog_from_list(_LIST, "없는과목") == []
+
+
+def test_the_catalog_survives_junk():
+    assert ql.catalog_from_list({}, "자료구조") == []
+    assert ql.catalog_from_list(None) == []
+    assert ql.catalog_from_list({"courses": [{"name": "x", "lectures": [
+        {"seq": "둘"}, {"seq": 0}]}]}, "x") == []
+
+
+def test_loading_prefers_the_lecture_list(tmp_path):
+    import json
+    p = tmp_path / "lectures.json"
+    p.write_text(json.dumps(_LIST, ensure_ascii=False), encoding="utf-8")
+    banks = [_lec_bank(1, "은행에서 온 제목", course="자료구조")]
+    got = ql.load_catalog("자료구조", banks, p)
+    assert len(got) == 3 and got[0][1] == "자료구조란 무엇인가?"
+
+
+def test_loading_falls_back_to_the_banks(tmp_path):
+    """강의 목록이 없으면 예전처럼 퀴즈 은행에서 만든다."""
+    banks = [_lec_bank(3, "입.출력")]
+    got = ql.load_catalog("C프로그래밍", banks, tmp_path / "없음.json")
+    assert got == [(3, "입.출력")]
