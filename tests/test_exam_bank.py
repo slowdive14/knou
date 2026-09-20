@@ -369,3 +369,25 @@ def test_a_course_that_starts_at_one_is_unchanged():
     got, warn = attach_answers(qs, [[3]] * 25)
     assert [q["answer_no"] for q in got] == [3] * 25
     assert not any("번호로 맞췄습니다" in w for w in warn)
+
+
+# --- 문항 수는 과목마다 다르다 ----------------------------------------------
+# 실측: 컴퓨터구조 기말은 35문항인데 정답표를 25개만 읽어 개수가 안 맞았고,
+# 35문항이 통째로 정답 없이 저장됐다.
+def test_the_expected_count_follows_the_paper():
+    from exam_bank import expected_count
+    assert expected_count([_nq(n) for n in range(1, 36)]) == 35
+    assert expected_count([_nq(n) for n in range(36, 61)]) == 25
+
+
+def test_the_expected_count_uses_the_span_not_the_tally():
+    """비전이 두어 문항을 놓쳐도 정답표는 원래 개수만큼 읽어야 한다."""
+    from exam_bank import expected_count
+    qs = [_nq(36), _nq(37), _nq(60)]          # 세 개뿐이지만 폭은 25
+    assert expected_count(qs) == 25
+
+
+def test_the_expected_count_falls_back_to_the_tally():
+    from exam_bank import expected_count, DEFAULT_EXPECT
+    assert expected_count([{"qid": "이름없음"}] * 4) == 4
+    assert expected_count([]) == DEFAULT_EXPECT

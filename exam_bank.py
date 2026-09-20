@@ -358,7 +358,23 @@ def hwp_text(path) -> list[str]:
     return out
 
 
-def answers_from_hwp(path, course: str, expect: int = 25) -> list[int]:
+DEFAULT_EXPECT = 25       # 흔한 문항 수. 과목마다 다르다(컴퓨터구조는 35)
+
+
+def expected_count(questions) -> int:
+    """정답표에서 몇 개를 읽어야 하는가 — **시험지 번호의 폭**으로 잡는다.
+
+    ⚠️ 25 로 못 박으면 안 된다. 컴퓨터구조 기말은 35문항이라 25개만 읽고
+       '개수가 안 맞는다' 며 35문항이 통째로 정답 없이 저장됐다.
+       비전이 두어 문항을 놓쳤을 수도 있으므로 개수가 아니라 폭을 본다.
+    """
+    nos = [question_no(q) for q in (questions or []) if question_no(q)]
+    if not nos:
+        return len(questions or []) or DEFAULT_EXPECT
+    return max(max(nos) - min(nos) + 1, len(questions))
+
+
+def answers_from_hwp(path, course: str, expect: int = DEFAULT_EXPECT) -> list:
     """정답표 HWP → 그 과목의 정답 번호."""
     return parse_answer_lines(hwp_text(path), course, expect)
 

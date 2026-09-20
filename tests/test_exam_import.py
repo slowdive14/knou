@@ -232,3 +232,29 @@ def test_the_page_by_page_progress_is_passed_along():
     import inspect
     src = inspect.getsource(bx.build_one)
     assert "on_event=log" in src
+
+
+# --- 정답표 파일 찾기 --------------------------------------------------------
+# 실측: 2014 정답표는 '2014-2기말시험정답표(전학년) 최종.hwp' 라 파일명에
+# '2학기' 라는 글자가 없다. 글자를 맞추면 그 해가 통째로 빠진다.
+def test_the_answer_table_is_found_by_round_not_by_wording(tmp_path):
+    from fix_answers import answer_candidates
+    d = tmp_path / "2014"
+    d.mkdir(parents=True)
+    (d / "2014-2기말시험정답표(전학년) 최종.hwp").write_bytes(b"x")
+    (d / "3. 2014-1기말시험정답표(최종).hwp").write_bytes(b"x")
+    got = [p.name for p in answer_candidates(tmp_path, 2014, 2)]
+    assert got == ["2014-2기말시험정답표(전학년) 최종.hwp"]
+
+
+def test_a_year_without_a_folder_gives_nothing(tmp_path):
+    from fix_answers import answer_candidates
+    assert answer_candidates(tmp_path, 2013, 2) == []
+
+
+def test_the_importer_asks_for_as_many_answers_as_the_paper_has():
+    import inspect
+
+    import build_exam_bank as bx
+    src = inspect.getsource(bx.build_one)
+    assert "expected_count" in src

@@ -36,12 +36,18 @@ def _log(m):
 
 
 def answer_candidates(root, year, term) -> list:
-    """그 회차의 정답표 후보 파일들(학년별로 나뉜 해가 있다)."""
+    """그 회차의 정답표 후보 파일들(학년별로 나뉜 해가 있다).
+
+    ⚠️ 파일명에 '2학기' 라고 적혀 있지 않은 해가 있다(실측: 2014 는
+       '2014-2기말시험정답표(전학년) 최종.hwp'). 글자를 맞추지 말고 회차
+       해석기에 물어본다.
+    """
     d = Path(root) / str(year)
     if not d.exists():
         return []
-    want = f"{int(term)}학기"
-    return [p for p in sorted(d.glob("*.hwp")) if want in p.name]
+    want = (int(year), int(term))
+    return [p for p in sorted(d.glob("*.hwp"))
+            if eb.parse_exam_title(p.name) == want]
 
 
 def read_answers(root, year, term, course=COURSE, expect=25) -> list:
@@ -131,10 +137,10 @@ def main(argv=None) -> int:
         ex = b.get("exam") or {}
         year, term = int(ex.get("year") or 0), int(ex.get("term") or 0)
         qs = b.get("questions") or []
-        # ⚠️ 정답 개수는 **시험지 번호 폭**으로 잡는다. 못 읽은 문항이 있으면
-        #    len(qs) 로 물어보면 25개짜리 표를 22개로 잘라 읽게 된다.
-        span = eb.question_no(qs[-1]) - eb.question_no(qs[0]) + 1 if qs else 0
-        ans = read_answers(a.root, year, term, a.course, max(span, len(qs)))
+        # ⚠️ 정답 개수는 **시험지 번호 폭**으로 잡는다(과목마다 문항 수가
+        #    다르고, 못 읽은 문항이 있으면 개수로는 어긋난다).
+        ans = read_answers(a.root, year, term, a.course,
+                           eb.expected_count(qs))
         if not ans:
             _log(f"── {b.get('name')} — 정답표를 찾지 못했습니다")
             continue

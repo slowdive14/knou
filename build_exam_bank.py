@@ -203,7 +203,9 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
     if not questions:
         return {"title": title, "ok": False, "why": "문항을 읽지 못함"}
 
-    answers = eb.answers_from_hwp(ans_path, name) if ans_path else []
+    # 정답을 몇 개 읽을지는 시험지가 정한다(과목마다 문항 수가 다르다)
+    want = eb.expected_count(questions)
+    answers = eb.answers_from_hwp(ans_path, name, want) if ans_path else []
     questions, warn = eb.attach_answers(questions, answers)
     for w in warn:
         log(f"  ⚠️ {w}")
