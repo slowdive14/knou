@@ -67,6 +67,29 @@ def parse_exam_title(title) -> tuple[int, int] | None:
     return (year, int(t.group(1))) if t else None
 
 
+KIND_FINAL = "기말"       # 기말시험 — 정답표가 있는 그 시험
+KIND_MAKEUP = "대체"      # 출석수업대체시험 — 같은 학기에 따로 치른다
+KIND_SEASON = "계절"      # 계절수업시험(하계·동계)
+KIND_NOTE = "해설"        # 시험지가 아니라 문제해설 자료
+
+
+def exam_kind(title) -> str:
+    """이 글이 어떤 시험인가.
+
+    ⚠️ 같은 학기에 기말과 출석수업대체시험이 나란히 올라온다. 둘 다 (연도,
+       학기) 가 같으므로 갈라 두지 않으면 하나가 다른 하나를 덮고, 기말
+       정답표가 대체시험 문항에 붙어 25개가 통째로 어긋난다.
+    """
+    s = str(title or "")
+    if re.search(r"해설", s):
+        return KIND_NOTE
+    if re.search(r"대체", s):
+        return KIND_MAKEUP
+    if re.search(r"계절|하계|동계", s):
+        return KIND_SEASON
+    return KIND_FINAL
+
+
 def exam_seq(year: int, term: int) -> int:
     """기출 은행의 정렬·식별 번호. 강의 차시(1~15)와 절대 겹치지 않는다."""
     return int(year) * EXAM_SEQ_BASE + int(term)

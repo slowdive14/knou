@@ -97,7 +97,7 @@ def lecture_chip(q) -> list:
         bgcolor=MINT_BG, padding=ft.Padding(9, 2, 9, 2), border_radius=99)]
 
 
-IMPORT_BODY = """자료실의 기출문제를 훑어 **아직 안 담은 회차만** 가져옵니다.
+IMPORT_BODY = """'{course}' 자료실을 훑어 **아직 안 담은 회차만** 가져옵니다.
 
   · 로그인해서 기출 PDF 를 받고, 문항은 AI 가 읽어 만듭니다(몇 분 걸립니다)
   · 이미 담은 회차는 건너뜁니다
@@ -105,6 +105,15 @@ IMPORT_BODY = """자료실의 기출문제를 훑어 **아직 안 담은 회차�
 
 정답표가 없는 회차는 정답 없이 담깁니다. 문제는 읽을 수 있지만 채점도 해설도
 되지 않습니다."""
+
+
+def import_body(course) -> str:
+    """가져오기 안내문 — 어느 과목을 가져오는지 밝힌다.
+
+    과목마다 자료실 사정이 다르다. '기출을 가져온다' 고만 하면 어느 과목이
+    담기는지 알 수 없다.
+    """
+    return IMPORT_BODY.format(course=str(course or "").strip() or "이 과목")
 
 
 def import_done_text(res) -> str:
@@ -244,6 +253,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _course_name() -> str:
+        """지금 보고 있는 과목 — 가져오기도 이 과목으로 한다."""
+        return str(_real_bank().get("course") or "").strip()
+
     def _import_exams(want_all: bool):
         """자료실에서 아직 안 담은 기출을 가져온다 — 워커 스레드에서 돈다."""
         if st.get("importing"):
@@ -266,9 +279,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         def work():
             note = ""
             try:
-                from build_exam_bank import import_exams
+                from build_exam_bank import DEFAULT_COURSE, import_exams
                 res = import_exams(on_event=log, want_all=want_all,
-                                   quiz_dir=quiz_dir)
+                                   quiz_dir=quiz_dir,
+                                   course=_course_name() or DEFAULT_COURSE)
                 for title, why in res.get("skip") or []:
                     log(f"   건너뜀: {title[:40]} — {why}")
                 note = import_done_text(res)
@@ -307,9 +321,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("📄 기출 더 가져오기"),
-            content=ft.Column([ft.Text(IMPORT_BODY, size=13)], tight=True,
-                              spacing=10),
+            title=ft.Text(f"📄 기출 더 가져오기 — {_course_name() or '과목'}"),
+            content=ft.Column([ft.Text(import_body(_course_name()), size=13)],
+                              tight=True, spacing=10),
             actions=[
                 ft.TextButton("취소", on_click=lambda _e: _close_dialog()),
                 ft.TextButton("정답 없는 회차도", on_click=pick(True)),
@@ -643,7 +657,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             ft.TextButton("HTML로 저장", icon=ft.Icons.SAVE_ALT,
                           on_click=on_save_html),
             ft.TextButton("기출 더 가져오기", icon=ft.Icons.CLOUD_DOWNLOAD,
-                          tooltip="자료실에서 아직 안 담은 회차를 찾아 담습니다",
+                          tooltip="지금 고른 과목의 자료실에서 아직 안 담은 "
+                                  "회차를 찾아 담습니다",
                           on_click=on_import),
         ],
         spacing=10, wrap=True,

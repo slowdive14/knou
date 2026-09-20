@@ -4,9 +4,11 @@
 될 위험이 있어 따로 다룬다.
 
 실행:
-    .venv/Scripts/python.exe build_exam_bank.py --list          # 뭐가 있는지만
-    .venv/Scripts/python.exe build_exam_bank.py --year 2019     # 한 회차
-    .venv/Scripts/python.exe build_exam_bank.py                 # 정답 있는 전부
+    .venv/Scripts/python.exe build_exam_bank.py --courses        # 어느 과목에 있나
+    .venv/Scripts/python.exe build_exam_bank.py --list           # 뭐가 있는지만
+    .venv/Scripts/python.exe build_exam_bank.py --year 2019      # 한 회차
+    .venv/Scripts/python.exe build_exam_bank.py                  # 정답 있는 전부
+    .venv/Scripts/python.exe build_exam_bank.py --course 자료구조 --list
 
 ⚠️ 자료를 **읽기만** 한다. 서버에 아무것도 제출하지 않는다.
 """
@@ -26,9 +28,14 @@ except Exception:
 
 import exam_bank as eb
 
-COURSE = "C프로그래밍"
+DEFAULT_COURSE = "C프로그래밍"     # --course 를 안 주면 이 과목
+COURSE = DEFAULT_COURSE            # 예전 이름(다른 모듈이 쓴다)
 CAT_EXAM = "기출문제"
 CAT_ANSWER = "기출문제정답"
+
+# ⚠️ 글 목록은 요청한 개수만큼만 온다. 기본값 100 이면 자료가 많은 과목에서
+#    딱 100건에 잘려 오래된 기출이 통째로 안 보인다(실측: 컴퓨터구조·자료구조).
+POST_COUNT = 400
 
 
 def _log(m):
@@ -44,7 +51,7 @@ def fetch_posts(page, course_name: str):
     if course is None:
         raise LookupError(f"'{course_name}' 과목을 찾지 못했습니다")
     posts = fetch_data_posts(page, course.atlc_no, course.sbjt_id,
-                             _cnts_id_of(course.sbjt_id))
+                             _cnts_id_of(course.sbjt_id), count=POST_COUNT)
     exams, answers = [], []
     for p in posts:
         cat = (p.get("sbjtBdotClcd") or "").strip()
@@ -119,6 +126,16 @@ def plan_imports(rows, quiz_dir, want_all: bool = False, year=None,
         if not key:
             skip.append((r, "연도·학기를 못 읽었습니다"))
             continue
+        kind = eb.exam_kind(r.get("title"))
+        if kind == eb.KIND_NOTE:
+            skip.append((r, "시험지가 아니라 문제해설 자료입니다"))
+            continue
+        if kind == eb.KIND_MAKEUP:
+            # 기말과 (연도, 학기) 가 같아 파일·문항번호가 겹치고, 정답표는
+            # 기말 것뿐이라 붙이면 통째로 어긋난다.
+            skip.append((r, "출석수업대체시험은 아직 담지 않습니다"
+                            "(기말과 회차가 겹치고 정답표가 없습니다)"))
+            continue
         if year and key[0] != int(year):
             continue
         if bank_exists(quiz_dir, key[0], key[1], course):
@@ -146,7 +163,7 @@ def summary_text(done) -> str:
 
 
 def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
-              work: Path) -> dict:
+              work: Path, name: str = DEFAULT_COURSE) -> dict:
     """기출 한 회차 → 은행 JSON 저장. 반환: 요약 dict."""
     title = _title(post)
     got = eb.parse_exam_title(title)
@@ -159,18 +176,18 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
         return {"title": title, "ok": False, "why": "PDF 첨부가 없음(HWP 뿐)"}
 
     _log(f"── {title}  ({pdf.name})")
-    questions = eb.extract_questions(client, pdf, COURSE, year, term,
+    questions = eb.extract_questions(client, pdf, name, year, term,
                                      on_event=_log)
     if not questions:
         return {"title": title, "ok": False, "why": "문항을 읽지 못함"}
 
-    answers = eb.answers_from_hwp(ans_path, COURSE) if ans_path else []
+    answers = eb.answers_from_hwp(ans_path, name) if ans_path else []
     questions, warn = eb.attach_answers(questions, answers)
     for w in warn:
         _log(f"  ⚠️ {w}")
 
-    bank = eb.make_bank(COURSE, year, term, questions)
-    out = quiz_dir / eb.bank_filename(COURSE, year, term)
+    bank = eb.make_bank(name, year, term, questions)
+    out = quiz_dir / eb.bank_filename(name, year, term)
     out.write_text(json.dumps(bank, ensure_ascii=False, indent=1),
                    encoding="utf-8")
     scored = sum(1 for q in questions if q.get("answer_no"))
@@ -179,10 +196,11 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
             "path": str(out)}
 
 
-def survey(page, ctx, work: Path, on_event=None) -> tuple:
+def survey(page, ctx, work: Path, on_event=None,
+           name: str = DEFAULT_COURSE) -> tuple:
     """자료실을 훑어 (과목, 회차 행 목록) 을 만든다. 아무것도 만들지 않는다."""
     log = on_event or _log
-    course, exams, answers = fetch_posts(page, COURSE)
+    course, exams, answers = fetch_posts(page, name)
     log(f"   기출 {len(exams)}건 · 정답표 {len(answers)}건")
 
     # 정답표 ZIP 을 먼저 풀어 (연도, 학기) → 파일 로 만들어 둔다
@@ -204,7 +222,7 @@ def survey(page, ctx, work: Path, on_event=None) -> tuple:
 
 
 def import_exams(on_event=None, want_all: bool = False, year=None,
-                 quiz_dir=None) -> dict:
+                 quiz_dir=None, course: str = DEFAULT_COURSE) -> dict:
     """로그인 → 자료실 → **아직 없는 회차만** 만든다. 화면에서도 부른다.
 
     반환: {"done": [회차별 결과], "skip": [(제목, 사유)], "made": 만든 회차 수}
@@ -228,18 +246,18 @@ def import_exams(on_event=None, want_all: bool = False, year=None,
     with sync_playwright() as p:
         ctx = launch_context(p)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        log("1) 로그인·자료실…")
+        log(f"1) 로그인·자료실({course})…")
         ensure_logged_in(page, cfg)
-        course, rows = survey(page, ctx, work, log)
-        todo, skipped = plan_imports(rows, qd, want_all, year)
+        obj, rows = survey(page, ctx, work, log, course)
+        todo, skipped = plan_imports(rows, qd, want_all, year, course)
         skip = [(r.get("title") or "?", why) for r, why in skipped]
         log(f"\n2) 새로 가져올 회차 {len(todo)}개")
         if todo:
             client = genai.Client(api_key=cfg.gemini_api_key)
             for r in todo:
                 try:
-                    done.append(build_one(client, ctx, course, r["post"],
-                                          r["ans"], qd, work))
+                    done.append(build_one(client, ctx, obj, r["post"],
+                                          r["ans"], qd, work, course))
                 except Exception as e:  # noqa: BLE001 - 회차 단위 격리
                     log(f"  ✗ 실패: {str(e)[:140]}")
                     done.append({"title": r.get("title") or "?", "ok": False,
@@ -251,7 +269,66 @@ def import_exams(on_event=None, want_all: bool = False, year=None,
             "made": sum(1 for d in done if d.get("ok"))}
 
 
-def list_exams(on_event=None) -> list:
+def survey_courses(page, on_event=None, cfg=None) -> list:
+    """수강 중인 과목마다 자료실에 기출이 몇 건 있는지 센다.
+
+    과목마다 자료실 사정이 다르다 — 기출이 아예 없는 과목도 있고, 정답표만
+    올라온 과목도 있다. 가져오기를 돌리기 전에 먼저 이걸 본다.
+    """
+    from auth import ensure_logged_in
+    from discover import list_courses
+    from download import _cnts_id_of, fetch_data_posts
+
+    log = on_event or _log
+    out = []
+    # ⚠️ 과목 목록을 **먼저 확정**한다. 아래에서 페이지를 옮겨 다니므로 늦게
+    #    읽으면 'Execution context was destroyed' 로 터진다.
+    for c in list(list_courses(page)):
+        try:
+            # ⚠️ 자료실을 한 번 읽고 나면 **로그인 페이지로 튕긴다**. 그대로
+            #    다음 과목을 읽으면 0건으로 온다 — 과목마다 로그인 상태를
+            #    다시 확인한다(이미 살아 있으면 바로 지나간다).
+            if cfg is not None:
+                ensure_logged_in(page, cfg)
+            posts = fetch_data_posts(page, c.atlc_no, c.sbjt_id,
+                                     _cnts_id_of(c.sbjt_id), count=POST_COUNT)
+        except Exception as e:  # noqa: BLE001 - 과목 하나가 막혀도 계속
+            log(f"   ! {c.name}: {str(e)[:60]}")
+            posts = []
+        cats = [(p.get("sbjtBdotClcd") or "").strip() for p in posts]
+        pdfs = sum(1 for p in posts
+                   if (p.get("sbjtBdotClcd") or "").strip() == CAT_EXAM
+                   and _pick_file(p, (".pdf",))[0])
+        out.append({"name": c.name,
+                    "exams": cats.count(CAT_EXAM),
+                    "pdfs": pdfs,
+                    "answers": cats.count(CAT_ANSWER)})
+        log(f"   {c.name} — 기출 {out[-1]['exams']}건"
+            f"(PDF {pdfs}건) · 정답표 {out[-1]['answers']}건")
+    return out
+
+
+def list_courses_with_exams(on_event=None) -> list:
+    """로그인해서 과목별 기출 현황을 훑는다(아무것도 만들지 않는다)."""
+    from playwright.sync_api import sync_playwright
+
+    from auth import ensure_logged_in
+    from config import load_config
+    from recon import launch_context
+
+    log = on_event or _log
+    cfg = load_config()
+    with sync_playwright() as p:
+        ctx = launch_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        log("1) 로그인·수강 과목…")
+        ensure_logged_in(page, cfg)
+        rows = survey_courses(page, log, cfg)
+        ctx.close()
+    return rows
+
+
+def list_exams(on_event=None, course: str = DEFAULT_COURSE) -> list:
     """자료실의 회차 목록만 읽어 온다(아무것도 만들지 않는다)."""
     from playwright.sync_api import sync_playwright
 
@@ -268,33 +345,45 @@ def list_exams(on_event=None) -> list:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         log("1) 로그인·자료실…")
         ensure_logged_in(page, cfg)
-        _course, rows = survey(page, ctx, work, log)
+        _obj, rows = survey(page, ctx, work, log, course)
         ctx.close()
     return rows
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="기출문제 은행 만들기")
+    ap.add_argument("--course", default=DEFAULT_COURSE, help="과목 이름")
     ap.add_argument("--year", type=int, help="이 연도만")
     ap.add_argument("--list", action="store_true", help="목록만 보여준다")
+    ap.add_argument("--courses", action="store_true",
+                    help="어느 과목에 기출이 있는지 훑어본다")
     ap.add_argument("--all", action="store_true",
                     help="정답표가 없는 회차도 만든다(정답 없이 저장)")
     a = ap.parse_args(argv)
 
+    if a.courses:
+        rows = list_courses_with_exams()
+        _log("\n기출 | PDF | 정답표 | 과목")
+        for r in sorted(rows, key=lambda x: -x["pdfs"]):
+            _log(f"{r['exams']:>4d} | {r['pdfs']:>3d} | {r['answers']:>6d} "
+                 f"| {r['name']}")
+        _log("\n가져오려면: build_exam_bank.py --course \"과목이름\" --list")
+        return 0
+
     if a.list:
         from config import load_config
         quiz_dir = Path(load_config().summary_dir) / "퀴즈"
-        rows = list_exams()
+        rows = list_exams(course=a.course)
         _log("\n연도-학기 | PDF | 정답표 | 가져옴 | 제목")
         for r in sorted(rows, key=lambda x: x["key"] or (0, 0), reverse=True):
             k = f"{r['key'][0]}-{r['key'][1]}" if r["key"] else "?"
-            have = (r["key"] and bank_exists(quiz_dir, *r["key"]))
+            have = (r["key"] and bank_exists(quiz_dir, *r["key"], a.course))
             _log(f"  {k:>8s} | {'O' if r['pdf'] else '-'}   | "
                  f"{'O' if r['ans'] else '-'}      | {'O' if have else '-'}     "
                  f"| {r['title'][:40]}")
         return 0
 
-    res = import_exams(want_all=a.all, year=a.year)
+    res = import_exams(want_all=a.all, year=a.year, course=a.course)
     for title, why in res["skip"]:
         _log(f"   건너뜀: {title[:40]} — {why}")
     return 0 if res["made"] else 1

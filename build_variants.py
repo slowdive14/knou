@@ -52,6 +52,7 @@ def make_bank(course: str, year: int, term: int, questions) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="기출 변형 문제 만들기")
+    ap.add_argument("--course", default=COURSE, help="과목 이름")
     ap.add_argument("--year", type=int, help="이 연도 기출에서만")
     ap.add_argument("--per", type=int, default=1, help="문항당 변형 개수")
     ap.add_argument("--limit", type=int, help="원본 문항을 이만큼만(시험용)")
@@ -65,7 +66,8 @@ def main(argv=None) -> int:
 
     cfg = load_config()
     quiz_dir = Path(cfg.summary_dir) / "퀴즈"
-    banks = sorted(quiz_dir.glob(f"*_기출*.json"))
+    from download import sanitize
+    banks = sorted(quiz_dir.glob(f"{sanitize(a.course)}_기출*.json"))
     if a.year:
         banks = [p for p in banks if f"기출{a.year}-" in p.name]
     if not banks:
@@ -85,14 +87,14 @@ def main(argv=None) -> int:
             qs = qs[:a.limit]
         _log(f"── {src.get('name')} — 원본 {len(qs)}문항")
 
-        made = qv.make_variants(client, qs, COURSE, per=a.per,
+        made = qv.make_variants(client, qs, a.course, per=a.per,
                                 allow_unverified=a.allow_unverified,
                                 on_event=_log)
         if not made:
             _log("   만들어진 변형이 없습니다.")
             continue
-        out = quiz_dir / variant_filename(COURSE, year, term)
-        out.write_text(json.dumps(make_bank(COURSE, year, term, made),
+        out = quiz_dir / variant_filename(a.course, year, term)
+        out.write_text(json.dumps(make_bank(a.course, year, term, made),
                                   ensure_ascii=False, indent=1),
                        encoding="utf-8")
         checked = sum(1 for q in made if q.get("verified"))

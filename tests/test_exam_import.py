@@ -1,8 +1,11 @@
 """기출 더 가져오기 — 안 담은 회차만, 못 읽는 자료는 이유를 남기고.
 
-자료실에는 기출이 20건 있지만 PDF 첨부는 그 절반도 안 된다. 나머지는 HWP 인데
-**배포용 문서**라 본문이 열리지 않는다(실측: '최신 버전의 한글이 필요합니다'
-한 줄만 나온다). 무엇을 왜 건너뛰었는지 화면에 남겨야 한다.
+자료실에는 기출이 잔뜩 있지만(컴퓨터구조 49건·자료구조 32건·C프로그래밍 26건)
+PDF 첨부는 그 절반도 안 된다. 나머지는 HWP 인데 **배포용 문서**라 본문이 열리지
+않는다(실측: '최신 버전의 한글이 필요합니다' 한 줄만 나온다).
+
+같은 학기에 기말과 출석수업대체시험이 나란히 있다는 것도 함정이다. 무엇을 왜
+건너뛰었는지 화면에 남겨야 한다.
 """
 from __future__ import annotations
 
@@ -148,3 +151,56 @@ def test_the_button_opens_a_dialog_with_both_choices(tmp_path):
     assert len(pg.shown) == 1
     labels = [str(getattr(a, "content", "")) for a in pg.shown[0].actions]
     assert labels == ["취소", "정답 없는 회차도", "정답표 있는 것만"]
+
+
+# --- 같은 학기에 시험이 둘 있다 ----------------------------------------------
+# 실측(컴퓨터구조): '[2019. 2학기] 기말시험' 과 '[2019. 2학기] 출석수업대체시험'
+# 이 나란히 있다. 둘 다 (2019, 2) 라 그대로 담으면 파일·문항번호가 겹치고,
+# 정답표는 기말 것뿐이라 대체시험에 붙이면 25개가 통째로 어긋난다.
+def test_the_kind_of_exam_is_read_from_the_title():
+    assert eb.exam_kind("[2019. 2학기] 기말시험 기출문제") == eb.KIND_FINAL
+    assert eb.exam_kind("[2019. 2학기] 출석수업대체시험 기출문제") == eb.KIND_MAKEUP
+    assert eb.exam_kind("[2018.2학기 출석대체시험] 기출문제") == eb.KIND_MAKEUP
+    assert eb.exam_kind("[2017 하계계절수업시험] 컴퓨터구조") == eb.KIND_SEASON
+    assert eb.exam_kind("[2002.2]기출문제해설/컴퓨터구조") == eb.KIND_NOTE
+
+
+def test_a_makeup_exam_is_not_imported(tmp_path):
+    """기말 정답표가 대체시험 문항에 붙으면 통째로 어긋난 채 저장된다."""
+    rows = [_row((2019, 2), title="[2019. 2학기] 기말시험 기출문제"),
+            _row((2019, 2), title="[2019. 2학기] 출석수업대체시험 기출문제")]
+    todo, skip = bx.plan_imports(rows, tmp_path)
+    assert [r["title"] for r in todo] == ["[2019. 2학기] 기말시험 기출문제"]
+    assert any("출석수업대체시험" in why for _r, why in skip)
+
+
+def test_a_commentary_post_is_not_an_exam(tmp_path):
+    rows = [_row((2002, 2), title="[2002.2]기출문제해설/컴퓨터구조")]
+    todo, skip = bx.plan_imports(rows, tmp_path)
+    assert todo == [] and any("문제해설" in why for _r, why in skip)
+
+
+def test_a_seasonal_exam_is_still_imported(tmp_path):
+    """계절수업은 학기 번호가 0 이라 기말과 겹치지 않는다."""
+    rows = [_row((2017, 0), title="[2017 하계계절수업시험] 컴퓨터구조")]
+    todo, _skip = bx.plan_imports(rows, tmp_path, want_all=True)
+    assert [r["key"] for r in todo] == [(2017, 0)]
+
+
+# --- 과목을 바꿔 쓸 수 있는가 ------------------------------------------------
+def test_the_bank_name_follows_the_course(tmp_path):
+    (tmp_path / eb.bank_filename("컴퓨터구조", 2019, 2)).write_text(
+        "{}", encoding="utf-8")
+    assert bx.bank_exists(tmp_path, 2019, 2, "컴퓨터구조")
+    assert not bx.bank_exists(tmp_path, 2019, 2, "자료구조")
+
+
+def test_the_notice_names_the_course():
+    from app.views.quiz_view import import_body
+    assert "'자료구조'" in import_body("자료구조")
+    assert "이 과목" in import_body("")
+
+
+def test_the_post_count_is_high_enough_to_see_old_exams():
+    """실측: 기본값 100 이면 딱 100건에 잘려 오래된 기출이 안 보인다."""
+    assert bx.POST_COUNT >= 300
