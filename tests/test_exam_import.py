@@ -258,3 +258,42 @@ def test_the_importer_asks_for_as_many_answers_as_the_paper_has():
     import build_exam_bank as bx
     src = inspect.getsource(bx.build_one)
     assert "expected_count" in src
+
+
+# --- 밖에서 담은 기출도 바로 보이는가 ----------------------------------------
+# 실측 불편: 명령줄로 컴퓨터구조 기출 4회차를 담았는데 앱 목록에 안 나왔다.
+# 화면은 켤 때 한 번 읽은 목록을 들고 있어서다.
+def _bank_file(d, course, seq, name, qid):
+    import json
+    (d / f"{course}_{seq}.json").write_text(json.dumps(
+        {"course": course, "seq": seq, "name": name,
+         "questions": [{"qid": qid, "question": "문제", "options": [],
+                        "answer_no": 1}]}, ensure_ascii=False),
+        encoding="utf-8")
+
+
+def test_refresh_picks_up_a_bank_added_outside(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    _bank_file(tmp_path, "C프로그래밍", 1, "개요", "a")
+    v = build_quiz_view(quiz_dir=tmp_path)
+    picker = next(c for c in _walk(v) if isinstance(c, ft.Dropdown)
+                  and c.label == "강의")
+    assert len(picker.options) == 1
+
+    _bank_file(tmp_path, "컴퓨터구조", 20192, "2019학년도 2학기", "b")
+    btn = next(c for c in _walk(v) if isinstance(c, ft.TextButton)
+               and str(c.content) == "새로고침")
+    btn.on_click(None)
+    got = [o.text for o in picker.options]
+    assert len(got) == 2 and any("컴퓨터구조" in t for t in got)
+
+
+def test_refresh_says_when_nothing_changed(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    _bank_file(tmp_path, "C프로그래밍", 1, "개요", "a")
+    v = build_quiz_view(quiz_dir=tmp_path)
+    btn = next(c for c in _walk(v) if isinstance(c, ft.TextButton)
+               and str(c.content) == "새로고침")
+    btn.on_click(None)
+    texts = [str(c.value or "") for c in _walk(v) if isinstance(c, ft.Text)]
+    assert any("새로 생긴 은행이 없습니다" in t for t in texts)

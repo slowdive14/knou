@@ -7,6 +7,7 @@
   - 강의 고르기(드롭다운) · 진행률 · 현재 강/전체 초기화
   - 출제 모드 — 전체 · 오답만 · 안 푼 것만 · 복습할 것
   - [기출 더 가져오기] — 자료실에서 아직 안 담은 회차를 찾아 담는다
+  - [새로고침] — 밖에서 담은 기출도 앱을 끄지 않고 집어 온다
   - 'N강 모아보기' — 회차가 달라도 그 강의 문항을 한 자리에 모은다
   - 풀이 기록은 앱이 켜져 있는 동안 유지(HTML 페이지는 브라우저에 저장)
 
@@ -253,6 +254,28 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _reload_banks(keep: bool = True) -> int:
+        """퀴즈 폴더를 다시 읽어 목록을 새로 만든다 → 은행 수.
+
+        밖에서(명령줄로) 담은 기출도 앱을 끄지 않고 바로 보이게 한다.
+        """
+        before = {bank_title(b) for b in banks}
+        banks[:] = collect_banks(quiz_dir) if quiz_dir else []
+        picker.options = [ft.DropdownOption(key=str(i), text=bank_title(b))
+                          for i, b in enumerate(banks)]
+        st["idx"] = min(st["idx"], max(0, len(banks) - 1)) if keep else 0
+        st["lec"] = 0
+        lec_pick.options = _lec_options()
+        _apply()
+        return len({bank_title(b) for b in banks} - before)
+
+    def on_refresh(_):
+        """[새로고침] — 폴더에 새로 생긴 은행을 집어 온다."""
+        n = _reload_banks()
+        sub.value = (f"{sub.value} · 새 은행 {n}개" if n else
+                     f"{sub.value} · 새로 생긴 은행이 없습니다")
+        _safe_update()
+
     def _course_name() -> str:
         """지금 보고 있는 과목 — 가져오기도 이 과목으로 한다."""
         return str(_real_bank().get("course") or "").strip()
@@ -287,11 +310,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                     log(f"   건너뜀: {title[:40]} — {why}")
                 note = import_done_text(res)
                 if res.get("made"):
-                    # 새 은행을 화면에 올린다 — 앱을 다시 켜지 않아도 되게.
-                    banks[:] = collect_banks(quiz_dir) if quiz_dir else []
-                    picker.options = [
-                        ft.DropdownOption(key=str(i), text=bank_title(b))
-                        for i, b in enumerate(banks)]
+                    _reload_banks()     # 앱을 다시 켜지 않아도 되게
             except Exception as ex:  # noqa: BLE001 - 실패해도 퀴즈는 계속 푼다
                 note = f"가져오지 못했습니다: {str(ex)[:120]}"
                 log(note)
@@ -654,6 +673,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                               on_click=on_reset_lec),
             ft.OutlinedButton("전체 초기화", icon=ft.Icons.REFRESH,
                               on_click=on_reset_all),
+            ft.TextButton("새로고침", icon=ft.Icons.REFRESH,
+                          tooltip="퀴즈 폴더를 다시 읽습니다"
+                                  "(명령줄로 담은 기출도 바로 보입니다)",
+                          on_click=on_refresh),
             ft.TextButton("HTML로 저장", icon=ft.Icons.SAVE_ALT,
                           on_click=on_save_html),
             ft.TextButton("기출 더 가져오기", icon=ft.Icons.CLOUD_DOWNLOAD,
