@@ -86,7 +86,24 @@ def exam_name(year: int, term: int, kind: str = "기말시험") -> str:
 #     31312      ← 6~10번
 #     …
 #     1          ← 과목 구분자(정답이 아니다)
-_DIGITS_RE = re.compile(r"^[1-5]{2,6}$")
+#
+# ⚠️ 숫자가 아닌 글자가 섞여 있는 줄이 있다(실측: 2018 '2241C', 2016 '1212K',
+#    2015 '33CD1'). 원본에 그렇게 적혀 있다 — 복수정답이나 특수기호로 보인다.
+#    그 자리는 **0(모름)** 으로 두고 나머지는 살린다. 한 회차를 통째로 버리면
+#    멀쩡한 24문항까지 정답 없이 풀게 된다.
+_ANSWER_ROW_RE = re.compile(r"^[0-9A-Za-z]{2,6}$")
+
+
+def _row_answers(row: str) -> list[int]:
+    """정답 줄 한 개 → 번호 목록. 숫자가 아닌 자리는 0(모름)."""
+    return [int(c) if c.isdigit() and c != "0" else 0 for c in row]
+
+
+def _looks_like_answers(row: str) -> bool:
+    """정답 줄인가 — ASCII 영숫자뿐이고 숫자를 둘 이상 담고 있어야 한다."""
+    if not _ANSWER_ROW_RE.match(row):
+        return False
+    return sum(c.isdigit() for c in row) >= 2
 
 
 def _norm(text) -> str:
@@ -113,9 +130,9 @@ def parse_answer_lines(lines, course: str, expect: int = 25) -> list[int]:
             continue
         if len(l) == 1 and l.isdigit():
             continue                      # 과목 구분자
-        if not _DIGITS_RE.match(l):
+        if not _looks_like_answers(l):
             break                         # 다음 과목명 등 — 여기서 끝
-        out.extend(int(c) for c in l)
+        out.extend(_row_answers(l))
         if expect and len(out) >= expect:
             break
     return out[:expect] if expect else out
@@ -137,8 +154,13 @@ def attach_answers(questions, answers) -> tuple[list, list[str]]:
                     f"않았습니다(어긋난 채로 풀면 잘못 외웁니다)")
         return qs, warn
     out = []
+    unknown = []
     for q, a in zip(qs, ans):
         q = dict(q)
+        if not int(a):          # 정답표에 글자가 적혀 있던 자리 — 비워 둔다
+            unknown.append(q.get("qid") or "?")
+            out.append(q)
+            continue
         q["answer_no"] = int(a)
         opts = q.get("options") or []
         pick = next((o.get("text") for o in opts
@@ -146,6 +168,9 @@ def attach_answers(questions, answers) -> tuple[list, list[str]]:
         if pick:
             q["answer_text"] = pick
         out.append(q)
+    if unknown:
+        warn.append(f"정답표에 숫자가 아닌 표기가 있어 {len(unknown)}문항은 "
+                    f"정답을 비웠습니다: {', '.join(unknown)}")
     return out, warn
 
 
@@ -168,6 +193,36 @@ def make_bank(course: str, year: int, term: int, questions,
 # HWP 본문 텍스트 (정답표)
 # ---------------------------------------------------------------------------
 _HWPTAG_PARA_TEXT = 67      # 한글 문서 레코드에서 문단 글자를 담는 태그
+
+# HWP 문단 글자에는 제어 문자가 섞여 있고, 그중 상당수는 **8글자(WCHAR) 자리를
+# 차지한다**(표·그림·필드 등). 그 뒷자리를 건너뛰지 않으면 확장 바이트가 엉뚱한
+# 글자로 읽힌다 — 실측 사고: 정답표가 '2241C'·'1212K'·'33CD1' 로 나와 정답
+# 개수가 어긋났다. 아래 코드값만 한 글자이고, 나머지 제어 문자는 여덟 글자다.
+_CTRL_ONE = frozenset({0, 10, 13, 24, 25, 26, 27, 28, 29, 30, 31})
+_CTRL_MAX = 31
+
+
+def _para_text(buf: bytes) -> list[str]:
+    """문단 글자 바이트 → 조각 목록. 제어 문자에서 끊고, 그 자리는 건너뛴다.
+
+    표는 셀마다 문단이 나뉘므로, 제어 문자에서 끊어야 옆 칸 글자가 붙지 않는다.
+    """
+    out: list[str] = []
+    cur: list[str] = []
+    i, n = 0, len(buf) - 1
+    while i < n:
+        code = buf[i] | (buf[i + 1] << 8)
+        if code > _CTRL_MAX:
+            cur.append(chr(code))
+            i += 2
+            continue
+        if cur:                       # 제어 문자를 만나면 한 조각이 끝난다
+            out.append("".join(cur))
+            cur = []
+        i += 2 if code in _CTRL_ONE else 16     # 8 WCHAR = 16바이트
+    if cur:
+        out.append("".join(cur))
+    return [s.strip() for s in out if s.strip()]
 
 
 def hwp_text(path) -> list[str]:
@@ -205,10 +260,7 @@ def hwp_text(path) -> list[str]:
                 size = int.from_bytes(data[i:i + 4], "little")
                 i += 4
             if tag == _HWPTAG_PARA_TEXT:
-                t = data[i:i + size].decode("utf-16-le", "ignore")
-                t = "".join(c for c in t if c.isprintable()).strip()
-                if t:
-                    out.append(t)
+                out.extend(_para_text(data[i:i + size]))
             i += size
     return out
 

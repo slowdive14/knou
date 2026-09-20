@@ -229,3 +229,37 @@ def test_lecture_banks_come_before_exam_banks(tmp_path):
         ensure_ascii=False), encoding="utf-8")
     got = collect_banks(tmp_path)
     assert [b.get("seq") for b in got] == [8, 20191]
+
+
+# --- 정답표에 숫자가 아닌 표기가 섞인 경우 ---------------------------------
+# 실측: 2018 '2241C', 2016 '1212K', 2015 '33CD1'. 원본에 그렇게 적혀 있다.
+# 그 자리만 비우고 나머지는 살린다 — 한 회차를 통째로 버리면 멀쩡한 24문항까지
+# 정답 없이 풀게 된다.
+_MIXED = ["C프로그래밍", "41231", "12133", "13124", "32432", "2241C", "1",
+          "데이터정보처리입문", "11111"]
+
+
+def test_parse_answers_keeps_going_past_a_letter():
+    got = parse_answer_lines(_MIXED, "C프로그래밍")
+    assert len(got) == 25
+    assert got[:5] == [4, 1, 2, 3, 1]
+    assert got[24] == 0            # 'C' 자리는 모름
+
+
+def test_parse_answers_still_stops_at_the_next_course():
+    """글자를 허용하더라도 과목명 줄에서는 멈춰야 한다."""
+    got = parse_answer_lines(_MIXED, "C프로그래밍")
+    assert 1 not in got[25:]       # 다음 과목 정답을 물고 오지 않았다
+
+
+def test_attach_answers_blanks_only_the_unknown_ones():
+    qs = [_q(i) for i in range(1, 4)]
+    got, warn = attach_answers(qs, [2, 0, 3])
+    assert got[0]["answer_no"] == 2 and got[2]["answer_no"] == 3
+    assert got[1]["answer_no"] == 0          # 모르는 것만 비었다
+    assert warn and "비웠습니다" in warn[0]
+
+
+def test_attach_answers_is_quiet_when_everything_is_known():
+    got, warn = attach_answers([_q(1), _q(2)], [1, 2])
+    assert warn == [] and all(q["answer_no"] for q in got)
