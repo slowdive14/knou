@@ -169,3 +169,45 @@ def test_dropping_suspects_leaves_a_clean_bank_alone():
     from quiz_page import drop_suspect
     bank = {"questions": [_q(qid="a")]}
     assert drop_suspect(bank) is bank        # 손댈 것이 없으면 그대로
+
+
+# --- '안 푼 것만' 버튼 -------------------------------------------------------
+def _buttons(view):
+    return {str(b.content): b for b in _walk(view)
+            if isinstance(b, ft.OutlinedButton)}
+
+
+def _cards(view):
+    """화면에 올라온 문항의 문제글."""
+    return [str(c.value or "") for c in _walk(view) if isinstance(c, ft.Text)
+            and str(c.value or "").endswith("올바른 것은?")]
+
+
+def test_the_quiz_offers_an_unanswered_only_mode(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q(qid="a")))
+    assert "안 푼 것만" in _buttons(v)
+
+
+def test_answering_takes_a_question_out_of_the_unanswered_list(tmp_path):
+    """푼 문항이 '안 푼 것만' 에 남아 있으면 끝까지 훑을 수가 없다."""
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a", question="가 올바른 것은?"),
+             _q(qid="b", question="나 올바른 것은?"))
+    v = build_quiz_view(quiz_dir=d)
+    _buttons(v)["안 푼 것만"].on_click(None)
+    assert len(_cards(v)) == 2
+    _choose(v, 0)                       # 첫 문항의 첫 보기를 고른다
+    _buttons(v)["안 푼 것만"].on_click(None)
+    assert len(_cards(v)) == 1
+
+
+def test_an_unknown_answer_stays_unanswered(tmp_path):
+    """채점하지 않는 문항은 풀었다고 볼 수 없다 — 계속 '안 푼 것' 이다."""
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a", answer_no=0, answer_text="",
+                          question="가 올바른 것은?"))
+    v = build_quiz_view(quiz_dir=d)
+    _choose(v, 0)
+    _buttons(v)["안 푼 것만"].on_click(None)
+    assert len(_cards(v)) == 1

@@ -5,6 +5,7 @@
 눌러야 정답·해설이 열린다(다시 풀어보기 가치 보존).
 
   - 강의 고르기(드롭다운) · 진행률 · 현재 강/전체 초기화
+  - 출제 모드 — 전체 · 오답만 · 안 푼 것만 · 복습할 것
   - 'N강 모아보기' — 회차가 달라도 그 강의 문항을 한 자리에 모은다
   - 풀이 기록은 앱이 켜져 있는 동안 유지(HTML 페이지는 브라우저에 저장)
 
@@ -407,6 +408,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             msg = {
                 "wrong": "틀린 문항이 없습니다. 잘하고 계십니다.",
                 "due": "지금 복습할 문항이 없습니다. 나중에 다시 오세요.",
+                "new": "여기 있는 문항은 모두 한 번씩 풀어 보셨습니다.",
             }.get(st["mode"], "이 강의에 저장된 문제가 없습니다.")
             cards.controls.append(ft.Text(msg, color=MUTE))
         for i, q in enumerate(qs, start=1):
@@ -515,6 +517,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     mode_btns = {
         "all": ft.OutlinedButton("전체", tooltip="틀린 것부터 차례로"),
         "wrong": ft.OutlinedButton("오답만", tooltip="아직 못 맞힌 문항만"),
+        "new": ft.OutlinedButton("안 푼 것만",
+                                 tooltip="아직 한 번도 풀지 않은 문항만"),
         "due": ft.OutlinedButton("복습할 것",
                                  tooltip="안 푼 것 · 틀린 것 · 다시 볼 때가 된 것"),
     }

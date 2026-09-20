@@ -318,3 +318,36 @@ def test_a_question_without_an_answer_is_not_scored(tmp_path):
     v = build_quiz_view(quiz_dir=d)
     _options(v)[0].on_click(None)
     assert qp.load(qp.progress_path(d)) == {}      # 기록이 남지 않는다
+
+
+# --- 아직 안 푼 것만 --------------------------------------------------------
+# '전체' 는 틀린 것부터 내주므로 이미 푼 문항을 지나야 안 푼 문항에 닿는다.
+# 24문항 중 14문항이 남았을 때 그 14개만 보려면 눈으로 골라내야 했다.
+def test_pick_new_mode_keeps_only_what_was_never_answered():
+    b = _bank()
+    qs = [_q("a"), _q("b"), _q("c")]
+    prog = {qp.record_key(b, "a"): qp.mark(None, True, NOW),     # 맞힘
+            qp.record_key(b, "b"): qp.mark(None, False, NOW)}    # 틀림
+    assert [q["qid"] for q in qp.pick(qs, prog, b, "new", NOW)] == ["c"]
+
+
+def test_pick_new_mode_drops_a_question_once_it_is_answered():
+    """한 번 풀고 나면 '안 푼 것' 에서 빠져야 한다(맞혔든 틀렸든)."""
+    b = _bank()
+    prog = {qp.record_key(b, "a"): qp.mark(None, False, NOW)}
+    assert qp.pick([_q("a")], prog, b, "new", NOW) == []
+
+
+def test_pick_new_mode_counts_match_the_headline():
+    """머리말의 '아직 N' 과 '안 푼 것만' 이 낸 문항 수가 같아야 한다."""
+    b = _bank()
+    qs = [_q(x) for x in "abcde"]
+    prog = {qp.record_key(b, "a"): qp.mark(None, True, NOW),
+            qp.record_key(b, "b"): qp.mark(None, False, NOW)}
+    s = qp.bank_stats(qs, prog, b, NOW)
+    left = s["total"] - s["seen"]
+    assert len(qp.pick(qs, prog, b, "new", NOW)) == left == 3
+
+
+def test_the_new_mode_is_a_known_mode():
+    assert "new" in qp.MODES

@@ -19,6 +19,7 @@
   - due_at(rec) / is_due(rec, now): 언제 다시 낼지 / 지금 낼 때인가
   - sort_key(rec, now)           : 출제 순서(틀린 것 → 안 푼 것 → 복습)
   - pick(questions, prog, …)     : 모드에 맞춰 걸러 정렬한 문항
+                                   (전체 · 오답만 · 복습할 것 · 안 푼 것만)
   - bank_stats(questions, prog, …): '25문항 중 18개 맞음 · 오답 4'
 
 IO:
@@ -45,7 +46,7 @@ GROUP_NEW = 1       # 아직 한 번도 안 푼 것
 GROUP_DUE = 2       # 맞혔지만 다시 볼 때가 된 것
 GROUP_LATER = 3     # 아직 이른 것
 
-MODES = ("all", "wrong", "due")
+MODES = ("all", "wrong", "due", "new")
 
 
 def record_key(bank, qid) -> str:
@@ -149,12 +150,15 @@ def pick(questions, progress, bank, mode: str = "all", now=None) -> list:
     all   : 전부(틀린 것부터)
     wrong : 틀린 채로 남아 있는 것만
     due   : 지금 볼 때가 된 것(안 푼 것·틀린 것·간격이 찬 것)
+    new   : 아직 한 번도 안 푼 것만
     """
     prog = progress or {}
     rows = [(q, prog.get(key_for(bank, q)) or blank())
             for q in (questions or [])]
     if mode == "wrong":
         rows = [(q, r) for q, r in rows if group_of(r, now) == GROUP_WRONG]
+    elif mode == "new":
+        rows = [(q, r) for q, r in rows if group_of(r, now) == GROUP_NEW]
     elif mode == "due":
         rows = [(q, r) for q, r in rows if group_of(r, now) != GROUP_LATER]
     rows.sort(key=lambda x: sort_key(x[1], now))
