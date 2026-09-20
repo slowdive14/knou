@@ -214,3 +214,59 @@ def test_no_button_when_the_answer_is_unknown(tmp_path):
     texts = [str(c.value or "") for c in _walk(v) if isinstance(c, ft.Text)]
     assert not any("설명 보기" in x for x in labels)
     assert any("정답을 몰라" in t for t in texts)
+
+
+# --- 긴 해설이 문제를 밀어내지 않는가 --------------------------------------
+# 실측 불편: 해설이 길면 위의 문제·코드가 화면 밖으로 밀려 스크롤을 오르내려야
+# 했다. 긴 해설은 자기 상자 안에서만 굴린다.
+def test_only_long_explanations_get_a_scroll_box():
+    from app.views.quiz_view import EXPLAIN_SCROLL_CHARS, explanation_scrolls
+    assert explanation_scrolls("가" * (EXPLAIN_SCROLL_CHARS + 1)) is True
+    assert explanation_scrolls("가" * EXPLAIN_SCROLL_CHARS) is False
+    assert explanation_scrolls("") is False and explanation_scrolls(None) is False
+
+
+def _expl_box(view):
+    """해설이 담긴 스크롤 상자(높이가 정해진 Container)."""
+    from app.views.quiz_view import EXPLAIN_BOX_HEIGHT
+    return [c for c in _walk(view) if isinstance(c, ft.Container)
+            and getattr(c, "height", None) == EXPLAIN_BOX_HEIGHT]
+
+
+def test_a_long_explanation_is_boxed(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    long_text = "설명입니다. " * 120
+    v = build_quiz_view(quiz_dir=_bank_dir(tmp_path,
+                                           _q(explanation=long_text)))
+    _reveal(v)
+    boxes = _expl_box(v)
+    assert len(boxes) == 1
+    assert boxes[0].content.scroll is not None      # 상자 안에서 굴린다
+
+
+def test_a_short_explanation_is_not_boxed(tmp_path):
+    """짧은 해설까지 가두면 빈 여백만 생긴다."""
+    from app.views.quiz_view import build_quiz_view
+    v = build_quiz_view(quiz_dir=_bank_dir(tmp_path,
+                                           _q(explanation="짧은 해설입니다")))
+    _reveal(v)
+    assert _expl_box(v) == []
+
+
+def test_the_question_stays_on_screen_with_a_long_explanation(tmp_path):
+    """해설이 길어도 문제와 코드는 그대로 남아 있어야 한다."""
+    from app.views.quiz_view import build_quiz_view
+    v = build_quiz_view(quiz_dir=_bank_dir(
+        tmp_path, _q(explanation="설명입니다. " * 120)))
+    _reveal(v)
+    texts = [str(c.value or "") for c in _walk(v) if isinstance(c, ft.Text)]
+    assert any("실행결과로 올바른" in t for t in texts)
+    assert any("#include" in t for t in texts)
+
+
+def test_the_html_page_boxes_the_explanation():
+    from quiz_html import render_quiz_html
+    html = render_quiz_html([{"course": "C프로그래밍", "seq": 20191,
+                              "name": "2019",
+                              "questions": [_q(explanation="긴 해설")]}])
+    assert "max-height:320px" in html and "overflow-y:auto" in html

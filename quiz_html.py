@@ -210,8 +210,11 @@ _CSS = r"""
 .ans-head { display:flex; align-items:center; gap:6px; font-weight:800;
   color:var(--mint); font-size:13px; margin-bottom:6px; }
 .ans-correct { font-weight:700; }
+/* 해설이 길면 문제·코드가 화면 밖으로 밀려 스크롤을 오르내리게 된다.
+   그래서 해설은 **자기 상자 안에서만** 굴린다(짧으면 상자가 늘지 않는다). */
 .expl { margin-top:8px; font-size:14px; color:var(--ink2); line-height:1.65;
-  white-space:pre-wrap; }
+  white-space:pre-wrap; max-height:320px; overflow-y:auto;
+  overscroll-behavior:contain; }
 .pill.bad { background:var(--rose-s); color:var(--rose); border-color:rgba(200,69,47,.25); }
 [hidden] { display:none !important; }   /* hidden 미지원 엔진에서도 정답 숨김 */
 

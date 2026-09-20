@@ -26,6 +26,20 @@ ROSE = "#c8452f"
 ROSE_BG = "#fbe9e5"
 MUTE = "#8b9198"
 
+# 해설이 길면 문제·코드가 화면 밖으로 밀려 스크롤을 오르내리게 된다. 그래서
+# 긴 해설은 **자기 상자 안에서만** 굴리고, 문제와 코드는 제자리에 남긴다.
+EXPLAIN_SCROLL_CHARS = 350     # 이보다 길면 상자에 가둔다
+EXPLAIN_BOX_HEIGHT = 320       # 상자 높이(px)
+
+
+def explanation_scrolls(text) -> bool:
+    """이 해설은 자기 상자 안에서 굴려야 하는가.
+
+    짧은 해설(형성평가는 중앙값이 136자다)까지 상자에 가두면 빈 여백만
+    생긴다 — 긴 것만 가둔다.
+    """
+    return len(str(text or "").strip()) > EXPLAIN_SCROLL_CHARS
+
 
 # ---------------------------------------------------------------------------
 # 순수 조각 (오프라인 테스트 가능)
@@ -279,7 +293,15 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             box = [ft.Text(answer_text(q), size=13,
                            weight=ft.FontWeight.BOLD, color=MINT)]
             expl = str(q.get("explanation") or "").strip()
-            if expl:
+            if expl and explanation_scrolls(expl):
+                # 긴 해설은 상자 안에서만 굴린다 — 위의 문제·코드가 밀려나지
+                # 않아 읽으면서 바로 대조할 수 있다.
+                box.append(ft.Container(
+                    content=ft.Column(
+                        [ft.Text(expl, size=13, selectable=True)],
+                        scroll=ft.ScrollMode.AUTO, tight=True, spacing=0),
+                    height=EXPLAIN_BOX_HEIGHT))
+            elif expl:
                 box.append(ft.Text(expl, size=13, selectable=True))
             elif st["busy"] == qid:
                 box.append(ft.Row([ft.ProgressRing(width=15, height=15,
