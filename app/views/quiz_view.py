@@ -26,10 +26,20 @@ MUTE = "#8b9198"
 # 순수 조각 (오프라인 테스트 가능)
 # ---------------------------------------------------------------------------
 def bank_title(bank: dict) -> str:
-    """드롭다운 표시문구: 'C프로그래밍 · 1강 · C 언어의 개요'."""
-    parts = [str(bank.get("seq", "")) + "강", bank.get("name") or ""]
-    head = " · ".join(p for p in parts if p)
+    """드롭다운 표시문구.
+
+    강의 퀴즈: 'C프로그래밍 · 1강 · C 언어의 개요'
+    기출:      'C프로그래밍 · 📄 기출 · 2019학년도 1학기 기말시험'
+
+    기출은 차시가 없으므로 'N강' 을 붙이면 엉뚱한 번호가 나온다(seq 는 정렬용
+    으로 20191 같은 값을 쓴다) — `exam` 이 있으면 그쪽 표기를 따른다.
+    """
     course = bank.get("course") or ""
+    if bank.get("exam"):
+        head = " · ".join(p for p in ("📄 기출", bank.get("name") or "") if p)
+    else:
+        parts = [str(bank.get("seq", "")) + "강", bank.get("name") or ""]
+        head = " · ".join(p for p in parts if p)
     return f"{course} · {head}" if course else head
 
 

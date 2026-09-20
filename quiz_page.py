@@ -26,7 +26,12 @@ def collect_banks(quiz_dir) -> list:
         b = load_bank(p)
         if b.get("questions"):
             banks.append(b)
-    banks.sort(key=lambda b: (str(b.get("course", "")), int(b.get("seq") or 0)))
+    # 과목 안에서 **강의 퀴즈가 먼저, 기출이 나중**. 기출의 seq 는 연도를 눌러
+    # 담은 큰 수(20191)라 그냥 섞으면 강의 퀴즈 뒤로 밀리긴 하지만, 뜻을 분명히
+    # 해 두는 편이 낫다(나중에 seq 규칙이 바뀌어도 순서가 유지된다).
+    banks.sort(key=lambda b: (str(b.get("course", "")),
+                              1 if b.get("exam") else 0,
+                              int(b.get("seq") or 0)))
     return banks
 
 
