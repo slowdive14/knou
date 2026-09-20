@@ -16,6 +16,7 @@ answer_text,explanation}).
 """
 from __future__ import annotations
 
+from quiz_lecture import lecture_label, lecture_no
 from ui_theme import (
     esc as _esc,
     escattr as _escattr,
@@ -33,7 +34,7 @@ def _render_option(o: dict) -> str:
             f'<span class="opt-text">{_esc(o.get("text"))}</span></button>')
 
 
-def _render_card(num: int, q: dict) -> str:
+def _render_card(num: int, q: dict, course: str = "") -> str:
     opts = "".join(_render_option(o) for o in (q.get("options") or []))
     ans_no = q.get("answer_no")
     ans_attr = _escattr(ans_no) if ans_no is not None else ""
@@ -45,6 +46,13 @@ def _render_card(num: int, q: dict) -> str:
         correct = "정답 정보 없음"
     badge = _esc(q.get("source") or "")
     badge_html = f'<span class="badge">{badge}</span>' if badge else ""
+    # 몇 강의 내용인지 — 'N강 모아보기' 로 거를 때도 이 값을 본다.
+    lec = lecture_no(q)
+    lec_html = (f'<span class="badge lec">{_esc(lecture_label(lec))}</span>'
+                if lec else "")
+    # 모아보면 회차가 섞이므로 어디서 온 문항인지 함께 보여준다(거를 때만 보인다).
+    src = str(q.get("bank_name") or "").strip()
+    src_html = f'<span class="badge src">{_esc(src)}</span>' if src else ""
     # ⚠️ 지문과 코드를 반드시 실어야 한다 — 없으면 '이 프로그램의 실행결과는?'
     # 같은 문항을 풀 수가 없다(기출을 담으면서 드러난 빠짐).
     intro = str(q.get("intro") or "").strip()
@@ -53,8 +61,10 @@ def _render_card(num: int, q: dict) -> str:
     code_html = f'<pre class="q-code">{_esc(code)}</pre>' if code else ""
     return (
         f'<div class="q-card card" data-qid="{_escattr(q.get("qid"))}" '
-        f'data-answer-no="{ans_attr}">'
-        f'<div class="q-head"><span class="qnum">Q{num:02d}</span>{badge_html}</div>'
+        f'data-answer-no="{ans_attr}" data-lecture="{_escattr(lec or "")}" '
+        f'data-course="{_escattr(course or q.get("bank_course") or "")}">'
+        f'<div class="q-head"><span class="qnum">Q{num:02d}</span>'
+        f'<span class="q-tags">{lec_html}{src_html}{badge_html}</span></div>'
         f'{intro_html}'
         f'<div class="q-text">{_esc(q.get("question"))}</div>'
         f'{code_html}'
@@ -89,14 +99,49 @@ def _render_nav_item(idx: int, lec: dict) -> str:
 
 def _render_lecture(idx: int, lec: dict) -> str:
     qs = lec.get("questions") or []
-    cards = "".join(_render_card(i + 1, q) for i, q in enumerate(qs))
+    course = str(lec.get("course") or "")
+    cards = "".join(_render_card(i + 1, q, course) for i, q in enumerate(qs))
     if not cards:
         cards = ('<div class="empty"><b>이 강의에 저장된 문제가 없습니다.</b>'
                  '<span>이수를 실행하면 돌발퀴즈·형성평가 문항이 모입니다.</span></div>')
     # 첫 강은 active 로 내보낸다 → JS 가 막히거나 실패해도 문제가 보인다.
     cls = "lecture active" if idx == 0 else "lecture"
     return (f'<div class="{cls}" data-idx="{idx}" '
+            f'data-course="{_escattr(course)}" '
             f'data-title="{_escattr(_lec_title(lec))}">{cards}</div>')
+
+
+def filter_pairs(lectures) -> list:
+    """[(과목, 강), …] — 문항이 실제로 있는 것만, 과목 안에서 차시 순으로.
+
+    ⚠️ 차시 번호는 **과목마다 따로 도는 번호**다. 과목을 빼고 번호만 보면
+       자료구조 3강(스택)이 C프로그래밍 3강에 섞여 든다.
+    """
+    seen = set()
+    for lec in (lectures or []):
+        course = str(lec.get("course") or "")
+        for q in (lec.get("questions") or []):
+            n = lecture_no(q)
+            if n:
+                seen.add((course, n))
+    return sorted(seen)
+
+
+def lecture_filter(lectures) -> str:
+    """'강 모아보기' 칩 줄 — 회차를 가로질러 그 강의 문항만 남긴다.
+
+    모든 과목의 칩을 한 줄에 담아 두고, 화면에서는 지금 보고 있는 과목의 칩만
+    보여준다(과목을 옮길 때마다 페이지를 다시 만들 수는 없다).
+    """
+    pairs = filter_pairs(lectures)
+    if len(pairs) < 2:
+        return ""
+    chips = "".join(
+        f'<button type="button" class="lf" data-course="{_escattr(c)}" '
+        f'data-lec="{n}">{_esc(lecture_label(n))}</button>' for c, n in pairs)
+    return ('<nav class="lec-filter"><span class="lf-lab">강 모아보기</span>'
+            '<button type="button" class="lf active" data-lec="0">전체</button>'
+            f'{chips}</nav>')
 
 
 def render_quiz_html(lectures, title: str = "강의 퀴즈") -> str:
@@ -138,6 +183,7 @@ def render_quiz_html(lectures, title: str = "강의 퀴즈") -> str:
         '<span>전체 초기화</span></button>'
         '</div>'
         f'<nav class="lec-nav">{nav}</nav>'
+        f'{lecture_filter(lectures)}'
         '</div></header>'
         f'<main class="wrap lectures">{secs}</main>'
         '<footer class="wrap legend">'
@@ -170,6 +216,16 @@ _CSS = r"""
   background:var(--track); }
 .lec-item.active .li-n { background:rgba(255,255,255,.18); }
 
+/* 강 모아보기 — 회차가 달라도 그 강의 문항만 남긴다 */
+.lec-filter { display:flex; gap:6px; flex-wrap:wrap; align-items:center;
+  margin-top:12px; }
+.lf-lab { font-size:12px; font-weight:700; color:var(--mute); margin-right:4px; }
+.lf { font:inherit; font-size:12.5px; font-weight:700; cursor:pointer;
+  padding:5px 11px; border-radius:99px; border:1px solid var(--line);
+  background:var(--card); color:var(--ink2); }
+.lf:hover { border-color:rgba(0,163,122,.45); color:var(--mint); }
+.lf.active { background:var(--mint); border-color:var(--mint); color:#fff; }
+
 .lectures { padding-top:8px; }
 .lecture { display:none; }
 .lecture.active { display:block; }
@@ -177,8 +233,13 @@ _CSS = r"""
 .q-head { display:flex; justify-content:space-between; align-items:center; }
 .qnum { font-family:var(--mono); font-size:15px; font-weight:700; color:var(--mint);
   letter-spacing:-.04em; }
+.q-tags { display:inline-flex; gap:6px; align-items:center; }
 .badge { background:var(--paper2); color:var(--ink2); font-size:11.5px;
   font-weight:700; padding:4px 10px; border-radius:99px; }
+.badge.lec { background:var(--mint-s); color:var(--mint); }
+/* 출처 회차는 모아 볼 때만 — 회차별로 볼 때는 제목에 이미 적혀 있다 */
+.badge.src { display:none; }
+body.gathering .badge.src { display:inline-block; }
 .q-text { font-size:17px; font-weight:700; margin:12px 0 16px; line-height:1.55;
   letter-spacing:-.018em; }
 /* 여러 문항이 함께 쓰는 지문과, 실행결과를 묻는 문항의 코드 */
@@ -257,6 +318,45 @@ _JS = r"""
   var state = {};
   try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { state = {}; }
   var cur = 0;
+  var filter = 0;          // 0 이면 회차별로, N 이면 N강만 모아 본다
+  var chips = [];
+  each(qsa(document, '.lf'), function (b) { chips.push(b); });
+
+  var gatherCourse = '';
+
+  function curCourse() {
+    var l = lectures[cur];
+    return l ? (l.getAttribute('data-course') || '') : '';
+  }
+
+  function inFilter(card) {
+    return card.getAttribute('data-lecture') === String(filter) &&
+           card.getAttribute('data-course') === gatherCourse;
+  }
+
+  // 지금 보고 있는 과목의 칩만 남긴다 — 차시 번호는 과목마다 따로 돈다.
+  function syncChips() {
+    var cc = curCourse(), mine = 0;
+    each(chips, function (b) {
+      var all = b.getAttribute('data-lec') === '0';
+      var ok = all || b.getAttribute('data-course') === cc;
+      b.style.display = ok ? '' : 'none';
+      if (ok && !all) mine++;
+    });
+    var row = document.querySelector('.lec-filter');
+    if (row) row.style.display = mine >= 2 ? '' : 'none';
+  }
+
+  function visibleCards() {
+    var out = [];
+    if (filter) {
+      each(qsa(document, '.q-card'), function (c) { if (inFilter(c)) out.push(c); });
+    } else {
+      var lec = lectures[cur];
+      each(lec ? qsa(lec, '.q-card') : [], function (c) { out.push(c); });
+    }
+    return out;
+  }
 
   function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
 
@@ -277,8 +377,7 @@ _JS = r"""
   }
 
   function updateProgress() {
-    var lec = lectures[cur];
-    var cards = lec ? qsa(lec, '.q-card') : [];
+    var cards = visibleCards();
     var done = 0;
     each(cards, function (c) { if (state[c.getAttribute('data-qid')] != null) done++; });
     setText(document.getElementById('progressText'), done + ' / ' + cards.length);
@@ -287,8 +386,38 @@ _JS = r"""
     if (f) f.style.width = (cards.length ? (done / cards.length * 100) : 0) + '%';
   }
 
+  function gather(n) {
+    filter = n;
+    gatherCourse = curCourse();
+    setCls(document.body, 'gathering', !!n);
+    each(chips, function (b) {
+      setCls(b, 'active', b.getAttribute('data-lec') === String(n));
+    });
+    if (!n) { show(cur); return; }
+    // 모아 볼 때는 모든 회차를 펼쳐 놓고 그 강의 문항만 남긴다.
+    each(lectures, function (l) {
+      var any = 0;
+      each(qsa(l, '.q-card'), function (c) {
+        var ok = inFilter(c);
+        c.style.display = ok ? '' : 'none';
+        if (ok) any++;
+      });
+      setCls(l, 'active', any > 0);
+    });
+    each(items, function (b) { setCls(b, 'active', false); });
+    setText(document.getElementById('lecTitle'),
+            (gatherCourse ? gatherCourse + ' · ' : '') + n + '강 모아보기');
+    updateProgress();
+  }
+
   function show(idx) {
     if (idx < 0 || idx >= lectures.length) return;
+    if (filter) {              // 회차를 고르면 모아보기는 풀린다
+      filter = 0;
+      setCls(document.body, 'gathering', false);
+      each(chips, function (b) { setCls(b, 'active', b.getAttribute('data-lec') === '0'); });
+      each(qsa(document, '.q-card'), function (c) { c.style.display = ''; });
+    }
     cur = idx;
     each(lectures, function (l, i) { setCls(l, 'active', i === idx); });
     each(items, function (b, i) { setCls(b, 'active', i === idx); });
@@ -296,6 +425,7 @@ _JS = r"""
       setText(document.getElementById('lecTitle'),
               lectures[idx].getAttribute('data-title') || '');
     }
+    syncChips();
     updateProgress();
   }
 
@@ -322,9 +452,11 @@ _JS = r"""
   });
   on(document.getElementById('prevLec'), function () { show(cur - 1); });
   on(document.getElementById('nextLec'), function () { show(cur + 1); });
+  each(chips, function (b) {
+    on(b, function () { gather(parseInt(b.getAttribute('data-lec'), 10) || 0); });
+  });
   on(document.getElementById('resetLec'), function () {
-    if (!lectures[cur]) return;
-    each(qsa(lectures[cur], '.q-card'), function (c) {
+    each(visibleCards(), function (c) {
       delete state[c.getAttribute('data-qid')]; markCard(c);
     });
     save(); updateProgress();

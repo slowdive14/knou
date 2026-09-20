@@ -14,6 +14,7 @@
 
 순수 로직(단위테스트 대상):
   - record_key(bank, qid)        : 기록 키 — 은행이 달라도 안 섞이게
+  - key_for(bank, q)             : 모아 온 문항은 제 출처의 키를 쓴다
   - mark(rec, ok, now)           : 한 문항을 풀었을 때의 새 기록
   - due_at(rec) / is_due(rec, now): 언제 다시 낼지 / 지금 낼 때인가
   - sort_key(rec, now)           : 출제 순서(틀린 것 → 안 푼 것 → 복습)
@@ -54,6 +55,17 @@ def record_key(bank, qid) -> str:
     else:
         name = str(bank or "")
     return f"{name}|{qid}"
+
+
+def key_for(bank, q) -> str:
+    """이 문항의 기록 키 — 여러 은행에서 모아 온 문항은 **제 출처**를 따른다.
+
+    '3강 모아보기' 는 여러 회차의 문항을 한 자리에 모은다. 그때 모아보기를
+    은행으로 삼아 키를 만들면, 같은 문항인데도 회차별로 푼 기록과 따로 쌓여
+    '틀린 것부터 다시' 가 어긋난다.
+    """
+    own = str((q or {}).get("bank_key") or "")
+    return own or record_key(bank, (q or {}).get("qid"))
 
 
 def blank() -> dict:
@@ -139,7 +151,7 @@ def pick(questions, progress, bank, mode: str = "all", now=None) -> list:
     due   : 지금 볼 때가 된 것(안 푼 것·틀린 것·간격이 찬 것)
     """
     prog = progress or {}
-    rows = [(q, prog.get(record_key(bank, q.get("qid"))) or blank())
+    rows = [(q, prog.get(key_for(bank, q)) or blank())
             for q in (questions or [])]
     if mode == "wrong":
         rows = [(q, r) for q, r in rows if group_of(r, now) == GROUP_WRONG]
@@ -155,7 +167,7 @@ def bank_stats(questions, progress, bank, now=None) -> dict:
     total = len(questions or [])
     seen = solved = wrong = due = 0
     for q in questions or []:
-        r = prog.get(record_key(bank, q.get("qid"))) or blank()
+        r = prog.get(key_for(bank, q)) or blank()
         if int(r.get("tries") or 0):
             seen += 1
             if r.get("last_ok"):

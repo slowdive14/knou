@@ -1,6 +1,6 @@
 """[quiz_page] 퀴즈 은행 수집 → 복습 HTML 조립/저장 + 캡처 저장 헬퍼.
 
-  - collect_banks(quiz_dir)            : 퀴즈 폴더의 *.json 은행 로드(과목·차시 정렬, 빈 강 제외)
+  - collect_banks(quiz_dir)            : 퀴즈 폴더의 *.json 은행 로드(과목·차시 정렬, 빈 강 제외, 출처·강 표시)
   - build_quiz_page(quiz_dir, title)   : 은행들 → 단일 HTML 문자열
   - write_quiz_page(quiz_dir, out, …)  : HTML 생성 후 파일로 저장
   - persist_questions(cfg, …, questions): 캡처한 문항을 과목·차시 은행에 병합 저장
@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from quiz_html import render_quiz_html
+from quiz_lecture import stamp_origins
 from quizbank import bank_path, load_bank, make_bank, merge_questions, save_bank
 
 
@@ -32,7 +33,9 @@ def collect_banks(quiz_dir) -> list:
     banks.sort(key=lambda b: (str(b.get("course", "")),
                               1 if b.get("exam") else 0,
                               int(b.get("seq") or 0)))
-    return banks
+    # 문항마다 출처(기록 키)와 강을 붙여 둔다 — 화면도 HTML 도 이 표시를 보고
+    # 'N강 모아보기' 를 그린다(파일에는 쓰지 않는다).
+    return stamp_origins(banks)
 
 
 def build_quiz_page(quiz_dir, title: str = "방송대 강의 퀴즈") -> str:

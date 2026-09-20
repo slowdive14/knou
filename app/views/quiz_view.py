@@ -5,6 +5,7 @@
 눌러야 정답·해설이 열린다(다시 풀어보기 가치 보존).
 
   - 강의 고르기(드롭다운) · 진행률 · 현재 강/전체 초기화
+  - 'N강 모아보기' — 회차가 달라도 그 강의 문항을 한 자리에 모은다
   - 풀이 기록은 앱이 켜져 있는 동안 유지(HTML 페이지는 브라우저에 저장)
 
 데이터는 quiz_page.collect_banks(볼트/퀴즈) 를 그대로 쓴다(로그인·네트워크 없음).
@@ -16,6 +17,7 @@ import threading
 import flet as ft
 
 import quiz_explain as qe
+import quiz_lecture as ql
 import quiz_progress as qp
 from quiz_page import collect_banks, default_quiz_paths
 from ui_async import make_updater
@@ -49,12 +51,17 @@ def bank_title(bank: dict) -> str:
 
     강의 퀴즈: 'C프로그래밍 · 1강 · C 언어의 개요'
     기출:      'C프로그래밍 · 📄 기출 · 2019학년도 1학기 기말시험'
+    모아보기:  'C프로그래밍 · 🎯 3강 모아보기 · 입.출력 함수와 연산자(1)'
 
     기출은 차시가 없으므로 'N강' 을 붙이면 엉뚱한 번호가 나온다(seq 는 정렬용
     으로 20191 같은 값을 쓴다) — `exam` 이 있으면 그쪽 표기를 따른다.
     """
     course = bank.get("course") or ""
-    if bank.get("exam"):
+    if bank.get("lecture_pick"):
+        n = ql.lecture_label(bank.get("lecture_pick"))
+        head = " · ".join(p for p in (f"🎯 {n} 모아보기", bank.get("name") or "")
+                          if p)
+    elif bank.get("exam"):
         head = " · ".join(p for p in ("📄 기출", bank.get("name") or "") if p)
     else:
         parts = [str(bank.get("seq", "")) + "강", bank.get("name") or ""]
@@ -71,6 +78,16 @@ def bank_index(banks, course: str | None, seq=None) -> int:
                 (seq is None or int(b.get("seq") or 0) == int(seq)):
             return i
     return 0
+
+
+def lecture_chip(q) -> list:
+    """문항 머리에 붙는 '3강' 표지 — 아직 안 가린 문항에는 붙이지 않는다."""
+    lab = ql.lecture_label(ql.lecture_no(q))
+    if not lab:
+        return []
+    return [ft.Container(
+        content=ft.Text(lab, size=11, weight=ft.FontWeight.BOLD, color=MINT),
+        bgcolor=MINT_BG, padding=ft.Padding(9, 2, 9, 2), border_radius=99)]
 
 
 def progress_text(answered: int, total: int) -> str:
@@ -115,7 +132,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     st = {"idx": bank_index(banks, *(initial or (None, None))),
           "answers": {}, "revealed": set(),
           "prog": qp.load(prog_path) if prog_path else {},
-          "mode": "all", "order": [], "busy": None}
+          "mode": "all", "order": [], "busy": None,
+          "lec": 0, "virtual": {}}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -124,7 +142,11 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     bar = ft.ProgressBar(value=0, height=4, color=MINT,
                          bgcolor=ft.Colors.with_opacity(.08, ft.Colors.ON_SURFACE))
     cards = ft.Column(spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
-    picker = ft.Dropdown(label="강의", width=430, options=[])
+    picker = ft.Dropdown(label="강의", width=400, options=[])
+    # 회차를 가로질러 '3강 문제만' 모아 보는 손잡이. 방금 들은 강의의 기출을
+    # 곧바로 풀어보려면 회차별 은행을 25문항씩 훑어야 했다.
+    lec_pick = ft.Dropdown(label="강 모아보기", width=150, options=[],
+                           tooltip="기출·변형·강의 퀴즈에서 그 강의 문항만 모읍니다")
 
     # 해설 생성은 워커 스레드에서 돈다. 거기서 page.update() 를 직접 부르면
     # 패치가 큐에만 쌓여 화면이 안 바뀐다(ui_async 설명 참고).
@@ -161,7 +183,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             if text:
                 q["explanation"] = text          # 지금 화면에 곧바로
                 if quiz_dir:
-                    qe.store_explanation(quiz_dir, _cur_bank(), qid, text)
+                    # 모아보기 중이면 지금 은행은 가상이다 — 해설은 **문항이
+                    # 원래 있던 은행 파일**에 써야 다음에도 남아 있다.
+                    qe.store_explanation(quiz_dir, ql.origin_bank(q, _cur_bank()),
+                                         qid, text)
             else:
                 q["explanation"] = "설명을 만들지 못했습니다. 잠시 뒤 다시 눌러 주세요."
             st["busy"] = None
@@ -178,8 +203,13 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         except Exception:  # noqa: BLE001 - 볼트가 잠깐 안 보일 수 있다
             pass
 
-    def _cur_bank() -> dict:
+    def _real_bank() -> dict:
+        """드롭다운에서 고른 진짜 은행(모아보기 중에도 과목은 여기서 읽는다)."""
         return banks[st["idx"]] if 0 <= st["idx"] < len(banks) else {}
+
+    def _cur_bank() -> dict:
+        """지금 화면에 올라온 은행 — 모아보기 중이면 그 가상 은행."""
+        return st["virtual"] if st["lec"] else _real_bank()
 
     def _all_questions() -> list:
         return _cur_bank().get("questions") or []
@@ -216,7 +246,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             st["answers"][qid] = no
             ans = q.get("answer_no")
             if ans:                         # 정답을 모르는 문항은 채점하지 않는다
-                key = qp.record_key(_cur_bank(), qid)
+                key = qp.key_for(_cur_bank(), q)
                 st["prog"][key] = qp.mark(st["prog"].get(key),
                                           int(no) == int(ans))
                 _save_progress()
@@ -254,13 +284,16 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                 st["revealed"].add(qid)
             _render_cards()
 
-        items = [
-            ft.Row([
-                ft.Text(f"Q{num:02d}", size=13, weight=ft.FontWeight.BOLD,
-                        color=MINT, font_family="Consolas", expand=True),
-                ft.Text(str(q.get("source") or ""), size=11, color=MUTE),
-            ]),
-        ]
+        # 모아보기 중에는 이 문항이 어느 회차에서 왔는지도 알려준다
+        # ('2019 기출' 인지 '형성평가' 인지에 따라 무게가 다르다).
+        head = [ft.Text(f"Q{num:02d}", size=13, weight=ft.FontWeight.BOLD,
+                        color=MINT, font_family="Consolas", expand=True)]
+        head += lecture_chip(q)
+        if st["lec"] and q.get("bank_name"):
+            head.append(ft.Text(str(q.get("bank_name")), size=11, color=MUTE))
+        head.append(ft.Text(str(q.get("source") or ""), size=11, color=MUTE))
+        items = [ft.Row(head, spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)]
         # ⚠️ 여러 문항이 함께 쓰는 지문과 코드를 **반드시** 보여준다. 이게 없으면
         # '다음 프로그램의 실행결과는?' 같은 문항을 아예 풀 수 없다.
         intro = str(q.get("intro") or "").strip()
@@ -347,17 +380,35 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             cards.controls.append(_card(i, q))
         _safe_update()
 
-    def _load_bank(idx: int):
-        st["idx"] = max(0, min(int(idx), max(0, len(banks) - 1)))
+    def _lec_options() -> list:
+        """이 과목에서 **문항이 실제로 있는** 강만 드롭다운에 올린다."""
+        nums = ql.lecture_numbers(banks, _real_bank().get("course"))
+        return ([ft.DropdownOption(key="0", text="전체")] +
+                [ft.DropdownOption(key=str(n), text=ql.lecture_label(n))
+                 for n in nums])
+
+    def _apply():
+        """고른 은행(또는 N강 모아보기)을 화면에 올린다."""
         st["answers"].clear()
         st["revealed"].clear()
+        if st["lec"]:
+            st["virtual"] = ql.gather(banks, _real_bank().get("course"),
+                                      st["lec"])
         b = _cur_bank()
         _reorder()
         s = qp.stats_text(qp.bank_stats(_all_questions(), st["prog"], b))
         sub.value = (f"{bank_title(b)} · {s}" if b else "저장된 문제가 없습니다")
         picker.value = str(st["idx"])
+        lec_pick.value = str(st["lec"])
         _render_cards()
         _refresh_progress()
+
+    def _load_bank(idx: int):
+        st["idx"] = max(0, min(int(idx), max(0, len(banks) - 1)))
+        # 은행을 직접 고르면 모아보기는 풀린다 — 고른 은행이 안 보이면 이상하다.
+        st["lec"] = 0
+        lec_pick.options = _lec_options()
+        _apply()
 
     def on_pick(_=None):
         # 드롭다운이 고른 값은 옵션의 key(문자열 인덱스). 이벤트 인자에 기대지 않고
@@ -367,6 +418,14 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         except (TypeError, ValueError):
             pass
 
+    def on_lecture(_=None):
+        """'3강' 을 고르면 회차를 가리지 않고 그 강의 문항을 모두 모은다."""
+        try:
+            st["lec"] = int(lec_pick.value or 0)
+        except (TypeError, ValueError):
+            st["lec"] = 0
+        _apply()
+
     def on_reset_lec(_):
         """이 회차를 처음부터 — 화면뿐 아니라 **쌓인 기록도** 지운다."""
         b = _cur_bank()
@@ -374,9 +433,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             qid = q.get("qid")
             st["answers"].pop(qid, None)
             st["revealed"].discard(qid)
-            st["prog"].pop(qp.record_key(b, qid), None)
+            st["prog"].pop(qp.key_for(b, q), None)
         _save_progress()
-        _load_bank(st["idx"])
+        _apply()
 
     def on_reset_all(_):
         """전부 처음부터 — 모든 회차의 기록을 지운다."""
@@ -384,9 +443,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         st["revealed"].clear()
         st["prog"].clear()
         _save_progress()
-        _load_bank(st["idx"])
-        _render_cards()
-        _refresh_progress()
+        _apply()
 
     def on_save_html(_):
         try:
@@ -405,6 +462,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     # ⚠️ Flet 0.85 의 Dropdown 은 on_change 가 아니라 **on_select** 다.
     # (없는 속성에 붙이면 조용히 무시되어 강의를 바꿔도 문제가 안 바뀐다)
     picker.on_select = on_pick
+    lec_pick.on_select = on_lecture
 
     def on_mode(mode: str):
         def _h(_=None):
@@ -449,9 +507,11 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     return ft.Column(
         [
             title, sub,
-            ft.Row([picker, ft.Column([ft.Text("푼 문제", size=11, color=MUTE),
-                                       prog], spacing=0)],
-                   vertical_alignment=ft.CrossAxisAlignment.END, spacing=18),
+            ft.Row([picker, lec_pick,
+                    ft.Column([ft.Text("푼 문제", size=11, color=MUTE), prog],
+                              spacing=0)],
+                   vertical_alignment=ft.CrossAxisAlignment.END, spacing=14,
+                   wrap=True),
             bar, tools, ft.Divider(height=1), cards,
         ],
         spacing=10, expand=True,
