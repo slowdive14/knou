@@ -13,8 +13,22 @@ from __future__ import annotations
 from pathlib import Path
 
 from quiz_html import render_quiz_html
+from quiz_intro import stamp_paths
 from quiz_lecture import stamp_origins
 from quizbank import bank_path, load_bank, make_bank, merge_questions, save_bank
+
+
+def drop_suspect(bank) -> dict:
+    """검토에서 어긋난 것으로 걸러진 변형 문항을 뺀다.
+
+    물음과 답이 어긋난 문항은 풀수록 잘못 외운다. 파일에는 사유와 함께 남아
+    있으니 지워지는 것은 아니다(check_variants.py 참고).
+    """
+    qs = [q for q in (bank.get("questions") or [])
+          if not str(q.get("suspect") or "").strip()]
+    if len(qs) == len(bank.get("questions") or []):
+        return bank
+    return {**bank, "questions": qs}
 
 
 def collect_banks(quiz_dir) -> list:
@@ -24,7 +38,7 @@ def collect_banks(quiz_dir) -> list:
         return []
     banks = []
     for p in sorted(d.glob("*.json")):
-        b = load_bank(p)
+        b = drop_suspect(load_bank(p))
         if b.get("questions"):
             banks.append(b)
     # 과목 안에서 **강의 퀴즈가 먼저, 기출이 나중**. 기출의 seq 는 연도를 눌러
@@ -35,7 +49,7 @@ def collect_banks(quiz_dir) -> list:
                               int(b.get("seq") or 0)))
     # 문항마다 출처(기록 키)와 강을 붙여 둔다 — 화면도 HTML 도 이 표시를 보고
     # 'N강 모아보기' 를 그린다(파일에는 쓰지 않는다).
-    return stamp_origins(banks)
+    return stamp_paths(stamp_origins(banks), d)
 
 
 def build_quiz_page(quiz_dir, title: str = "방송대 강의 퀴즈") -> str:

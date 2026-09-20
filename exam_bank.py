@@ -94,9 +94,29 @@ def exam_name(year: int, term: int, kind: str = "기말시험") -> str:
 _ANSWER_ROW_RE = re.compile(r"^[0-9A-Za-z]{2,6}$")
 
 
-def _row_answers(row: str) -> list[int]:
-    """정답 줄 한 개 → 번호 목록. 숫자가 아닌 자리는 0(모름)."""
-    return [int(c) if c.isdigit() and c != "0" else 0 for c in row]
+# 정답표 첫머리의 '중복정답 대조표'. 글자 하나가 정답 여러 개를 뜻한다.
+# ⚠️ 이걸 모르고 글자 자리를 '모름' 으로 비워 두면, 멀쩡한 문항이 '정답을 몰라
+#    설명을 만들 수 없습니다' 로 남는다(실측: C프로그래밍 5문항).
+MULTI_ANSWERS = {
+    "A": (1, 2), "B": (1, 3), "C": (1, 4), "D": (2, 3), "E": (2, 4),
+    "F": (3, 4), "G": (1, 2, 3), "H": (1, 2, 4), "I": (1, 3, 4),
+    "J": (2, 3, 4), "K": (1, 2, 3, 4),
+}
+
+
+def answer_codes(ch) -> list[int]:
+    """정답표 한 글자 → 정답 번호들. 모르는 표기면 빈 목록."""
+    c = str(ch or "").strip().upper()
+    if len(c) != 1:
+        return []
+    if c.isdigit():
+        return [int(c)] if c != "0" else []
+    return list(MULTI_ANSWERS.get(c, ()))
+
+
+def _row_answers(row: str) -> list[list[int]]:
+    """정답 줄 한 개 → 자리마다 정답 번호들. 모르는 표기는 빈 목록."""
+    return [answer_codes(c) for c in row]
 
 
 def _looks_like_answers(row: str) -> bool:
@@ -111,7 +131,7 @@ def _norm(text) -> str:
     return re.sub(r"\s+", "", str(text or ""))
 
 
-def parse_answer_lines(lines, course: str, expect: int = 25) -> list[int]:
+def parse_answer_lines(lines, course: str, expect: int = 25) -> list[list[int]]:
     """정답표 줄 목록에서 그 과목의 정답 번호를 뽑는다.
 
     과목명 줄을 찾아 그 아래 숫자 묶음을 이어 붙인다. 다음 과목명이 나오거나
@@ -124,7 +144,7 @@ def parse_answer_lines(lines, course: str, expect: int = 25) -> list[int]:
         start = next(i for i, l in enumerate(rows) if _norm(l) == want)
     except StopIteration:
         return []
-    out: list[int] = []
+    out: list[list[int]] = []
     for l in rows[start + 1:]:
         if not l:
             continue
@@ -155,21 +175,29 @@ def attach_answers(questions, answers) -> tuple[list, list[str]]:
         return qs, warn
     out = []
     unknown = []
+    multi = 0
     for q, a in zip(qs, ans):
         q = dict(q)
-        if not int(a):          # 정답표에 글자가 적혀 있던 자리 — 비워 둔다
+        nos = [int(x) for x in (a if isinstance(a, (list, tuple)) else [a])
+               if int(x or 0) > 0]
+        if not nos:             # 대조표에도 없는 표기 — 비워 둔다
             unknown.append(q.get("qid") or "?")
             out.append(q)
             continue
-        q["answer_no"] = int(a)
-        opts = q.get("options") or []
-        pick = next((o.get("text") for o in opts
-                     if int(o.get("no") or 0) == int(a)), "")
+        q["answer_no"] = nos[0]
+        if len(nos) > 1:        # 중복정답 — 어느 것을 골라도 맞다
+            q["answer_nos"] = nos
+            multi += 1
+        opts = {int(o.get("no") or 0): str(o.get("text") or "")
+                for o in (q.get("options") or [])}
+        pick = " · ".join(opts.get(n, "") for n in nos if opts.get(n))
         if pick:
             q["answer_text"] = pick
         out.append(q)
+    if multi:
+        warn.append(f"중복정답 {multi}문항(정답표의 A~K 표기)")
     if unknown:
-        warn.append(f"정답표에 숫자가 아닌 표기가 있어 {len(unknown)}문항은 "
+        warn.append(f"정답표에 대조표에도 없는 표기가 있어 {len(unknown)}문항은 "
                     f"정답을 비웠습니다: {', '.join(unknown)}")
     return out, warn
 

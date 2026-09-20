@@ -27,6 +27,45 @@ from pathlib import Path
 # 정답/해설이 '비어있다'고 볼 값들(병합 시 이 값으로는 기존을 덮어쓰지 않는다).
 _EMPTY = (None, "", [], {})
 
+# 표준 칸 말고 **있으면 지키는** 칸들(지문·지문그림·걸러낸 사유). 문제를 풀려면
+# 있어야 하는 것이라 한 번 채우면 다시 담아도 남아야 한다.
+EXTRA_KEYS = ("intro", "code", "intro_image", "suspect")
+
+
+def correct_nos(q) -> list:
+    """이 문항의 정답 번호들 — **중복정답이면 여럿**이다(모르면 빈 목록).
+
+    방송대 정답표는 중복정답을 A~K 로 적는다(C=1,4 / K=전항정답 …). 정답이
+    하나뿐이라고 보면 나머지 정답을 고른 사람이 오답으로 채점된다.
+    """
+    q = q or {}
+    got = q.get("answer_nos")
+    if isinstance(got, (list, tuple)):
+        out = []
+        for x in got:
+            try:
+                n = int(x)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                out.append(n)
+        if out:
+            return out
+    try:
+        n = int(q.get("answer_no") or 0)
+    except (TypeError, ValueError):
+        return []
+    return [n] if n > 0 else []
+
+
+def is_correct(q, no) -> bool:
+    """고른 보기가 정답인가(정답을 모르면 False)."""
+    nos = correct_nos(q)
+    try:
+        return bool(nos) and int(no) in nos
+    except (TypeError, ValueError):
+        return False
+
 
 def normalize_question(raw: dict) -> dict:
     """임의의 스캔/입력 dict → 표준 문항 dict. 이미 표준이면 멱등.
@@ -55,7 +94,7 @@ def normalize_question(raw: dict) -> dict:
     except (TypeError, ValueError):
         answer_no = None
 
-    return {
+    out = {
         "qid": str(qid),
         "source": str(raw.get("source") or ""),
         "qtype": str(raw.get("qtype") or ""),
@@ -65,6 +104,23 @@ def normalize_question(raw: dict) -> dict:
         "answer_text": str(raw.get("answer_text") or "").strip(),
         "explanation": str(raw.get("explanation") or "").strip(),
     }
+    # 나중에 붙인 것들(지문·지문그림·강)은 **값이 있을 때만** 싣는다.
+    # ⚠️ 여기서 빠뜨리면 같은 차시를 다시 담을 때(merge_questions 가 기존 문항도
+    #    이 함수에 통과시킨다) 채워 둔 지문이 통째로 지워진다.
+    for k in EXTRA_KEYS:
+        v = str(raw.get(k) or "").strip()
+        if v:
+            out[k] = v
+    try:
+        lec = int(raw.get("lecture") or 0)
+    except (TypeError, ValueError):
+        lec = 0
+    if lec > 0:
+        out["lecture"] = lec
+    nos = correct_nos(raw)
+    if len(nos) > 1:            # 중복정답은 목록으로 지켜야 한다
+        out["answer_nos"] = nos
+    return out
 
 
 def _prefer(new, old):
@@ -74,7 +130,7 @@ def _prefer(new, old):
 
 def _merge_one(old: dict, new: dict) -> dict:
     """같은 qid 두 문항 병합 — 새 값이 채워졌으면 갱신, 비었으면 기존 유지."""
-    return {
+    merged = {
         "qid": old["qid"],
         "source": _prefer(new["source"], old["source"]),
         "qtype": _prefer(new["qtype"], old["qtype"]),
@@ -85,6 +141,11 @@ def _merge_one(old: dict, new: dict) -> dict:
         "answer_text": _prefer(new["answer_text"], old["answer_text"]),
         "explanation": _prefer(new["explanation"], old["explanation"]),
     }
+    for k in EXTRA_KEYS + ("lecture", "answer_nos"):
+        v = _prefer(new.get(k), old.get(k))
+        if v:
+            merged[k] = v
+    return merged
 
 
 def merge_questions(existing, new) -> list:

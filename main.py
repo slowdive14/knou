@@ -337,9 +337,14 @@ def _stage_watch(c: _Ctx, course: str, lec) -> dict:
 
     def _capture_quiz(popup):
         # 돌발퀴즈 복습 캡처(부수효과·예외 격리) — 정답·해설 노출 직후 호출됨.
+        import quiz_intro as qi
         from quiz_capture import scan_quiz
-        from quiz_page import persist_questions
+        from quiz_page import default_quiz_paths, persist_questions
         qs = scan_quiz(popup, source="돌발퀴즈")
+        # 지문(문항 위의 코드·그림)까지 담는다 — 없으면 '위 문장의 출력은?'
+        # 같은 문항을 나중에 아예 풀 수 없다.
+        qi.download_intros(popup, qs, default_quiz_paths(c.cfg)[0], course,
+                           lec.seq, requester=popup.request)
         if persist_questions(c.cfg, course, lec.seq, lec.name, qs):
             c.logger.info("    퀴즈 캡처: 돌발퀴즈 %d문항 저장", len(qs))
 
@@ -390,10 +395,16 @@ def _stage_exam(c: _Ctx, course: str, lec) -> dict:
                       res.get("answered"), res.get("total"))
         # 퀴즈 복습용 캡처(부수효과·예외 격리) — 풀이 후라 정답·해설이 드러나 있다.
         try:
+            import quiz_intro as qi
             from quiz_capture import scan_quiz
-            from quiz_page import persist_questions
+            from quiz_page import default_quiz_paths, persist_questions
             fr = _exam_frame(popup)
             qs = scan_quiz(fr, source="형성평가") if fr is not None else []
+            if fr is not None and qs:
+                # 지문은 form 안 `.exam-print` 에 있다(글이거나 그림). 이걸
+                # 빠뜨리면 '위 문장의 출력은?' 문항을 풀 수 없다.
+                qi.download_intros(fr, qs, default_quiz_paths(c.cfg)[0], course,
+                                   lec.seq, requester=popup.request)
             if persist_questions(c.cfg, course, lec.seq, lec.name, qs):
                 c.logger.info("    퀴즈 캡처: 형성평가 %d문항 저장", len(qs))
         except Exception as e:  # noqa: BLE001 - 캡처 실패가 이수를 막지 않게

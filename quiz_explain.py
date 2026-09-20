@@ -26,6 +26,8 @@ import json
 import re
 from pathlib import Path
 
+from quizbank import correct_nos
+
 
 def has_explanation(q) -> bool:
     """이미 해설이 있는가(공백뿐이면 없는 것으로 본다)."""
@@ -41,11 +43,13 @@ EXPLAIN_PROMPT = """너는 한국방송통신대학교 '{course}' 과목의 학�
 [보기]
 {options}
 
-[정답] {answer_no}번{answer_text}
+[정답] {answer_no}{answer_text}
 
 지켜야 할 것:
-1. **정답은 위에 적힌 {answer_no}번이다.** 다른 답을 주장하지 마라. 네 계산과
-   다르더라도 {answer_no}번이 왜 정답인지를 설명하라(정답표에서 온 확정값이다).
+1. **정답은 위에 적힌 {answer_no}이다.** 다른 답을 주장하지 마라. 네 계산과
+   다르더라도 그것이 왜 정답인지를 설명하라(정답표에서 온 확정값이다).
+   정답이 여럿이면 **중복정답**이다 — 하나만 고르지 말고 모두가 왜 맞는지
+   설명하라.
 2. 코드가 있으면 **한 줄씩 따라가며** 값이 어떻게 변하는지 보여라.
    `a*=(b-1)` 이면 'a 는 10 에 2 를 곱해 20 이 된다' 처럼 구체적으로.
 3. **왜 다른 보기가 틀렸는지** 짚어라. 헷갈리기 쉬운 것 한두 개면 충분하다.
@@ -64,13 +68,15 @@ def explain_prompt(q, course: str = "C프로그래밍") -> str:
     opts = "\n".join(f"{o.get('no')}. {o.get('text')}"
                      for o in (q.get("options") or []))
     ans_text = str(q.get("answer_text") or "").strip()
+    nos = correct_nos(q)
+    label = ", ".join(f"{n}번" for n in nos) if nos else "0번"
     return EXPLAIN_PROMPT.format(
         course=course,
         intro=f"{intro}\n" if intro else "",
         question=str(q.get("question") or "").strip(),
         code_block=f"\n[코드]\n{code}\n" if code else "",
         options=opts or "(보기 없음)",
-        answer_no=int(q.get("answer_no") or 0),
+        answer_no=label,
         answer_text=f" — {ans_text}" if ans_text else "")
 
 
@@ -99,7 +105,7 @@ def make_explanation(client, q, course: str = "C프로그래밍",
 
     from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
 
-    if not int((q or {}).get("answer_no") or 0):
+    if not correct_nos(q):
         return ""            # 정답을 모르는 문항은 설명할 기준이 없다
     try:
         resp = client.models.generate_content(

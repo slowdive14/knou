@@ -16,6 +16,8 @@ answer_text,explanation}).
 """
 from __future__ import annotations
 
+from quiz_intro import intro_data_uri
+from quizbank import correct_nos
 from quiz_lecture import lecture_label, lecture_no
 from ui_theme import (
     esc as _esc,
@@ -34,12 +36,32 @@ def _render_option(o: dict) -> str:
             f'<span class="opt-text">{_esc(o.get("text"))}</span></button>')
 
 
+def _intro_image(q: dict) -> str:
+    """지문 그림 — 한 장짜리 HTML 이라 그림을 본문에 실어 보낸다(data URI).
+
+    형성평가 지문은 코드가 그림인 경우가 있다. 글자로 옮기면 한 글자만 어긋나도
+    정답이 달라지므로 화면에 있던 그림 그대로 싣는다.
+    """
+    uri = intro_data_uri(q)
+    return f'<img class="q-intro-img" src="{uri}" alt="지문">' if uri else ""
+
+
 def _render_card(num: int, q: dict, course: str = "") -> str:
     opts = "".join(_render_option(o) for o in (q.get("options") or []))
+    # 중복정답(정답표의 A~K 표기)이면 번호가 여럿이다. 하나만 실으면 나머지
+    # 정답을 고른 사람이 오답으로 채점된다.
+    nos = correct_nos(q)
     ans_no = q.get("answer_no")
     ans_attr = _escattr(ans_no) if ans_no is not None else ""
-    if ans_no is not None:
-        correct = f"정답: {_esc(ans_no)}. {_esc(q.get('answer_text'))}"
+    nos_attr = ",".join(str(n) for n in nos)
+    opts_by_no = {int(o.get("no") or 0): str(o.get("text") or "")
+                  for o in (q.get("options") or [])}
+    if len(nos) > 1:
+        body = " · ".join(f"{n}. {opts_by_no.get(n, '')}".strip() for n in nos)
+        correct = f"정답(중복정답): {_esc(body)}"
+    elif nos:
+        correct = (f"정답: {_esc(nos[0])}. "
+                   f"{_esc(opts_by_no.get(nos[0]) or q.get('answer_text'))}")
     elif q.get("answer_text"):
         correct = f"정답: {_esc(q.get('answer_text'))}"
     else:
@@ -57,11 +79,13 @@ def _render_card(num: int, q: dict, course: str = "") -> str:
     # 같은 문항을 풀 수가 없다(기출을 담으면서 드러난 빠짐).
     intro = str(q.get("intro") or "").strip()
     intro_html = f'<div class="q-intro">{_esc(intro)}</div>' if intro else ""
+    intro_html = _intro_image(q) + intro_html
     code = str(q.get("code") or "").strip()
     code_html = f'<pre class="q-code">{_esc(code)}</pre>' if code else ""
     return (
         f'<div class="q-card card" data-qid="{_escattr(q.get("qid"))}" '
-        f'data-answer-no="{ans_attr}" data-lecture="{_escattr(lec or "")}" '
+        f'data-answer-no="{ans_attr}" data-answer-nos="{nos_attr}" '
+        f'data-lecture="{_escattr(lec or "")}" '
         f'data-course="{_escattr(course or q.get("bank_course") or "")}">'
         f'<div class="q-head"><span class="qnum">Q{num:02d}</span>'
         f'<span class="q-tags">{lec_html}{src_html}{badge_html}</span></div>'
@@ -245,6 +269,9 @@ body.gathering .badge.src { display:inline-block; }
 /* 여러 문항이 함께 쓰는 지문과, 실행결과를 묻는 문항의 코드 */
 .q-intro { font-size:14px; color:var(--mute); background:rgba(0,0,0,.035);
   border-radius:8px; padding:11px 13px; margin:10px 0 0; white-space:pre-wrap; }
+/* 지문이 그림인 문항(형성평가) — 화면에 있던 그림 그대로 */
+.q-intro-img { display:block; max-width:100%; height:auto; margin:10px 0 0;
+  border:1px solid rgba(0,0,0,.09); border-radius:8px; background:#fff; }
 .q-code { font-family:Consolas,"D2Coding",monospace; font-size:13.5px;
   line-height:1.5; background:rgba(0,0,0,.055); border:1px solid rgba(0,0,0,.09);
   border-radius:8px; padding:12px 14px; margin:0 0 16px; overflow-x:auto;
@@ -362,7 +389,10 @@ _JS = r"""
 
   function markCard(card) {
     var qid = card.getAttribute('data-qid');
-    var ans = card.getAttribute('data-answer-no');
+    // 중복정답이면 번호가 여럿이다. 정답을 모르는 문항(빈 값)은 채점하지
+    // 않는다 — 빨간색으로 칠하면 틀렸다고 오해한다.
+    var raw = card.getAttribute('data-answer-nos');
+    var ans = raw ? raw.split(',') : [];
     var sel = state[qid];
     each(qsa(card, '.opt'), function (btn) {
       setCls(btn, 'selected', false);
@@ -371,7 +401,13 @@ _JS = r"""
       var no = btn.getAttribute('data-no');
       if (sel != null && String(sel) === no) {
         setCls(btn, 'selected', true);
-        if (ans) { setCls(btn, String(sel) === ans ? 'correct' : 'wrong', true); }
+        if (ans.length) {
+          var hit = false;
+          for (var i = 0; i < ans.length; i++) {
+            if (ans[i] === String(sel)) { hit = true; }
+          }
+          setCls(btn, hit ? 'correct' : 'wrong', true);
+        }
       }
     });
   }

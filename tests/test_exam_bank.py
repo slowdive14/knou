@@ -87,9 +87,11 @@ _TABLE = [
 
 
 def test_parse_answers_reads_the_real_table():
+    """자리마다 **정답 번호들**이다 — 중복정답이면 여럿이라 목록으로 온다."""
     got = parse_answer_lines(_TABLE, "C프로그래밍")
-    assert got == [1, 4, 1, 4, 2, 3, 1, 3, 1, 2, 4, 3, 2, 3, 4,
-                   1, 3, 3, 4, 3, 2, 3, 1, 2, 2]
+    assert got == [[1], [4], [1], [4], [2], [3], [1], [3], [1], [2], [4], [3],
+                   [2], [3], [4], [1], [3], [3], [4], [3], [2], [3], [1], [2],
+                   [2]]
     assert len(got) == 25
 
 
@@ -97,13 +99,13 @@ def test_parse_answers_stops_at_the_next_course():
     """다음 과목 정답을 물고 오면 안 된다."""
     got = parse_answer_lines(_TABLE, "한국현대문학의이해와감상")
     assert len(got) == 25
-    assert got[:5] == [2, 4, 4, 3, 1]
+    assert got[:5] == [[2], [4], [4], [3], [1]]
 
 
 def test_parse_answers_ignores_the_separator():
     """과목 끝의 '1' 은 구분자이지 26번 정답이 아니다."""
     got = parse_answer_lines(_TABLE, "데이터정보처리입문")
-    assert len(got) == 25 and got[-5:] == [1, 1, 1, 1, 1]
+    assert len(got) == 25 and got[-5:] == [[1], [1], [1], [1], [1]]
 
 
 def test_parse_answers_ignores_spacing_in_the_name():
@@ -240,16 +242,17 @@ _MIXED = ["C프로그래밍", "41231", "12133", "13124", "32432", "2241C", "1",
 
 
 def test_parse_answers_keeps_going_past_a_letter():
+    """글자는 오류가 아니라 **중복정답 표기**다(정답표 첫머리의 대조표)."""
     got = parse_answer_lines(_MIXED, "C프로그래밍")
     assert len(got) == 25
-    assert got[:5] == [4, 1, 2, 3, 1]
-    assert got[24] == 0            # 'C' 자리는 모름
+    assert got[:5] == [[4], [1], [2], [3], [1]]
+    assert got[24] == [1, 4]       # 'C' = 1번과 4번 둘 다 정답
 
 
 def test_parse_answers_still_stops_at_the_next_course():
     """글자를 허용하더라도 과목명 줄에서는 멈춰야 한다."""
     got = parse_answer_lines(_MIXED, "C프로그래밍")
-    assert 1 not in got[25:]       # 다음 과목 정답을 물고 오지 않았다
+    assert got[25:] == []          # 다음 과목 정답을 물고 오지 않았다
 
 
 def test_attach_answers_blanks_only_the_unknown_ones():
@@ -263,3 +266,35 @@ def test_attach_answers_blanks_only_the_unknown_ones():
 def test_attach_answers_is_quiet_when_everything_is_known():
     got, warn = attach_answers([_q(1), _q(2)], [1, 2])
     assert warn == [] and all(q["answer_no"] for q in got)
+
+
+# --- 중복정답 대조표 --------------------------------------------------------
+# 정답표 첫머리에 '중복정답 대조표' 가 있다: A=1,2 … K=1,2,3,4(전항정답).
+# 이걸 모르고 글자 자리를 비워 두는 바람에 다섯 문항이 '정답을 몰라 설명을
+# 만들 수 없습니다' 로 남아 있었다.
+def test_the_multi_answer_table_is_read_as_written():
+    from exam_bank import answer_codes
+    assert answer_codes("C") == [1, 4]
+    assert answer_codes("D") == [2, 3]
+    assert answer_codes("K") == [1, 2, 3, 4]      # 전항정답
+    assert answer_codes("3") == [3]
+    assert answer_codes("Z") == [] and answer_codes("") == []
+    assert answer_codes("0") == []
+
+
+def test_attach_marks_a_multi_answer_question():
+    from exam_bank import attach_answers
+    q = {"qid": "a", "options": [{"no": 1, "text": "가"}, {"no": 2, "text": "나"},
+                                 {"no": 3, "text": "다"}, {"no": 4, "text": "라"}]}
+    got, warn = attach_answers([q], [[1, 4]])
+    assert got[0]["answer_no"] == 1               # 예전 코드가 보는 자리
+    assert got[0]["answer_nos"] == [1, 4]         # 진짜 정답은 둘
+    assert got[0]["answer_text"] == "가 · 라"
+    assert any("중복정답" in w for w in warn)
+
+
+def test_attach_leaves_an_unreadable_mark_empty():
+    from exam_bank import attach_answers
+    got, warn = attach_answers([{"qid": "a", "options": []}], [[]])
+    assert not got[0].get("answer_no")
+    assert any("비웠습니다" in w for w in warn)

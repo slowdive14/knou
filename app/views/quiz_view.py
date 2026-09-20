@@ -17,9 +17,11 @@ import threading
 import flet as ft
 
 import quiz_explain as qe
+import quiz_intro as qi
 import quiz_lecture as ql
 import quiz_progress as qp
 from quiz_page import collect_banks, default_quiz_paths
+from quizbank import correct_nos, is_correct
 from ui_async import make_updater
 
 MINT = "#00a37a"
@@ -32,6 +34,9 @@ MUTE = "#8b9198"
 # 긴 해설은 **자기 상자 안에서만** 굴리고, 문제와 코드는 제자리에 남긴다.
 EXPLAIN_SCROLL_CHARS = 350     # 이보다 길면 상자에 가둔다
 EXPLAIN_BOX_HEIGHT = 320       # 상자 높이(px)
+
+# 지문 그림 폭(px) — 예습 노트에 넣는 그림과 같은 폭으로 맞춘다.
+INTRO_IMAGE_WIDTH = 695
 
 
 def explanation_scrolls(text) -> bool:
@@ -94,23 +99,40 @@ def progress_text(answered: int, total: int) -> str:
     return f"{int(answered)} / {int(total)}"
 
 
-def option_tone(sel, no, answer_no) -> str:
-    """보기 하나의 색: correct|wrong|selected|plain."""
+def option_tone(sel, no, answer_no, answer_nos=None) -> str:
+    """보기 하나의 색: correct|wrong|selected|plain.
+
+    ⚠️ 정답을 **모르는** 문항(정답표에 대조표에도 없는 표기가 있던 자리)은
+       무엇을 골라도 오답이 아니다 — 빨간색으로 칠하면 틀렸다고 오해한다.
+    ⚠️ 중복정답이면 그중 아무거나 골라도 맞다.
+    """
     if sel is None or str(sel) != str(no):
         return "plain"
-    if answer_no is None or str(answer_no) == "":
+    nos = correct_nos({"answer_no": answer_no, "answer_nos": answer_nos})
+    if not nos:
+        return "selected"           # 정답을 모른다 — 채점하지 않는다
+    try:
+        return "correct" if int(sel) in nos else "wrong"
+    except (TypeError, ValueError):
         return "selected"
-    return "correct" if str(sel) == str(answer_no) else "wrong"
 
 
 def answer_text(q: dict) -> str:
-    """정답 줄 문구 — 번호와 보기글이 있으면 함께."""
-    no, txt = q.get("answer_no"), q.get("answer_text")
-    if no is not None:
-        return f"정답: {no}. {txt or ''}".strip()
-    if txt:
-        return f"정답: {txt}"
-    return "정답 정보 없음"
+    """정답 줄 문구 — 번호와 보기글이 있으면 함께.
+
+    중복정답이면 번호를 모두 적는다. '정답: 1번' 만 보이면 4를 고르고 맞힌
+    사람이 자기가 틀린 줄 안다.
+    """
+    nos = correct_nos(q)
+    txt = q.get("answer_text")
+    if not nos:
+        return f"정답: {txt}" if txt else "정답 정보 없음"
+    opts = {int(o.get("no") or 0): str(o.get("text") or "")
+            for o in (q.get("options") or [])}
+    if len(nos) == 1:
+        return f"정답: {nos[0]}. {opts.get(nos[0]) or txt or ''}".strip()
+    body = " · ".join(f"{n}. {opts.get(n, '')}".strip() for n in nos)
+    return f"정답(중복정답): {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +254,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     def _option_button(q: dict, o: dict) -> ft.Control:
         qid = q.get("qid")
         no = o.get("no")
-        tone = option_tone(st["answers"].get(qid), no, q.get("answer_no"))
+        tone = option_tone(st["answers"].get(qid), no, q.get("answer_no"),
+                           q.get("answer_nos"))
         border, bg = {
             "correct": (MINT, MINT_BG),
             "wrong": (ROSE, ROSE_BG),
@@ -244,11 +267,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             if st["answers"].get(qid) is not None:
                 return                      # 이미 고른 문항은 기록을 덮지 않는다
             st["answers"][qid] = no
-            ans = q.get("answer_no")
-            if ans:                         # 정답을 모르는 문항은 채점하지 않는다
+            if correct_nos(q):              # 정답을 모르는 문항은 채점하지 않는다
                 key = qp.key_for(_cur_bank(), q)
                 st["prog"][key] = qp.mark(st["prog"].get(key),
-                                          int(no) == int(ans))
+                                          is_correct(q, no))
                 _save_progress()
             _render_cards()
             _refresh_progress()
@@ -296,6 +318,17 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER)]
         # ⚠️ 여러 문항이 함께 쓰는 지문과 코드를 **반드시** 보여준다. 이게 없으면
         # '다음 프로그램의 실행결과는?' 같은 문항을 아예 풀 수 없다.
+        # 형성평가 지문은 코드가 **그림**인 경우가 있다 — 글자로 옮기면 한 글자만
+        # 어긋나도 정답이 달라지므로 화면에 있던 그림 그대로 건다.
+        img = qi.intro_file(q, quiz_dir)
+        if img is not None:
+            items.append(ft.Container(
+                # ⚠️ Flet 0.85 에는 ImageFit 이 없다 — BoxFit 이다.
+                content=ft.Image(src=str(img), width=INTRO_IMAGE_WIDTH,
+                                 fit=ft.BoxFit.CONTAIN),
+                bgcolor="#ffffff", padding=8, border_radius=8,
+                border=ft.Border.all(1, ft.Colors.with_opacity(
+                    .10, ft.Colors.ON_SURFACE))))
         intro = str(q.get("intro") or "").strip()
         if intro:
             items.append(ft.Container(
@@ -341,7 +374,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                                                    stroke_width=2),
                                    ft.Text("설명을 만드는 중…", size=12,
                                            color=MUTE)], spacing=8))
-            elif not q.get("answer_no"):
+            elif not correct_nos(q):
                 box.append(ft.Text("정답을 몰라 설명을 만들 수 없습니다.",
                                    size=12, color=MUTE))
             else:

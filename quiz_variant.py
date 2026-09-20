@@ -65,6 +65,9 @@ VARIANT_PROMPT = """아래는 한국방송통신대학교 '{course}' 기말시�
 1. **묻는 개념은 그대로.** 원본이 연산자 우선순위를 물으면 새 문제도 그것을 묻는다.
    다른 주제로 넘어가지 마라.
 2. **숫자·변수명·연산자를 바꿔라.** 원본을 그대로 베끼면 쓸모가 없다.
+   다만 원본이 '~이 아닌 것은?' '옳지 않은 것은?' 처럼 **틀린 것을 고르라**고
+   물으면 새 문제도 그 부정형을 그대로 지켜라. 보기 구조는 두고 물음만 긍정으로
+   바꾸면 정답과 물음이 어긋난다.
 3. 코드가 있으면 **반드시 컴파일되는 완전한 C 코드**로 써라. `#include` 부터
    `main` 의 닫는 괄호까지 빠짐없이. 표준 C 로만 쓰고 한글 주석을 넣지 마라.
 4. 보기는 4개, 그중 **정답은 하나**. 나머지 셋은 그럴듯한 오답으로(흔한 실수를
@@ -202,8 +205,12 @@ def run_c(code: str, compiler=None, timeout: int = RUN_TIMEOUT) -> dict:
         cf, exe = d / "a.c", d / "a.exe"
         cf.write_text(src, encoding="utf-8")
         try:
+            # ⚠️ 인코딩을 못 박는다. 기본값(cp949)으로 읽으면 gcc 의 UTF-8
+            #    경고문에서 UnicodeDecodeError 가 나고, 그것도 읽기 스레드
+            #    안에서 터져 검증이 조용히 실패한다.
             b = run_hidden([comp[1], str(cf), "-o", str(exe)],
                            capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
                            timeout=BUILD_TIMEOUT)
         except (subprocess.TimeoutExpired, OSError) as e:
             return {"ok": False, "out": "", "err": f"컴파일 실패: {str(e)[:120]}"}
@@ -212,6 +219,7 @@ def run_c(code: str, compiler=None, timeout: int = RUN_TIMEOUT) -> dict:
                     "err": f"컴파일 오류: {(b.stderr or '')[:200]}"}
         try:
             r = run_hidden([str(exe)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
                            timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"ok": False, "out": "", "err": "실행이 끝나지 않았습니다"}
@@ -278,6 +286,144 @@ def make_variants(client, questions, course: str = "C프로그래밍",
                     continue
             out.append(build_variant(q, data, no, verified, i))
     return out
+
+
+REVIEW_PROMPT = """너는 한국방송통신대학교 '{course}' 과목의 출제 검토위원이다.
+아래 객관식 문항을 **네 힘으로 풀고**, 문항 자체가 성립하는지 살펴라.
+
+[문제]
+{question}
+{code_block}
+[보기]
+{options}
+
+지켜야 할 것:
+1. 정답은 알려주지 않았다. 스스로 풀어라.
+2. 물음이 '아닌 것' '옳지 않은 것' 을 묻는지 **꼭 확인하라.** 물음과 보기가
+   어긋나 정답이 없거나 둘 이상이면 answer=0 이다.
+3. answer 에는 **보기 번호**를 적어라. 1~{count} 중 하나다. 계산 결과값이
+   아니라 그 값이 적힌 보기의 번호다.
+4. 딱 두 줄로만 답하라. 다른 말은 쓰지 마라.
+answer=<정답 보기 번호 하나, 정해지지 않으면 0>
+reason=<한 문장. 왜 그 번호인지, 0이면 무엇이 어긋났는지>"""
+
+
+_NEGATIVE = re.compile(r"아닌|않은|않는|틀린|잘못된|거리가 먼|옳지")
+
+
+def is_negative(text) -> bool:
+    """'~이 아닌 것은?' 처럼 **틀린 것을 고르라**는 물음인가."""
+    return bool(_NEGATIVE.search(str(text or "")))
+
+
+def negation_flip(origin, variant) -> bool:
+    """원본과 변형의 부정형이 뒤바뀌었는가 — 정답이 어긋나기 쉬운 자리다.
+
+    보기 구조(하나만 성질이 다름)를 그대로 둔 채 물음만 긍정으로 바꾸면,
+    '성질이 다른 하나' 가 정답으로 남아 물음과 답이 어긋난다.
+    """
+    return is_negative((origin or {}).get("question")) != \
+        is_negative((variant or {}).get("question"))
+
+
+def review_prompt(q, course: str = "C프로그래밍") -> str:
+    """검토 지시문 — **정답을 알려주지 않고** 다시 풀게 한다.
+
+    해설 지시문과 정반대다. 해설은 정답을 못 박고 설명하게 하지만, 검토는
+    답을 숨겨야 물음과 보기가 어긋난 것을 잡아낸다.
+    """
+    q = q or {}
+    code = str(q.get("code") or "").strip()
+    intro = str(q.get("intro") or "").strip()
+    opts = "\n".join(f"{o.get('no')}. {o.get('text')}"
+                      for o in (q.get("options") or []))
+    return REVIEW_PROMPT.format(
+        course=course,
+        question=(f"{intro}\n" if intro else "") + str(q.get("question") or ""),
+        code_block=f"\n[코드]\n{code}\n" if code else "",
+        options=opts or "(보기 없음)",
+        count=len(q.get("options") or []) or 4)
+
+
+def parse_review(raw) -> tuple[int, str]:
+    """검토 응답 → (정답번호, 사유). 못 읽으면 (-1, "") — '검토 못 함' 이다.
+
+    0 은 '문항이 성립하지 않는다' 는 뜻이라 '못 읽었다' 와 구분해야 한다.
+    """
+    text = str(raw or "")
+    m = re.search(r"answer\s*[=:]\s*(\d+)", text, re.I)
+    if not m:
+        return (-1, "")
+    why = re.search(r"reason\s*[=:]\s*(.+)", text, re.I)
+    return (int(m.group(1)),
+            (why.group(1).strip() if why else "").strip("`\"' ")[:200])
+
+
+def _numeric_options(q) -> dict:
+    """{보기글(숫자): 보기번호} — 숫자만 적힌 보기들."""
+    out = {}
+    for o in (q or {}).get("options") or []:
+        t = str(o.get("text") or "").strip()
+        if re.fullmatch(r"-?\d+", t):
+            out[t] = int(o.get("no") or 0)
+    return out
+
+
+def review_is_consistent(q, got: int, why: str) -> bool:
+    """검토가 고른 번호와 그 이유가 서로 맞는가.
+
+    ⚠️ 실측: 'A 는 몇 번 출력되는가?' 에서 이유에는 '총 24번' 이라 적고
+       answer 에는 3 을 적었다(24가 적힌 보기는 2번이다). **값과 보기 번호를
+       헷갈린 것**이라 그 답을 믿고 문항을 빼면 멀쩡한 문항을 잃는다.
+    """
+    nums = _numeric_options(q)
+    if not nums or got <= 0:
+        return True
+    said = {no for text, no in nums.items()
+            if re.search(r"(?<!\d)" + re.escape(text) + r"(?!\d)", str(why or ""))}
+    return (not said) or (got in said)
+
+
+def review_verdict(q, got: int, why: str) -> str:
+    """검토 결과 → 버릴 사유(문제 없으면 빈 문자열).
+
+    ⚠️ 보기 밖의 번호를 돌려주면 **검토가 지시를 못 따른 것**이다(실측: 4지
+       선다에 answer=8 — 계산값을 적었다). 그 말을 믿고 문항을 빼면 멀쩡한
+       문항을 잃는다.
+    """
+    q = q or {}
+    said = int(q.get("answer_no") or 0)
+    nos = [int(o.get("no") or 0) for o in (q.get("options") or [])]
+    if got < 0:
+        return ""                       # 검토를 못 했으면 그대로 둔다
+    if got > 0 and nos and got not in nos:
+        return ""                       # 보기에 없는 번호 — 검토를 믿지 않는다
+    if not review_is_consistent(q, got, why):
+        return ""                       # 이유와 번호가 어긋난다 — 판단 보류
+    if got == 0:
+        return f"문항이 성립하지 않습니다: {why}" if why else "문항이 성립하지 않습니다"
+    if got != said:
+        return f"검토에서는 {got}번이 답입니다({said}번으로 되어 있음): {why}"
+    return ""
+
+
+def review_variant(client, q, course: str = "C프로그래밍",
+                   model: str | None = None) -> tuple[int, str]:
+    """변형 문항을 다시 풀어 본다 → (검토가 고른 번호, 사유)."""
+    from google.genai import types
+
+    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+
+    try:
+        resp = client.models.generate_content(
+            model=model or DEFAULT_MODEL,
+            contents=[review_prompt(q, course)],
+            config=types.GenerateContentConfig(
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                thinking_config=types.ThinkingConfig(thinking_budget=0)))
+        return parse_review(_resp_text(resp))
+    except Exception:  # noqa: BLE001 - 검토를 못 했다고 문항을 버리지 않는다
+        return (-1, "")
 
 
 def verify_variant(data, compiler=None) -> tuple[int, bool, str]:
