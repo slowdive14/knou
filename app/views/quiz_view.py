@@ -11,10 +11,14 @@
 """
 from __future__ import annotations
 
+import threading
+
 import flet as ft
 
+import quiz_explain as qe
 import quiz_progress as qp
 from quiz_page import collect_banks, default_quiz_paths
+from ui_async import make_updater
 
 MINT = "#00a37a"
 MINT_BG = "#e3f6ef"
@@ -97,7 +101,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     st = {"idx": bank_index(banks, *(initial or (None, None))),
           "answers": {}, "revealed": set(),
           "prog": qp.load(prog_path) if prog_path else {},
-          "mode": "all", "order": []}
+          "mode": "all", "order": [], "busy": None}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -108,12 +112,48 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     cards = ft.Column(spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
     picker = ft.Dropdown(label="강의", width=430, options=[])
 
+    # 해설 생성은 워커 스레드에서 돈다. 거기서 page.update() 를 직접 부르면
+    # 패치가 큐에만 쌓여 화면이 안 바뀐다(ui_async 설명 참고).
+    _upd = make_updater(page)
+
     def _safe_update():
-        if page is not None:
+        _upd()
+
+    def _explain(q):
+        """[설명 보기] — 처음 한 번만 만들고, 만든 것은 은행에 저장한다.
+
+        API 호출이 몇 초 걸리므로 **워커 스레드**에서 돌린다. 화면 갱신은
+        루프를 깨우는 통로로 보낸다(ui_async 설명 참고).
+        """
+        qid = q.get("qid")
+        if st["busy"] or qe.has_explanation(q):
+            return
+        st["busy"] = qid
+        _render_cards()
+
+        def work():
+            text = ""
             try:
-                page.update()
-            except Exception:
-                pass
+                from google import genai
+
+                from config import load_config
+                cfg = load_config()
+                client = genai.Client(api_key=cfg.gemini_api_key)
+                text = qe.make_explanation(client, q,
+                                           q.get("course") or _cur_bank().get(
+                                               "course") or "")
+            except Exception:  # noqa: BLE001 - 설명이 없다고 퀴즈를 막지 않는다
+                text = ""
+            if text:
+                q["explanation"] = text          # 지금 화면에 곧바로
+                if quiz_dir:
+                    qe.store_explanation(quiz_dir, _cur_bank(), qid, text)
+            else:
+                q["explanation"] = "설명을 만들지 못했습니다. 잠시 뒤 다시 눌러 주세요."
+            st["busy"] = None
+            _render_cards()
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _save_progress():
         """기록을 파일에 남긴다 — 실패해도 풀이를 막지 않는다."""
@@ -236,13 +276,28 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             icon=ft.Icons.VISIBILITY_OFF if opened else ft.Icons.VISIBILITY,
             on_click=toggle, style=ft.ButtonStyle(color=MINT)))
         if opened:
+            box = [ft.Text(answer_text(q), size=13,
+                           weight=ft.FontWeight.BOLD, color=MINT)]
+            expl = str(q.get("explanation") or "").strip()
+            if expl:
+                box.append(ft.Text(expl, size=13, selectable=True))
+            elif st["busy"] == qid:
+                box.append(ft.Row([ft.ProgressRing(width=15, height=15,
+                                                   stroke_width=2),
+                                   ft.Text("설명을 만드는 중…", size=12,
+                                           color=MUTE)], spacing=8))
+            elif not q.get("answer_no"):
+                box.append(ft.Text("정답을 몰라 설명을 만들 수 없습니다.",
+                                   size=12, color=MUTE))
+            else:
+                # 해설은 **한 번만** 만든다 — 만들고 나면 은행에 남아 다음부터는
+                # 곧바로 뜬다(같은 문항마다 API 를 부르면 느리고 돈이 든다).
+                box.append(ft.TextButton(
+                    "왜 이게 정답인지 설명 보기", icon=ft.Icons.AUTO_AWESOME,
+                    on_click=lambda _e, qq=q: _explain(qq),
+                    style=ft.ButtonStyle(color=MINT)))
             items.append(ft.Container(
-                content=ft.Column([
-                    ft.Text(answer_text(q), size=13,
-                            weight=ft.FontWeight.BOLD, color=MINT),
-                    ft.Text(str(q.get("explanation") or ""), size=13,
-                            selectable=True),
-                ], spacing=6, tight=True),
+                content=ft.Column(box, spacing=8, tight=True),
                 bgcolor=MINT_BG, padding=14, border_radius=10,
                 border=ft.Border(left=ft.BorderSide(3, MINT))))
 
