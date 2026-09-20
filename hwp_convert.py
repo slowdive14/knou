@@ -36,7 +36,9 @@ MANUAL_DIR = "직접받은PDF"     # 사람이 한글에서 인쇄해 넣어 두
 # 인쇄로 PDF 를 만들 때 쓸 프린터 — 앞의 것부터 찾아 쓴다
 PDF_PRINTERS = ("Microsoft Print to PDF", "Hancom PDF")
 HWP_COM = "HWPFrame.HwpObject"
-CONVERT_TIMEOUT = 180
+# ⚠️ 그림이 많은 시험지는 인쇄 스풀이 오래 걸린다(실측: 180초로는 컴퓨터구조
+#    2016-2·2014-2 가 끊겼다). 넉넉히 준다 — 어차피 한 회차에 한 번뿐이다.
+CONVERT_TIMEOUT = 600
 
 # ⚠️ 실측: Windows PowerShell 5.1 은 BOM 없는 UTF-8 스크립트를 잘못 읽어 통째로
 #    구문 오류가 난다. 파일은 BOM 을 붙여 쓰고, 새 pwsh 를 먼저 불러 본다.
@@ -154,7 +156,7 @@ try {
   $hwp.HAction.Execute("Print", $set.HSet) | Out-Null
   $hwp.Clear(1) | Out-Null
   $hwp.Quit() | Out-Null
-  if (Wait-File $Out 60) { "OK PRINTED" } else { throw "인쇄해도 파일이 생기지 않았습니다" }
+  if (Wait-File $Out 420) { "OK PRINTED" } else { throw "인쇄해도 파일이 생기지 않았습니다" }
 } catch {
   "ERR " + $_.Exception.Message
 }
