@@ -27,6 +27,7 @@ except Exception:
     pass
 
 import exam_bank as eb
+import hwp_convert as hc
 
 DEFAULT_COURSE = "C프로그래밍"     # --course 를 안 주면 이 과목
 COURSE = DEFAULT_COURSE            # 예전 이름(다른 모듈이 쓴다)
@@ -141,8 +142,8 @@ def plan_imports(rows, quiz_dir, want_all: bool = False, year=None,
         if bank_exists(quiz_dir, key[0], key[1], course):
             skip.append((r, "이미 가져왔습니다"))
             continue
-        if not r.get("pdf"):
-            skip.append((r, "PDF 첨부가 없습니다(HWP 는 배포용 문서라 못 읽습니다)"))
+        if not (r.get("pdf") or r.get("manual") or r.get("hwp")):
+            skip.append((r, "PDF 도 HWP 도 없습니다"))
             continue
         if not r.get("ans") and not want_all:
             skip.append((r, "정답표가 없습니다"))
@@ -177,10 +178,24 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
     year, term = got
 
     log(f"── {title}")
-    log("   PDF 받는 중…")
-    pdf = download_attachment(ctx, course.sbjt_id, post, (".pdf",), work)
+    pdf = hc.manual_pdf(work, name, year, term)
+    if pdf is not None:
+        log(f"   직접 넣어 두신 PDF 를 씁니다: {pdf.name}")
+    else:
+        log("   PDF 받는 중…")
+        pdf = download_attachment(ctx, course.sbjt_id, post, (".pdf",), work)
     if pdf is None:
-        return {"title": title, "ok": False, "why": "PDF 첨부가 없음(HWP 뿐)"}
+        # PDF 첨부가 없으면 HWP 를 한글에 시켜 바꿔 본다(배포용이면 거부당한다)
+        hwp = download_attachment(ctx, course.sbjt_id, post,
+                                  (".hwp", ".hwpx"), work)
+        if hwp is None:
+            return {"title": title, "ok": False, "why": "PDF 도 HWP 도 없음"}
+        log(f"   HWP 를 PDF 로 바꾸는 중: {hwp.name}")
+        res = hc.hwp_to_pdf(hwp, work / (hwp.stem + ".pdf"))
+        log(f"   {hc.convert_note(res)}")
+        if not res.get("ok"):
+            return {"title": title, "ok": False, "why": hc.convert_note(res)}
+        pdf = Path(res["path"])
 
     log(f"   받음: {pdf.name} — 문항을 읽습니다(몇 분 걸립니다)")
     questions = eb.extract_questions(client, pdf, name, year, term,
@@ -222,7 +237,11 @@ def survey(page, ctx, work: Path, on_event=None,
     for post in exams:
         got = eb.parse_exam_title(_title(post))
         dn, _sn = _pick_file(post, (".pdf",))
-        rows.append({"post": post, "key": got, "pdf": dn,
+        hn, _hs = _pick_file(post, (".hwp", ".hwpx"))
+        # 사람이 한글에서 인쇄해 넣어 둔 PDF 가 있으면 그것도 '있는 것' 이다
+        manual = hc.manual_pdf(work, name, *got) if got else None
+        rows.append({"post": post, "key": got, "pdf": dn, "hwp": hn,
+                     "manual": manual,
                      "ans": table.get(got) if got else None,
                      "title": _title(post)})
     return course, rows
@@ -272,6 +291,11 @@ def import_exams(on_event=None, want_all: bool = False, year=None,
         ctx.close()
 
     log(f"\n■ 완료: {summary_text(done)}")
+    # 배포용 문서 때문에 막힌 회차가 있으면 어디에 넣어 주면 되는지 알린다
+    if any("배포용" in str(d.get("why") or "") for d in done):
+        log(f"   한글에서 열어 'PDF로 저장' 한 뒤 여기에 넣어 주세요: "
+            f"{hc.manual_dir(work)}")
+        log(f"   이름은 이렇게: {hc.manual_name(course, 2016, 2)}")
     return {"done": done, "skip": skip,
             "made": sum(1 for d in done if d.get("ok"))}
 

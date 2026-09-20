@@ -41,11 +41,15 @@ def test_an_already_imported_round_is_skipped(tmp_path):
     assert any("이미 가져왔습니다" in why for _r, why in skip)
 
 
-def test_a_round_without_a_pdf_is_skipped(tmp_path):
-    """HWP 는 배포용 문서라 본문이 안 열린다 — 이유를 남긴다."""
+def test_a_round_with_no_file_at_all_is_skipped(tmp_path):
+    """PDF 도 HWP 도 없으면 손쓸 길이 없다.
+
+    HWP 만 있는 회차는 더 이상 여기서 걸러지지 않는다 — 직접 넣어 둔 PDF 나
+    한글 변환으로 길이 열렸다(hwp_convert 참고).
+    """
     todo, skip = bx.plan_imports([_row((2014, 1), pdf=None)], tmp_path)
     assert todo == []
-    assert any("PDF 첨부가 없습니다" in why for _r, why in skip)
+    assert any("PDF 도 HWP 도 없습니다" in why for _r, why in skip)
 
 
 def test_a_round_without_an_answer_table_waits_for_permission(tmp_path):
