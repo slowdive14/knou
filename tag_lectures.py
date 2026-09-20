@@ -83,12 +83,16 @@ def main(argv=None) -> int:
     lectures = ql.load_catalog(a.course, [b for _p, b in rows])
     # 목차 제목만으로는 '(1)' 과 '(2)' 를 가를 수 없다 — 그 강 형성평가가
     # 무엇을 묻는지 함께 보여 준다.
-    hints = ql.topic_hints([b for _p, b in rows], a.course)
+    # 힌트는 강의록이 먼저다 — 형성평가를 안 담은 과목도 쓸 수 있다.
+    docs = ql.hints_from_docs(cfg.downloads_dir, a.course, lectures)
+    hints = ql.merge_hints(docs, ql.topic_hints([b for _p, b in rows],
+                                                a.course))
     if not lectures:
         _log("강의 목차를 만들 수 없습니다 — list_lectures.py 를 한 번 돌려 "
              "lectures.json 을 만들거나, 그 과목 형성평가를 담아 주세요.")
         return 1
-    _log(f"■ {a.course} — 강의 목차 {len(lectures)}강, 은행 {len(rows)}개")
+    _log(f"■ {a.course} — 강의 목차 {len(lectures)}강, 은행 {len(rows)}개, "
+         f"힌트 {len(hints)}강(강의록 {len(docs)}강)")
 
     exams = [(p, b) for p, b in rows
              if b.get("exam") and not is_variant(b)]

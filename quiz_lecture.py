@@ -18,6 +18,7 @@
   - catalog(banks, 과목)        : 강의 목차 [(차시, 제목), …]
   - load_catalog(과목, banks)   : 강의 목록(lectures.json)을 먼저 본 목차
   - topic_hints(banks, 과목)    : 강마다 대표 문항 — 이어지는 단원을 가른다
+  - hints_from_docs(…)          : 강의록 앞쪽에서 뽑은 주제(형성평가가 없어도)
   - question_brief(q)           : 분류에 쓸 문항 요약
   - classify_prompt(…)          : 여러 문항을 한 번에 묻는 지시문
   - parse_lectures(raw, …)      : 응답 → {문항번호: 강}
@@ -194,6 +195,62 @@ def topic_hints(banks, course=None, per: int = HINT_PER,
                        key=len, reverse=True)
         out[seq] = [t[:int(width)] for t in stems[:int(per)] if t]
     return {n: "; ".join(v) for n, v in out.items() if v}
+
+
+DOC_PAGES = 4           # 강의록 앞에서 몇 쪽을 볼지(학습목차가 앞에 있다)
+DOC_WIDTH = 110         # 힌트로 쓸 글자 수
+
+
+def doc_hint(path, pages: int = DOC_PAGES, width: int = DOC_WIDTH) -> str:
+    """강의록 PDF 앞쪽 → 그 강이 다루는 주제(못 읽으면 빈 문자열).
+
+    첫 쪽은 표지(과목명·교수명)라 쓸모가 없다. 그 뒤 학습목차 슬라이드에
+    소제목이 나열돼 있다.
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        return ""
+    p = Path(path)
+    if not p.exists():
+        return ""
+    try:
+        doc = pymupdf.open(p)
+    except Exception:  # noqa: BLE001 - 손상 파일
+        return ""
+    got = []
+    for i in range(min(int(pages), doc.page_count)):
+        t = " ".join(doc[i].get_text().split())
+        if len(t) > 20:                 # 표지처럼 짧은 쪽은 건너뛴다
+            got.append(t)
+    doc.close()
+    return " / ".join(got)[:int(width)]
+
+
+def hints_from_docs(downloads_dir, course, lectures) -> dict:
+    """{차시: 힌트} — 강의록 PDF 에서. 없는 강은 빠진다."""
+    from download import sanitize
+
+    d = Path(downloads_dir) if downloads_dir else None
+    if d is None or not d.exists():
+        return {}
+    out = {}
+    for n, _name in (lectures or []):
+        p = d / f"{sanitize(str(course or ''))}_{int(n)}강.pdf"
+        got = doc_hint(p)
+        if got:
+            out[int(n)] = got
+    return out
+
+
+def merge_hints(*maps) -> dict:
+    """힌트 여러 벌을 합친다 — 앞에 온 것이 이긴다."""
+    out = {}
+    for m in maps:
+        for k, v in (m or {}).items():
+            if v and k not in out:
+                out[k] = v
+    return out
 
 
 def catalog_text(lectures, hints=None) -> str:

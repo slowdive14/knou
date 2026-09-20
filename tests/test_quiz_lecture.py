@@ -348,3 +348,35 @@ def test_loading_falls_back_to_the_banks(tmp_path):
     banks = [_lec_bank(3, "입.출력")]
     got = ql.load_catalog("C프로그래밍", banks, tmp_path / "없음.json")
     assert got == [(3, "입.출력")]
+
+
+# --- 힌트를 강의록에서 -------------------------------------------------------
+# 실측(컴퓨터구조): 형성평가를 안 담은 과목은 대표 문항 힌트를 만들 수 없다.
+# 힌트 없이 분류했더니 1·2·14강이 0문항이고 3·4강에 63문항이 몰렸다.
+# 강의록 PDF 앞쪽의 학습목차에 그 강이 다루는 주제가 적혀 있다.
+def test_a_missing_lecture_note_gives_no_hint(tmp_path):
+    assert ql.doc_hint(tmp_path / "없음.pdf") == ""
+    assert ql.hints_from_docs(tmp_path, "컴퓨터구조", [(1, "개요")]) == {}
+
+
+def test_no_downloads_folder_is_fine():
+    assert ql.hints_from_docs(None, "컴퓨터구조", [(1, "개요")]) == {}
+
+
+def test_hints_merge_with_the_first_one_winning():
+    got = ql.merge_hints({1: "강의록"}, {1: "형성평가", 2: "형성평가"})
+    assert got == {1: "강의록", 2: "형성평가"}
+
+
+def test_merging_skips_empty_hints():
+    assert ql.merge_hints({1: ""}, {1: "쓸모 있는 것"}) == {1: "쓸모 있는 것"}
+
+
+def test_the_real_lecture_notes_make_hints():
+    """받아 둔 강의록이 있으면 실제로 뽑히는지 본다."""
+    from pathlib import Path as P
+    d = P("downloads")
+    if not (d / "컴퓨터구조_1강.pdf").exists():
+        return                              # 자료가 없으면 건너뛴다
+    got = ql.hints_from_docs(d, "컴퓨터구조", [(1, "개요"), (2, "논리회로")])
+    assert len(got) == 2 and "컴퓨터" in got[1]

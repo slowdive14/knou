@@ -101,6 +101,22 @@ def is_distributed(path) -> bool:
     return looks_distributed("/".join(x) for x in ole.listdir())
 
 
+def kill_hangul() -> int:
+    """멈춰 있는 한글을 정리한다 → 정리한 개수.
+
+    ⚠️ 한 회차에서 한글이 멈추면 **다음 회차까지 막힌다**(실측: 컴퓨터구조
+       2016-2 가 멈춘 뒤 2014-2 도 연달아 시간 초과였다). 시간 초과 뒤에는
+       반드시 치운다.
+    """
+    try:
+        r = subprocess.run(["taskkill", "/F", "/IM", "Hwp.exe", "/T"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+    return (r.stdout or "").count("SUCCESS") + (r.stdout or "").count("성공")
+
+
 def has_hangul() -> bool:
     """한글이 설치돼 있는가 — COM 개체가 등록돼 있으면 있다고 본다."""
     try:
@@ -191,8 +207,9 @@ def hwp_to_pdf(src, out, timeout: int = CONVERT_TIMEOUT) -> dict:
                     capture_output=True, text=True, encoding="utf-8",
                     errors="replace", timeout=timeout)
             except subprocess.TimeoutExpired:
-                return {"ok": False,
-                        "why": "한글이 응답하지 않습니다(시간 초과)"}
+                kill_hangul()      # 멈춘 한글이 다음 회차까지 막지 않게
+                return {"ok": False, "distributed": dist,
+                        "why": "한글이 이 파일에서 멈춥니다(시간 초과)"}
             except OSError:
                 continue                              # 그 셸이 없다
             said = (r.stdout or "").strip()
