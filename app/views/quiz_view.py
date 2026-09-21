@@ -114,6 +114,27 @@ def lecture_chip(q) -> list:
         bgcolor=MINT_BG, padding=ft.Padding(9, 2, 9, 2), border_radius=99)]
 
 
+def tries_chip(q, rec) -> list:
+    """문항 머리에 붙는 풀이 표지 — 안 푼 문제가 한눈에 드러난다.
+
+    ⚠️ 정답을 모르는 문항은 채점하지 않으므로 기록이 쌓이지 않는다. 그런
+       문항에 '안 푼 문제' 라고 적으면, 풀고 나서도 그대로라 거짓말이 된다.
+    """
+    if not correct_nos(q):
+        text, fg, tip = ("채점 없음", MUTE,
+                         "정답표가 없어 채점하지 않는 문항입니다")
+    else:
+        text = qp.tries_text(rec)
+        fg = {"ok": MINT, "bad": ROSE}.get(qp.tries_tone(rec), MUTE)
+        tip = qp.tries_tooltip(rec)
+    bg = {MINT: MINT_BG, ROSE: ROSE_BG}.get(
+        fg, ft.Colors.with_opacity(.06, ft.Colors.ON_SURFACE))
+    return [ft.Container(
+        content=ft.Text(text, size=11, weight=ft.FontWeight.BOLD, color=fg),
+        bgcolor=bg, padding=ft.Padding(9, 2, 9, 2), border_radius=99,
+        tooltip=tip)]
+
+
 IMPORT_BODY = """'{course}' 자료실을 훑어 **아직 안 담은 회차만** 가져옵니다.
 
   · 로그인해서 기출 PDF 를 받고, 문항은 AI 가 읽어 만듭니다(몇 분 걸립니다)
@@ -585,6 +606,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         head = [ft.Text(f"Q{num:02d}", size=13, weight=ft.FontWeight.BOLD,
                         color=MINT, font_family="Consolas", expand=True)]
         head += lecture_chip(q)
+        # 이 문항을 전에 몇 번 풀었는지 — 안 푼 것과 여러 번 본 것이 갈린다.
+        head += tries_chip(q, st["prog"].get(qp.key_for(_cur_bank(), q)))
         if st["lec"] and q.get("bank_name"):
             head.append(ft.Text(str(q.get("bank_name")), size=11, color=MUTE))
         head.append(ft.Text(str(q.get("source") or ""), size=11, color=MUTE))

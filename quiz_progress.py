@@ -21,6 +21,8 @@
   - pick(questions, prog, …)     : 모드에 맞춰 걸러 정렬한 문항
                                    (전체 · 오답만 · 복습할 것 · 안 푼 것만)
   - bank_stats(questions, prog, …): '25문항 중 18개 맞음 · 오답 4'
+  - tries_text/tone/tooltip(rec)  : 문항 하나의 표지 — '안 푼 문제' 인지
+                                    '3번 풀어 2번 맞힘' 인지
 
 IO:
   - load(path) / save(path, prog) : 볼트의 퀴즈 폴더에 JSON 한 장
@@ -183,6 +185,62 @@ def bank_stats(questions, progress, bank, now=None) -> dict:
             due += 1
     return {"total": total, "seen": seen, "solved": solved,
             "wrong": wrong, "due": due}
+
+
+def tries_text(rec) -> str:
+    """문항 머리에 붙는 풀이 표지 — 몇 번 풀었고 몇 번 맞혔는지.
+
+    머리말의 '맞힘 18 · 오답 4' 는 은행 전체 이야기라, 눈앞의 이 문항을 전에
+    풀어 봤는지는 알 수 없었다.
+
+        0번  → '안 푼 문제'
+        1번  → '한 번 풀어 맞힘' / '한 번 풀어 틀림'
+        2번~ → '3번 풀어 2번 맞힘'
+
+    한 번뿐일 때 '1번 풀어 1번 맞힘' 이라고 적으면 군더더기가 된다.
+    """
+    r = rec or {}
+    tries = int(r.get("tries") or 0)
+    ok = int(r.get("correct") or 0)
+    if not tries:
+        return "안 푼 문제"
+    if tries == 1:
+        return "한 번 풀어 맞힘" if ok else "한 번 풀어 틀림"
+    return f"{tries}번 풀어 {ok}번 맞힘"
+
+
+def tries_tone(rec) -> str:
+    """그 표지의 색: new(안 푼 것) | ok(마지막에 맞힘) | bad(마지막에 틀림).
+
+    마지막 결과로 나눈다 — 세 번 중 두 번 맞혔어도 방금 틀렸다면 다시 볼
+    문항이다.
+    """
+    r = rec or {}
+    if not int(r.get("tries") or 0):
+        return "new"
+    return "ok" if r.get("last_ok") else "bad"
+
+
+def tries_tooltip(rec, now=None) -> str:
+    """표지에 마우스를 올렸을 때 — 언제 풀었고 언제 다시 보는지.
+
+    횟수는 표지에 이미 적혀 있다. 여기서는 **날짜**를 말한다(같은 말을 두 번
+    적으면 읽을 것이 없다).
+    """
+    r = rec or {}
+    if not int(r.get("tries") or 0):
+        return "아직 한 번도 풀지 않았습니다"
+    parts = []
+    last = _parse(r.get("last"))
+    if last:
+        parts.append(f"마지막으로 푼 날 {last:%Y-%m-%d} "
+                     f"{'맞힘' if r.get('last_ok') else '틀림'}")
+    at = due_at(r)
+    if at is not None and not is_due(r, now):
+        parts.append(f"다음 복습 {at:%Y-%m-%d}")
+    else:
+        parts.append("지금 다시 볼 때입니다")
+    return " · ".join(parts)
 
 
 def stats_text(s) -> str:

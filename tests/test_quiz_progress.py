@@ -351,3 +351,66 @@ def test_pick_new_mode_counts_match_the_headline():
 
 def test_the_new_mode_is_a_known_mode():
     assert "new" in qp.MODES
+
+
+# --- 문항 하나의 표지 -------------------------------------------------------
+# 머리말의 '맞힘 18 · 오답 4' 는 은행 전체 이야기라, 눈앞의 이 문항을 전에
+# 풀어 봤는지는 알 수 없었다.
+def test_an_untouched_question_says_so():
+    assert qp.tries_text(None) == "안 푼 문제"
+    assert qp.tries_text({}) == "안 푼 문제"
+    assert qp.tries_text(qp.blank()) == "안 푼 문제"
+
+
+def test_the_label_counts_how_many_times_it_was_answered():
+    rec = qp.mark(qp.mark(qp.mark(None, True, NOW), False, NOW), True, NOW)
+    assert qp.tries_text(rec) == "3번 풀어 2번 맞힘"
+
+
+def test_one_try_reads_naturally():
+    """'1번 풀어 1번 맞힘' 은 군더더기다."""
+    assert qp.tries_text(qp.mark(None, True, NOW)) == "한 번 풀어 맞힘"
+    assert qp.tries_text(qp.mark(None, False, NOW)) == "한 번 풀어 틀림"
+
+
+def test_two_tries_name_both_numbers():
+    twice = qp.mark(qp.mark(None, True, NOW), False, NOW)
+    assert qp.tries_text(twice) == "2번 풀어 1번 맞힘"
+
+
+def test_the_tone_follows_the_last_result():
+    """세 번 중 두 번 맞혔어도 방금 틀렸다면 다시 볼 문항이다."""
+    two_ok = qp.mark(qp.mark(None, True, NOW), True, NOW)
+    assert qp.tries_tone(two_ok) == "ok"
+    assert qp.tries_tone(qp.mark(two_ok, False, NOW)) == "bad"
+    assert qp.tries_tone(None) == "new"
+    assert qp.tries_tone(qp.blank()) == "new"
+
+
+def test_the_tooltip_of_an_untouched_question():
+    assert qp.tries_tooltip(None) == "아직 한 번도 풀지 않았습니다"
+
+
+def test_the_tooltip_tells_when_it_was_answered_and_when_it_returns():
+    rec = qp.mark(None, True, NOW)          # 한 번 맞혔다 → 하루 뒤 복습
+    tip = qp.tries_tooltip(rec, NOW)
+    assert "마지막으로 푼 날 2026-09-21 맞힘" in tip
+    assert "다음 복습 2026-09-22" in tip
+
+
+def test_the_tooltip_does_not_repeat_the_label():
+    """횟수는 표지에 이미 적혀 있다 — 툴팁은 날짜를 말한다."""
+    rec = qp.mark(qp.mark(None, True, NOW), True, NOW)
+    assert "풀어" not in qp.tries_tooltip(rec, NOW)
+
+
+def test_the_tooltip_says_a_wrong_question_comes_back_now():
+    tip = qp.tries_tooltip(qp.mark(None, False, NOW), NOW)
+    assert "마지막으로 푼 날 2026-09-21 틀림" in tip
+    assert "지금 다시 볼 때입니다" in tip
+
+
+def test_the_tooltip_says_so_once_the_interval_has_passed():
+    rec = qp.mark(None, True, NOW)
+    assert "지금 다시 볼 때입니다" in qp.tries_tooltip(
+        rec, NOW + timedelta(days=2))
