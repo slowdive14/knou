@@ -31,6 +31,10 @@ _EMPTY = (None, "", [], {})
 # 있어야 하는 것이라 한 번 채우면 다시 담아도 남아야 한다.
 EXTRA_KEYS = ("intro", "code", "intro_image", "suspect")
 
+# 글이 아니라 **목록**으로 지키는 칸(문항별 후속 질문 대화). 위의 칸들처럼
+# str() 로 다루면 목록이 통째로 글자가 되어 버린다.
+LIST_KEYS = ("chat",)
+
 
 def correct_nos(q) -> list:
     """이 문항의 정답 번호들 — **중복정답이면 여럿**이다(모르면 빈 목록).
@@ -111,6 +115,10 @@ def normalize_question(raw: dict) -> dict:
         v = str(raw.get(k) or "").strip()
         if v:
             out[k] = v
+    for k in LIST_KEYS:
+        v = raw.get(k)
+        if isinstance(v, (list, tuple)) and v:
+            out[k] = list(v)
     try:
         lec = int(raw.get("lecture") or 0)
     except (TypeError, ValueError):
@@ -141,7 +149,7 @@ def _merge_one(old: dict, new: dict) -> dict:
         "answer_text": _prefer(new["answer_text"], old["answer_text"]),
         "explanation": _prefer(new["explanation"], old["explanation"]),
     }
-    for k in EXTRA_KEYS + ("lecture", "answer_nos"):
+    for k in EXTRA_KEYS + LIST_KEYS + ("lecture", "answer_nos"):
         v = _prefer(new.get(k), old.get(k))
         if v:
             merged[k] = v

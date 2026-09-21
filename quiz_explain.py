@@ -14,7 +14,8 @@ JSON 에 써 둔다.** 다음부터는 만들지 않고 저장된 것을 보여�
 
 IO:
   - make_explanation(client, q, …) : 해설 한 편 생성
-  - store_explanation(quiz_dir, bank, qid, text) : 은행 JSON 에 써넣기
+  - store_field(quiz_dir, bank, qid, 칸, 값) : 문항 한 칸을 은행 JSON 에
+  - store_explanation(quiz_dir, bank, qid, text) : 해설을 은행 JSON 에
 
 ⚠️ 해설을 **정답보다 앞세우지 않는다.** 정답 번호는 정답표에서 온 확정값이고,
    해설은 그 정답을 설명하는 글이다. 모델이 다른 답을 주장해도 정답은 바꾸지
@@ -81,10 +82,13 @@ def explain_prompt(q, course: str = "C프로그래밍") -> str:
 
 
 _LEAD_RE = re.compile(r"^(네[,.]?\s*|알겠습니다[.,]?\s*|해설[:：]\s*)", re.I)
+# 화면은 마크다운을 그리지 않는다(ft.Text) — 별표를 남기면 글자로 보인다.
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+_BULLET_RE = re.compile(r"^([ \t]*)[*-][ \t]+", re.M)
 
 
 def clean_explanation(raw) -> str:
-    """모델 응답 다듬기 — 코드펜스·머리말을 떼고 빈 줄을 정리한다."""
+    """모델 응답 다듬기 — 코드펜스·머리말·마크다운 표시를 떼고 빈 줄 정리."""
     s = str(raw or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
@@ -95,6 +99,8 @@ def clean_explanation(raw) -> str:
         if stripped == s:
             break
         s = stripped
+    s = _BOLD_RE.sub(r"\1", s)          # **굵게** → 굵게
+    s = _BULLET_RE.sub(r"\1· ", s)      # 줄머리 '* ' '- ' → '· '
     return re.sub(r"\n{3,}", "\n\n", s)
 
 
@@ -137,16 +143,20 @@ def bank_file(quiz_dir, bank) -> Path | None:
     return None
 
 
-def store_explanation(quiz_dir, bank, qid, text) -> bool:
-    """만든 해설을 은행 JSON 에 써넣는다. 저장했으면 True.
+def store_field(quiz_dir, bank, qid, key, value) -> bool:
+    """문항 한 칸을 은행 JSON 에 써넣는다. 저장했으면 True.
+
+    해설 말고 후속 질문 대화(quiz_chat)도 같은 자리에 남기므로 칸 이름을
+    받는다. 빈 값으로는 덮어쓰지 않는다(이미 있는 것을 지우지 않게).
 
     ⚠️ 임시 파일에 쓴 뒤 바꿔치기한다 — 문항이 든 파일이라 도중에 멈춰
     반쪽짜리가 남으면 문제를 통째로 잃는다.
     """
     import os
 
-    text = str(text or "").strip()
-    if not text:
+    if isinstance(value, str):
+        value = value.strip()
+    if not value:
         return False
     p = bank_file(quiz_dir, bank)
     if p is None:
@@ -158,7 +168,7 @@ def store_explanation(quiz_dir, bank, qid, text) -> bool:
     hit = False
     for q in data.get("questions") or []:
         if str(q.get("qid")) == str(qid):
-            q["explanation"] = text
+            q[str(key)] = value
             hit = True
             break
     if not hit:
@@ -171,3 +181,8 @@ def store_explanation(quiz_dir, bank, qid, text) -> bool:
     except OSError:
         return False
     return True
+
+
+def store_explanation(quiz_dir, bank, qid, text) -> bool:
+    """만든 해설을 은행 JSON 에 써넣는다. 저장했으면 True."""
+    return store_field(quiz_dir, bank, qid, "explanation", text)

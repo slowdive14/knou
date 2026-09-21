@@ -6,6 +6,7 @@
 
   - 강의 고르기(드롭다운) · 진행률 · 현재 강/전체 초기화
   - 출제 모드 — 전체 · 오답만 · 안 푼 것만 · 복습할 것
+  - 해설을 읽고도 막히면 그 자리에서 되묻는다(quiz_chat) — 나눈 대화는 남는다
   - [기출 더 가져오기] — 자료실에서 아직 안 담은 회차를 찾아 담는다
   - [새로고침] — 밖에서 담은 기출도 앱을 끄지 않고 집어 온다
   - 'N강 모아보기' — 회차가 달라도 그 강의 문항을 한 자리에 모은다
@@ -19,6 +20,7 @@ import threading
 
 import flet as ft
 
+import quiz_chat as qc
 import quiz_explain as qe
 import quiz_intro as qi
 import quiz_lecture as ql
@@ -40,6 +42,20 @@ EXPLAIN_BOX_HEIGHT = 320       # 상자 높이(px)
 
 # 지문 그림 폭(px) — 예습 노트에 넣는 그림과 같은 폭으로 맞춘다.
 INTRO_IMAGE_WIDTH = 695
+
+
+def gemini_client():
+    """Gemini 클라이언트 — 해설과 되묻기가 함께 쓴다(못 만들면 None).
+
+    ⚠️ API 키는 여기서만 읽고 어디에도 적지 않는다(로그·화면·저장 파일).
+    """
+    try:
+        from google import genai
+
+        from config import load_config
+        return genai.Client(api_key=load_config().gemini_api_key)
+    except Exception:  # noqa: BLE001 - 키가 없어도 퀴즈는 풀 수 있다
+        return None
 
 
 def explanation_scrolls(text) -> bool:
@@ -190,7 +206,11 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
           "answers": {}, "revealed": set(),
           "prog": qp.load(prog_path) if prog_path else {},
           "mode": "all", "order": [], "busy": None,
-          "lec": 0, "virtual": {}, "importing": False}
+          "lec": 0, "virtual": {}, "importing": False,
+          # 되묻기 — 열어 둔 문항 · 치다 만 물음 · 답을 기다리는 문항.
+          # 카드를 다시 그릴 때마다 입력창이 새로 만들어지므로 치던 글은
+          # 여기 담아 둬야 날아가지 않는다.
+          "chat_open": set(), "draft": {}, "asking": None}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -215,6 +235,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     def _safe_update():
         _upd()
 
+    def _q_course(q) -> str:
+        """이 문항이 속한 과목 — 모아보기 중이면 문항에 적힌 쪽이 맞다."""
+        return str(q.get("course") or _cur_bank().get("course") or "")
+
     def _explain(q):
         """[설명 보기] — 처음 한 번만 만들고, 만든 것은 은행에 저장한다.
 
@@ -230,14 +254,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         def work():
             text = ""
             try:
-                from google import genai
-
-                from config import load_config
-                cfg = load_config()
-                client = genai.Client(api_key=cfg.gemini_api_key)
-                text = qe.make_explanation(client, q,
-                                           q.get("course") or _cur_bank().get(
-                                               "course") or "")
+                client = gemini_client()
+                text = (qe.make_explanation(client, q, _q_course(q))
+                        if client else "")
             except Exception:  # noqa: BLE001 - 설명이 없다고 퀴즈를 막지 않는다
                 text = ""
             if text:
@@ -253,6 +272,97 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             _render_cards()
 
         threading.Thread(target=work, daemon=True).start()
+
+    # --- 되묻기 -----------------------------------------------------------
+    # 해설은 한 번에 한 편만 쓰인다. 읽는 사람이 어디서 막히는지는 글을 쓸 때
+    # 알 수 없다 — 그래서 정답 상자 안에서 바로 물을 수 있게 한다.
+    def _open_chat(qid):
+        """[물어보기] — 입력창을 연다(대화가 이미 있으면 처음부터 열려 있다)."""
+        st["chat_open"].add(qid)
+        _render_cards()
+
+    def _draft(qid, text):
+        """치는 동안에는 담아만 둔다 — 여기서 다시 그리면 글자마다 깜빡인다."""
+        st["draft"][qid] = text
+
+    def _send(q):
+        """물음 한 마디를 보낸다 — 답은 워커 스레드에서 받아 온다."""
+        qid = q.get("qid")
+        text = str(st["draft"].get(qid) or "").strip()
+        if not text or st["asking"]:
+            return
+        # 물음을 먼저 화면에 올린다 — 보낸 게 맞는지 기다리며 헷갈리지 않게.
+        asked = qc.add_turn(qc.chat_turns(q), qc.ROLE_USER, text)
+        q[qc.CHAT_FIELD] = asked
+        st["draft"][qid] = ""
+        st["asking"] = qid
+        _render_cards()
+
+        def work():
+            answer = ""
+            try:
+                client = gemini_client()
+                # 지난 대화에서 방금 물음은 뺀다 — 지시문에 따로 들어간다.
+                answer = (qc.ask(client, q, _q_course(q), asked[:-1], text)
+                          if client else "")
+            except Exception:  # noqa: BLE001 - 답이 없다고 퀴즈를 막지 않는다
+                answer = ""
+            got = qc.add_turn(asked, qc.ROLE_BOT, answer or
+                              "답을 만들지 못했습니다. 잠시 뒤 다시 물어봐 주세요.")
+            q[qc.CHAT_FIELD] = got
+            if quiz_dir and answer:
+                # 모아보기 중이면 지금 은행은 가상이다 — 대화는 **문항이 원래
+                # 있던 은행 파일**에 써야 다음에도 남아 있다.
+                qc.store_chat(quiz_dir, ql.origin_bank(q, _cur_bank()),
+                              qid, got)
+            st["asking"] = None
+            _render_cards()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _chat_box(q) -> list:
+        """정답 상자 안의 되묻기 — 지난 대화와 입력 한 줄."""
+        qid = q.get("qid")
+        turns = qc.chat_turns(q)
+        if not turns and qid not in st["chat_open"]:
+            return [ft.TextButton(
+                "이해가 안 되면 물어보기", icon=ft.Icons.CHAT_BUBBLE_OUTLINE,
+                on_click=lambda _e, i=qid: _open_chat(i),
+                style=ft.ButtonStyle(color=MINT))]
+        out = []
+        for t in turns:
+            if t["role"] == qc.ROLE_USER:
+                # 내가 한 물음은 오른쪽에 상자로 — 답과 한눈에 갈린다.
+                bubble = ft.Container(
+                    content=ft.Text(t["text"], size=13, selectable=True),
+                    bgcolor="#ffffff", padding=ft.Padding(12, 9, 12, 9),
+                    border_radius=10,
+                    border=ft.Border.all(1, ft.Colors.with_opacity(
+                        .12, ft.Colors.ON_SURFACE)))
+                out.append(ft.Row([bubble],
+                                  alignment=ft.MainAxisAlignment.END))
+            else:
+                out.append(ft.Text(t["text"], size=13, selectable=True))
+        if st["asking"] == qid:
+            out.append(ft.Row([ft.ProgressRing(width=15, height=15,
+                                               stroke_width=2),
+                               ft.Text("답을 만드는 중…", size=12, color=MUTE)],
+                              spacing=8))
+            return out
+        # ⚠️ 카드는 통째로 다시 그려진다 — 치던 글은 st["draft"] 에서 되살린다.
+        box = ft.TextField(
+            value=st["draft"].get(qid, ""), expand=True, text_size=13,
+            height=42, content_padding=ft.Padding(12, 8, 12, 8),
+            hint_text="어디가 막히는지 물어보세요",
+            border_color=ft.Colors.with_opacity(.18, ft.Colors.ON_SURFACE),
+            on_change=lambda e, i=qid: _draft(i, e.control.value),
+            on_submit=lambda _e, qq=q: _send(qq))
+        out.append(ft.Row(
+            [box, ft.IconButton(icon=ft.Icons.SEND, icon_color=MINT,
+                                tooltip="묻기(Enter)",
+                                on_click=lambda _e, qq=q: _send(qq))],
+            spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+        return out
 
     def _reload_banks(keep: bool = True) -> int:
         """퀴즈 폴더를 다시 읽어 목록을 새로 만든다 → 은행 수.
@@ -548,6 +658,15 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                     "왜 이게 정답인지 설명 보기", icon=ft.Icons.AUTO_AWESOME,
                     on_click=lambda _e, qq=q: _explain(qq),
                     style=ft.ButtonStyle(color=MINT)))
+            # 해설을 읽고도 막히면 되묻는다. 아직 해설을 만들기 전이라면
+            # 입구를 내밀지 않는다 — 읽지도 않은 글을 두고 물을 수는 없다.
+            # 다만 정답을 몰라 해설을 못 만드는 문항은 물어볼 데가 여기뿐이다.
+            if st["busy"] != qid and (expl or qc.chat_turns(q)
+                                      or not correct_nos(q)):
+                box.append(ft.Divider(height=9, thickness=1,
+                                      color=ft.Colors.with_opacity(
+                                          .10, ft.Colors.ON_SURFACE)))
+                box += _chat_box(q)
             items.append(ft.Container(
                 content=ft.Column(box, spacing=8, tight=True),
                 bgcolor=MINT_BG, padding=14, border_radius=10,
