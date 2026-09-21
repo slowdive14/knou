@@ -397,11 +397,22 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         rec = st["prog"].get(qp.key_for(_cur_bank(), q)) or {}
         return int(rec.get("tries") or 0) > 0
 
+    def _head_text() -> str:
+        """머리말 — 어느 은행을 보고 있고 얼마나 풀었는지."""
+        b = _cur_bank()
+        if not b:
+            return "저장된 문제가 없습니다"
+        s = qp.stats_text(qp.bank_stats(_all_questions(), st["prog"], b))
+        return f"{bank_title(b)} · {s}" if s else bank_title(b)
+
     def _refresh_progress():
         qs = _questions()
         done = sum(1 for q in qs if _answered(q))
         prog.value = progress_text(done, len(qs))
         bar.value = (done / len(qs)) if qs else 0
+        # 머리말의 '맞힘 4 · 오답 1 · 아직 12' 도 함께 고친다 — 한 문항 풀 때
+        # 마다 숫자가 움직여야 어디까지 왔는지 보인다.
+        sub.value = _head_text()
         _safe_update()
 
     def _option_button(q: dict, o: dict) -> ft.Control:
@@ -581,10 +592,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         if st["lec"]:
             st["virtual"] = ql.gather(banks, _real_bank().get("course"),
                                       st["lec"])
-        b = _cur_bank()
         _reorder()
-        s = qp.stats_text(qp.bank_stats(_all_questions(), st["prog"], b))
-        sub.value = (f"{bank_title(b)} · {s}" if b else "저장된 문제가 없습니다")
         picker.value = str(st["idx"])
         lec_pick.value = str(st["lec"])
         _render_cards()

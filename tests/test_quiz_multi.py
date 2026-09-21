@@ -252,3 +252,35 @@ def test_resetting_clears_the_tally(tmp_path):
     _choose(v, 0)
     _buttons(v)["전체 초기화"].on_click(None)
     assert _progress(v) == "0 / 2"
+
+
+# --- 머리말도 풀 때마다 움직인다 ---------------------------------------------
+# 실측 불편: '맞힘 4 · 오답 1 · 아직 12' 가 은행을 바꿀 때만 갱신돼, 문항을
+# 풀어도 그대로였다. 어디까지 왔는지 보려면 탭을 옮겼다 와야 했다.
+def _head(view):
+    return [str(c.value or "") for c in _walk(view) if isinstance(c, ft.Text)][1]
+
+
+def test_the_headline_moves_with_each_answer(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a", answer_no=1), _q(qid="b", answer_no=1))
+    v = build_quiz_view(quiz_dir=d)
+    assert "아직 2" in _head(v)
+    _choose(v, 0)                                  # 1번 보기 = 정답
+    assert "맞힘 1" in _head(v) and "아직 1" in _head(v)
+
+
+def test_a_wrong_answer_shows_up_in_the_headline(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a", answer_no=2))
+    v = build_quiz_view(quiz_dir=d)
+    _choose(v, 0)                                  # 1번 보기 = 오답
+    assert "오답 1" in _head(v)
+
+
+def test_the_headline_still_names_the_bank(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a"))
+    v = build_quiz_view(quiz_dir=d)
+    _choose(v, 0)
+    assert "2015학년도 1학기 기말시험" in _head(v)
