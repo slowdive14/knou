@@ -211,3 +211,44 @@ def test_an_unknown_answer_stays_unanswered(tmp_path):
     _choose(v, 0)
     _buttons(v)["안 푼 것만"].on_click(None)
     assert len(_cards(v)) == 1
+
+
+# --- 푼 문제 수는 기록을 따른다 ----------------------------------------------
+# 실측 불편: 3강 24문항을 다 풀었는데 '푼 문제 0 / 24' 가 떴다. 머리말은 기록을
+# 읽어 '맞힘 22 · 오답 2' 라고 하는데 숫자만 0이라 앞뒤가 안 맞았다.
+# 화면 메모리는 모드를 바꾸거나 화면을 다시 그릴 때마다 비워진다.
+def _progress(view):
+    return [str(c.value) for c in _walk(view) if isinstance(c, ft.Text)
+            and "/" in str(c.value or "")
+            and str(c.value).replace(" ", "").replace("/", "").isdigit()][0]
+
+
+def test_the_tally_counts_what_was_solved_before(tmp_path):
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a"), _q(qid="b"))
+    v = build_quiz_view(quiz_dir=d)
+    _choose(v, 0)                                  # 첫 문항을 푼다
+    assert _progress(v) == "1 / 2"
+
+    v2 = build_quiz_view(quiz_dir=d)               # 화면을 다시 그린다
+    assert _progress(v2) == "1 / 2"                # 기록이 남아 있다
+
+
+def test_the_tally_survives_a_mode_change(tmp_path):
+    """모드 단추를 누르면 화면 메모리가 비워진다 — 숫자는 남아야 한다."""
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a"), _q(qid="b"))
+    v = build_quiz_view(quiz_dir=d)
+    _choose(v, 0)
+    _buttons(v)["전체"].on_click(None)
+    assert _progress(v) == "1 / 2"
+
+
+def test_resetting_clears_the_tally(tmp_path):
+    """초기화는 기록까지 지운다 — 숫자도 0으로 돌아가야 한다."""
+    from app.views.quiz_view import build_quiz_view
+    d = _dir(tmp_path, _q(qid="a"), _q(qid="b"))
+    v = build_quiz_view(quiz_dir=d)
+    _choose(v, 0)
+    _buttons(v)["전체 초기화"].on_click(None)
+    assert _progress(v) == "0 / 2"

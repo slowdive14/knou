@@ -384,9 +384,22 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         st["order"] = qp.pick(_all_questions(), st["prog"], _cur_bank(),
                               st["mode"])
 
+    def _answered(q) -> bool:
+        """이 문항을 풀었는가 — 방금 고른 것이든, 예전에 남긴 기록이든.
+
+        ⚠️ 화면 메모리(st["answers"])만 세면 안 된다. 그 값은 모드를 바꾸거나
+           화면을 다시 그릴 때마다 비워지므로, 24문항을 다 풀고도 '푼 문제
+           0 / 24' 가 뜬다(머리말은 기록을 읽어 '맞힘 22 · 오답 2' 라고
+           말하는데 숫자만 0이라 앞뒤가 안 맞았다).
+        """
+        if st["answers"].get(q.get("qid")) is not None:
+            return True
+        rec = st["prog"].get(qp.key_for(_cur_bank(), q)) or {}
+        return int(rec.get("tries") or 0) > 0
+
     def _refresh_progress():
         qs = _questions()
-        done = sum(1 for q in qs if st["answers"].get(q.get("qid")) is not None)
+        done = sum(1 for q in qs if _answered(q))
         prog.value = progress_text(done, len(qs))
         bar.value = (done / len(qs)) if qs else 0
         _safe_update()
