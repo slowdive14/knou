@@ -165,12 +165,12 @@ def test_a_cell_says_when_it_was_watched(tmp_path):
 
 
 # --- 머리말 -----------------------------------------------------------------
-def test_the_headline_says_the_days_and_the_daily_share(tmp_path):
+def test_the_headline_says_the_days_and_the_weekly_share(tmp_path):
     v = build_plan_view(plan_path=_plan_file(tmp_path), today=TODAY)
     head = _head(v)
     assert "D-49" in head
     assert "2 / 30강" in head
-    assert "하루 0.6강" in head
+    assert "주 4강" in head
 
 
 def test_the_headline_moves_when_a_lecture_is_marked(tmp_path):
@@ -185,13 +185,13 @@ def test_the_headline_moves_when_a_lecture_is_marked(tmp_path):
 def test_the_screen_says_todays_share(tmp_path):
     """트래커를 여는 이유가 이 한 줄이다."""
     v = build_plan_view(plan_path=_plan_file(tmp_path), today=TODAY)
-    assert any(t.startswith("오늘 0 / ") for t in _texts(v))
+    assert any(t.startswith("오늘 0강 · 이번 주") for t in _texts(v))
 
 
 def test_todays_share_moves_when_a_lecture_is_marked(tmp_path):
     v = build_plan_view(plan_path=_plan_file(tmp_path), today=TODAY)
     _cells(v)[2].on_click(None)
-    assert any(t.startswith("오늘 1 / ") for t in _texts(v))
+    assert any(t.startswith("오늘 1강 · 이번 주 1 /") for t in _texts(v))
 
 
 def test_being_behind_names_the_course_to_start_with(tmp_path):
@@ -217,12 +217,12 @@ def test_the_goal_can_be_moved_and_the_share_is_shared_again(tmp_path):
     """일정이 밀리면 목표일을 미룬다 — 하루치가 저절로 다시 나뉜다."""
     f = _plan_file(tmp_path)
     v = build_plan_view(plan_path=f, today=TODAY)
-    assert "하루 0.6강" in _head(v)
+    assert "주 4강" in _head(v)
     _field(v, "목표일").value = "2026-12-16"
     _button(v, "적용").on_click(None)
     assert sp.load_plan(f)["goal"] == "2026-12-16"
     assert "D-79" in _head(v)
-    assert "하루 0.4강" in _head(v)
+    assert "주 3강" in _head(v)
 
 
 def test_a_goal_that_is_not_a_date_is_refused(tmp_path):
@@ -254,8 +254,14 @@ def test_the_week_label_is_short():
 
 # --- 조각들 -----------------------------------------------------------------
 def test_the_course_line_names_what_is_left():
+    """한 과목의 하루치는 늘 1강이 안 된다 — 주 단위로 말한다."""
     row = {"course": "자료구조", "total": 15, "done": 3, "left": 12}
-    assert course_line(row, 49) == "3 / 15강 · 남은 12 · 하루 0.2강"
+    assert course_line(row, 49) == "3 / 15강 · 남은 12 · 주 2강"
+
+
+def test_the_course_line_drops_the_week_in_the_last_days():
+    row = {"course": "자료구조", "total": 15, "done": 3, "left": 12}
+    assert course_line(row, 5) == "3 / 15강 · 남은 12"
 
 
 def test_a_finished_course_is_congratulated():

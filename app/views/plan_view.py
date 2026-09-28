@@ -54,14 +54,19 @@ def drift_tone(plan, today=None) -> str:
 
 
 def course_line(row, days) -> str:
-    """과목 카드의 오른쪽 문구 — '3 / 15강 · 남은 12 · 하루 0.2강'."""
+    """과목 카드의 오른쪽 문구 — '3 / 15강 · 남은 12 · 주 2강'.
+
+    ⚠️ 과목 하나의 하루치는 늘 1강이 안 된다. '하루 0.2강' 은 현실에 없는
+       단위라 계획을 세울 수가 없다 — 주 단위로 말한다.
+    """
     row = row or {}
     body = f"{row.get('done', 0)} / {row.get('total', 0)}강"
     left = int(row.get("left") or 0)
     if not left:
         return f"{body} · 다 봤습니다"
-    need = sp.course_need(row, days)
-    return f"{body} · 남은 {left} · 하루 {sp.num_text(need)}강"
+    if int(days or 0) < 7:                  # 마지막 한 주는 주 단위가 뜻을 잃는다
+        return f"{body} · 남은 {left}"
+    return f"{body} · 남은 {left} · 주 {sp.course_week(row, days)}강"
 
 
 def bar_height(n, top) -> float:

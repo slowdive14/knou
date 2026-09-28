@@ -17,11 +17,12 @@ LMS 의 '이수' 는 이 프로그램이 영상을 돌려 채운 것이라, 내�
   - course_rows(plan)          : 과목마다 몇 강 봤고 몇 강 남았는지
   - totals(plan)               : 전체 합계
   - days_left(goal, today)     : 오늘을 넣어 남은 날
-  - daily_need(left, days)     : 하루에 몇 강
+  - weekly_goal(left, days)    : 일주일에 몇 강(정수) — 0.3강짜리 강의는 없다
+  - day_text(left, days)       : '하루 1~2강'
   - expected_done(plan, today) : 균등하게 갔다면 오늘까지 봤어야 할 양
   - drift(plan, today)         : 그보다 앞섰는지 뒤처졌는지
   - pace_text / status_line    : 화면 머리말
-  - today_line(plan, today)    : '오늘 0 / 1.3강 · 이번 주 1 / 9.1강'
+  - today_line(plan, today)    : '오늘 0강 · 이번 주 1 / 10강'
   - toggle(plan, 과목, 번호)   : 한 강을 봤다/안 봤다로 뒤집는다
   - weekly(plan)               : 주마다 몇 강 봤는지(막대 그래프용)
 
@@ -139,20 +140,32 @@ def days_left(goal, today=None) -> int:
     return max(0, (g - _today(today)).days + 1)
 
 
-def daily_need(left, days) -> float:
-    """하루에 몇 강 — 남은 날이 없으면 남은 강의를 그대로 돌려준다."""
-    left = max(0, int(left or 0))
-    days = int(days or 0)
+def weekly_goal(left, days) -> int:
+    """일주일에 몇 강 — **정수**로.
+
+    강의는 쪼갤 수 없다. '하루 0.3강' 같은 단위는 현실에 없어서, 과목마다는
+    주 단위로 말한다(주 2강이면 계획을 세울 수 있다). 모자라지 않게 올린다.
+    """
+    left, days = max(0, int(left or 0)), int(days or 0)
     if not left:
-        return 0.0
+        return 0
     if days <= 0:
-        return float(left)
-    return round(left / days, 1)
+        return left
+    return min(left, -(-left * 7 // days))      # 올림
 
 
-def weekly_need(left, days) -> float:
-    """일주일에 몇 강 — 하루 1.3강보다 주 9강이 와닿는 사람도 있다."""
-    return round(daily_need(left, days) * 7, 1)
+def day_text(left, days) -> str:
+    """'하루 1~2강' — 하루치가 소수로 떨어질 때 정수 범위로 말한다.
+
+    64강을 49일에 나누면 1.3강이지만, 실제로는 하루 1강 듣는 날과 2강 듣는
+    날이 섞인다. 그것을 그대로 적는다.
+    """
+    left, days = max(0, int(left or 0)), int(days or 0)
+    if days <= 0:
+        return f"하루 {left}강"
+    lo = left // days
+    hi = -(-left // days)                       # 올림
+    return f"하루 {lo}강" if lo == hi else f"하루 {lo}~{hi}강"
 
 
 def expected_done(plan, today=None) -> float:
@@ -180,13 +193,15 @@ def drift(plan, today=None) -> float:
 
 
 def num_text(x) -> str:
-    """1.0 → '1', 1.3 → '1.3' — 화면에 '1.0강' 이라고 적지 않게."""
-    x = float(x or 0)
-    return str(int(x)) if abs(x - round(x)) < 0.05 else f"{x:.1f}"
+    """강의 수를 적는 법 — **정수**로. 0.3강짜리 강의는 없다."""
+    return str(int(round(float(x or 0))))
 
 
 def pace_text(plan, today=None) -> str:
-    """'하루 1.3강 · 주 9.1강' — 남은 것이 없으면 다 봤다고 말한다."""
+    """'하루 1~2강 · 주 10강' — 남은 것이 없으면 다 봤다고 말한다.
+
+    마지막 한 주가 남으면 주 단위가 뜻을 잃는다 — 그때는 남은 날로 말한다.
+    """
     t = totals(plan)
     if not t["total"]:
         return "과목이 없습니다"
@@ -195,8 +210,11 @@ def pace_text(plan, today=None) -> str:
     d = days_left((plan or {}).get("goal"), today)
     if d <= 0:
         return f"목표일이 지났습니다 · {t['left']}강 남음"
-    return (f"하루 {num_text(daily_need(t['left'], d))}강 · "
-            f"주 {num_text(weekly_need(t['left'], d))}강")
+    if d < 7:
+        return f"남은 {d}일에 {t['left']}강"
+    week = f"주 {weekly_goal(t['left'], d)}강"
+    # 하루 한 강도 안 되는 양을 '하루 0~1강' 이라 적으면 읽을 것이 없다.
+    return week if t["left"] < d else f"{day_text(t['left'], d)} · {week}"
 
 
 def drift_text(plan, today=None) -> str:
@@ -247,9 +265,13 @@ def week_done(plan, today=None) -> int:
 
 
 def today_line(plan, today=None) -> str:
-    """'오늘 0 / 1.3강 · 이번 주 1 / 9.1강' — 오늘 뭘 해야 하는지.
+    """'오늘 0강 · 이번 주 1 / 10강' — 오늘 뭘 해야 하는지.
 
     트래커를 여는 이유가 이 한 줄이다. 남은 것이 없으면 빈 문자열.
+
+    ⚠️ 오늘 몫은 **목표를 붙이지 않는다.** 하루치가 1.3강처럼 떨어지면 오늘의
+       목표가 1강인지 2강인지 말할 수 없다. 목표는 주로 잡고, 오늘은 얼마나
+       했는지만 센다.
     """
     t = totals(plan)
     if not t["total"] or not t["left"]:
@@ -257,15 +279,14 @@ def today_line(plan, today=None) -> str:
     d = days_left((plan or {}).get("goal"), today)
     if d <= 0:
         return ""
-    return (f"오늘 {today_done(plan, today)} / "
-            f"{num_text(daily_need(t['left'], d))}강 · "
+    return (f"오늘 {today_done(plan, today)}강 · "
             f"이번 주 {week_done(plan, today)} / "
-            f"{num_text(weekly_need(t['left'], d))}강")
+            f"{weekly_goal(t['left'], d)}강")
 
 
-def course_need(row, days) -> float:
-    """이 과목만 따로 봤을 때 하루 몇 강 — 뒤처진 과목을 가려낸다."""
-    return daily_need((row or {}).get("left"), days)
+def course_week(row, days) -> int:
+    """이 과목만 따로 봤을 때 일주일에 몇 강 — 뒤처진 과목을 가려낸다."""
+    return weekly_goal((row or {}).get("left"), days)
 
 
 def worst_course(plan, today=None):

@@ -84,23 +84,32 @@ def test_a_passed_deadline_leaves_no_days():
     assert sp.days_left("엉뚱한날", TODAY) == 0
 
 
-# --- 하루치 -----------------------------------------------------------------
-def test_the_daily_need_divides_what_is_left():
-    assert sp.daily_need(27, 49) == 0.6
-    assert sp.daily_need(64, 50) == 1.3
+# --- 한 주에 몇 강 -----------------------------------------------------------
+# 강의는 쪼갤 수 없다. '하루 0.3강' 은 현실에 없는 단위라 계획을 세울 수 없다.
+def test_the_weekly_goal_is_a_whole_number():
+    assert sp.weekly_goal(64, 49) == 10          # 9.14 → 모자라지 않게 올린다
+    assert sp.weekly_goal(14, 49) == 2
+    assert sp.weekly_goal(27, 49) == 4
 
 
-def test_nothing_left_needs_nothing():
-    assert sp.daily_need(0, 49) == 0.0
+def test_the_weekly_goal_never_asks_for_more_than_is_left():
+    """3강 남았는데 '주 7강' 이라고 하면 말이 안 된다."""
+    assert sp.weekly_goal(3, 2) == 3
+
+
+def test_nothing_left_asks_for_nothing():
+    assert sp.weekly_goal(0, 49) == 0
 
 
 def test_with_no_days_left_everything_is_due_now():
-    """목표일이 지났으면 남은 것이 그대로 오늘 몫이다."""
-    assert sp.daily_need(5, 0) == 5.0
+    assert sp.weekly_goal(5, 0) == 5
 
 
-def test_the_weekly_need_is_the_daily_need_times_seven():
-    assert sp.weekly_need(64, 50) == 9.1
+def test_the_day_text_gives_a_whole_range():
+    """64강을 49일에 나누면 하루 1강 듣는 날과 2강 듣는 날이 섞인다."""
+    assert sp.day_text(64, 49) == "하루 1~2강"
+    assert sp.day_text(98, 49) == "하루 2강"      # 꼭 떨어지면 범위가 없다
+    assert sp.day_text(49, 49) == "하루 1강"
 
 
 # --- 계획보다 앞섰나 뒤처졌나 ------------------------------------------------
@@ -140,13 +149,28 @@ def test_the_status_line_says_the_days_the_count_and_the_pace():
     line = sp.status_line(_plan(), TODAY)
     assert "D-49" in line
     assert "3 / 30강(10%)" in line
-    assert "하루 0.6강" in line
+    assert "주 4강" in line
 
 
-def test_a_round_number_is_not_written_with_a_decimal():
-    """'하루 1.0강' 은 읽기 나쁘다."""
+def test_a_pace_under_one_a_day_is_told_by_the_week_only():
+    """'하루 0~1강' 이라고 적으면 읽을 것이 없다."""
+    assert sp.pace_text(_plan(), TODAY) == "주 4강"
+
+
+def test_a_heavy_pace_names_both():
+    """남은 강의가 남은 날보다 많아지면 하루치도 함께 말한다."""
+    assert sp.pace_text(_plan(), date(2026, 11, 1)) == "하루 1~2강 · 주 12강"
+
+
+def test_the_last_week_is_counted_in_days():
+    """마지막 한 주가 남으면 주 단위가 뜻을 잃는다."""
+    assert sp.pace_text(_plan(), date(2026, 11, 12)) == "남은 5일에 27강"
+
+
+def test_a_lecture_count_is_always_a_whole_number():
+    """0.3강짜리 강의는 없다."""
     assert sp.num_text(1.0) == "1"
-    assert sp.num_text(1.3) == "1.3"
+    assert sp.num_text(13.3) == "13"
     assert sp.num_text(0) == "0"
 
 
@@ -316,9 +340,12 @@ def test_this_week_counts_from_monday():
 
 def test_the_today_line_says_what_is_left_for_today():
     p = _plan(watched={"자료구조": {"1": "2026-09-29"}})
-    line = sp.today_line(p, TODAY)
-    assert line.startswith("오늘 1 / ")
-    assert "이번 주 1 / " in line
+    assert sp.today_line(p, TODAY) == "오늘 1강 · 이번 주 1 / 5강"
+
+
+def test_todays_count_carries_no_target():
+    """하루치가 1.3강이면 오늘 목표가 1강인지 2강인지 말할 수 없다."""
+    assert "오늘 0 /" not in sp.today_line(_plan(), TODAY)
 
 
 def test_the_today_line_is_quiet_once_everything_is_done():
