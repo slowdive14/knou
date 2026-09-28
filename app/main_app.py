@@ -24,6 +24,7 @@ except Exception:
 
 import flet as ft  # noqa: E402
 
+from app.views.plan_view import build_plan_view  # noqa: E402
 from app.views.quiz_view import build_quiz_view  # noqa: E402
 from app.views.run_view import build_run_view  # noqa: E402
 from app.views.schedule_view import build_schedule_view  # noqa: E402
@@ -64,12 +65,14 @@ NAV = [
     ("홈", ft.Icons.HOME),
     ("실행", ft.Icons.PLAY_CIRCLE),
     ("현황", ft.Icons.DASHBOARD_OUTLINED),
+    ("진도", ft.Icons.TRENDING_UP),
     ("퀴즈", ft.Icons.QUIZ),
     ("예약", ft.Icons.SCHEDULE),
     ("설정", ft.Icons.SETTINGS),
 ]
 # 네비 인덱스 — 코드에서 이름으로 부르기 위해
-NAV_HOME, NAV_RUN, NAV_STATUS, NAV_QUIZ, NAV_SCHEDULE, NAV_SETTINGS = range(6)
+(NAV_HOME, NAV_RUN, NAV_STATUS, NAV_PLAN, NAV_QUIZ, NAV_SCHEDULE,
+ NAV_SETTINGS) = range(7)
 
 
 def _placeholder(title: str, note: str) -> ft.Control:
@@ -94,6 +97,8 @@ def _build_view(index: int, page: ft.Page, go=None, quiz_start=None,
     if index == NAV_STATUS:
         return build_status_view(page, on_open_quiz=go, on_open_pdf=open_pdf,
                                  on_fetch_doc=fetch_doc)
+    if index == NAV_PLAN:
+        return build_plan_view(page)
     if index == NAV_QUIZ:
         return build_quiz_view(page, initial=quiz_start)
     if index == 0:
@@ -103,6 +108,7 @@ def _build_view(index: int, page: ft.Page, go=None, quiz_start=None,
             "· 실행: 강의를 골라 예습 노트 생성 / 영상 이수\n"
             "· 현황: 과목·차시별로 뭐가 만들어졌는지 한눈에 "
             "(노트는 옵시디언, 강의록은 앱 안에서 열림)\n"
+            "· 진도: 목표일까지 남은 강의와 하루치 (들은 강을 눌러 표시)\n"
             "· 퀴즈: 모아둔 돌발퀴즈·형성평가 문항 풀어보기\n"
             "· 예약: 정해진 시각에 자동 실행\n"
             "· 설정: 아이디·비밀번호·Gemini 키·볼트 경로 입력",
