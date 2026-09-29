@@ -36,6 +36,20 @@ def _log(m):
     print(m, flush=True)
 
 
+def gemini_client():
+    """Gemini 클라이언트 — 글줄 없는 시험지를 읽을 때만 쓴다(없으면 None).
+
+    ⚠️ API 키는 여기서만 읽고 어디에도 적지 않는다.
+    """
+    try:
+        from google import genai
+
+        from config import load_config
+        return genai.Client(api_key=load_config().gemini_api_key)
+    except Exception:  # noqa: BLE001 - 키가 없어도 글줄 있는 시험지는 된다
+        return None
+
+
 def exam_banks(quiz_dir: Path, course=None) -> list:
     """기출 은행들 — [(경로, 데이터)]."""
     out = []
@@ -61,16 +75,34 @@ def bank_key(bank) -> tuple:
         return (0, 0)
 
 
-def usable_pdfs(work: Path, course: str) -> dict:
-    """{(연도, 학기): PDF 경로} — 좌표로 다룰 수 있는 시험지만."""
+def usable_pdfs(work: Path, course: str, client=None, on_event=None) -> dict:
+    """{(연도, 학기): (PDF 경로, 읽는 길)} — 그 과목의 시험지들.
+
+    읽는 길은 'text'(글줄로 좌표를 찾는다) 또는 'ai'(지면을 보여 주고
+    묻는다)다. client 가 없으면 글줄이 있는 시험지만 돌려준다.
+    """
+    log = on_event or (lambda _m: None)
     out = {}
     for p in ef.find_pdfs(work, course):
-        if not ef.has_text_layer(p):
+        if ef.has_text_layer(p):
+            key, how = ef.pdf_key(p), "text"
+        elif client is not None:
+            log(f"   {p.name} — 글줄이 없어 지면을 보여 주고 묻습니다")
+            key, how = ef.ai_pdf_key(client, p, log), "ai"
+        else:
             continue
-        key = ef.pdf_key(p)
         if key:
-            out.setdefault(key, p)
+            out.setdefault(key, (p, how))
+        else:
+            log(f"   {p.name} — 학년도·학기를 읽지 못했습니다")
     return out
+
+
+def figures_of(pdf: Path, how: str, client=None, on_event=None) -> dict:
+    """그 시험지의 {문항번호: (쪽, 네모)} — 읽는 길에 맞는 방법으로."""
+    if how == "ai":
+        return ef.ai_pdf_figures(client, pdf, on_event)
+    return ef.pdf_figures(pdf)
 
 
 BODY_CHARS = 20     # 첫 줄 뒤로 이만큼 적혀 있으면 자료가 이미 글로 들어왔다
@@ -148,6 +180,8 @@ def main(argv=None) -> int:
                     help="이미 그림이 있는 문항도 다시")
     ap.add_argument("--redo", action="store_true",
                     help="붙여 둔 그림을 모두 떼고 처음부터 다시 판정")
+    ap.add_argument("--no-ai", action="store_true",
+                    help="글줄 없는 시험지를 AI 에게 묻지 않는다")
     a = ap.parse_args(argv)
     if a.redo:
         a.force = True
@@ -163,14 +197,18 @@ def main(argv=None) -> int:
         _log("■ 기출 은행이 없습니다.")
         return 1
 
+    client = None if a.no_ai else gemini_client()
     courses = sorted({str(d.get("course") or "") for _p, d in banks})
     pdfs = {}
     for c in courses:
-        got = usable_pdfs(work, c)
+        _log(f"■ {c} — 시험지를 훑습니다")
+        got = usable_pdfs(work, c, client, _log)
         pdfs[c] = got
+        by_ai = sum(1 for _p, how in got.values() if how == "ai")
         skipped = len(ef.find_pdfs(work, c)) - len(got)
-        _log(f"■ {c} — 쓸 수 있는 시험지 {len(got)}벌"
-             + (f" (글자가 벡터라 못 쓰는 것 {skipped}벌)" if skipped else ""))
+        _log(f"   쓸 수 있는 시험지 {len(got)}벌"
+             + (f"(그중 {by_ai}벌은 지면을 보여 주고 읽습니다)" if by_ai else "")
+             + (f" · 못 쓰는 것 {skipped}벌" if skipped else ""))
 
     total = 0
     for p, bank in banks:
@@ -181,14 +219,15 @@ def main(argv=None) -> int:
                 p.write_text(json.dumps(bank, ensure_ascii=False, indent=1),
                              encoding="utf-8")
                 _log(f"   {bank.get('name')} — 붙여 둔 그림 {off}개를 뗐습니다")
-        pdf = pdfs.get(course, {}).get(bank_key(bank))
+        got = pdfs.get(course, {}).get(bank_key(bank))
         left = sum(1 for q in bank.get("questions") or []
                    if not q.get(qi.INTRO_FIELD))
-        if pdf is None:
+        if got is None:
             _log(f"   {bank.get('name')} — 맞는 시험지가 없습니다"
                  f"(그림 없는 문항 {left}개)")
             continue
-        figures = ef.pdf_figures(pdf)
+        pdf, how = got
+        figures = figures_of(pdf, how, client, _log)
         if a.dry:
             hit = sum(1 for q in bank.get("questions") or []
                       if ef.q_no(q.get("qid")) in figures

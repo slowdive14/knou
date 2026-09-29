@@ -133,3 +133,25 @@ def test_stripping_takes_every_figure_off():
 
 def test_stripping_an_empty_bank_is_not_an_error():
     assert fx.strip_figures({}) == 0
+
+
+# --- 어느 길로 읽을까 -------------------------------------------------------
+# 글줄이 있으면 좌표로, 없으면 지면을 보여 주고 묻는다.
+def test_a_text_sheet_is_read_by_its_coordinates(monkeypatch, tmp_path):
+    called = {}
+    monkeypatch.setattr(fx.ef, "pdf_figures", lambda p: called.setdefault(
+        "text", True) or {7: (0, (1, 1, 50, 50))})
+    monkeypatch.setattr(fx.ef, "ai_pdf_figures",
+                        lambda *a, **k: called.setdefault("ai", True) or {})
+    got = fx.figures_of(tmp_path / "s.pdf", "text")
+    assert got and "text" in called and "ai" not in called
+
+
+def test_a_sheet_without_text_is_shown_to_the_model(monkeypatch, tmp_path):
+    called = {}
+    monkeypatch.setattr(fx.ef, "pdf_figures",
+                        lambda p: called.setdefault("text", True) or {})
+    monkeypatch.setattr(fx.ef, "ai_pdf_figures", lambda *a, **k: (
+        called.setdefault("ai", True) or {7: (0, (1, 1, 50, 50))}))
+    got = fx.figures_of(tmp_path / "s.pdf", "ai", client=object())
+    assert got and "ai" in called and "text" not in called

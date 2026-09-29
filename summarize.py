@@ -60,6 +60,7 @@ THINKING_BUDGET = 8192      # thinking 상한(0=비활성). 본문 예산을 남
 # 붐빌 때 다음 모델로 넘어가기 전에 쉬는 시간(초). 사람이 화면 앞에서
 # 기다리는 자리라 길게 끌지 않는다.
 RETRY_WAIT = 1.5
+ROUNDS = 2          # 모델 차례를 몇 바퀴 돌지(503 은 몇 초 뒤면 풀린다)
 
 # 확장자 → MIME (google-genai가 한글 경로 헤더 인코딩에 실패하므로
 # 파일 객체 업로드 시 명시적으로 넘긴다)
@@ -352,28 +353,34 @@ def model_chain(model=None) -> list:
 
 
 def generate(client, contents, config=None, model=None, on_event=None,
-             wait: float = RETRY_WAIT):
+             wait: float = RETRY_WAIT, rounds: int = ROUNDS):
     """모델을 불러 응답을 받는다 — 붐비면 다음 모델로 넘어간다.
 
     ⚠️ 한 모델에 매달리지 않는 것이 요점이다. 무료 등급에서 503 은 흔한
        일이고, 그때마다 '설명을 만들지 못했습니다' 를 보여 주면 쓸 수가 없다.
 
+    ⚠️ 모델 차례를 **여러 바퀴** 돈다. 한 바퀴만 돌면 다 같이 붐비는 순간에
+       그냥 포기하게 되는데, 503 은 몇 초 뒤면 풀리는 일이 많다. 바퀴를
+       돌 때마다 조금 더 오래 기다린다.
+
     모두 실패하면 마지막 오류를 그대로 올린다(부르는 쪽이 이미 감싸고 있다).
     """
     chain = model_chain(model)
+    plan = [(r, m) for r in range(max(1, int(rounds))) for m in chain]
     last = None
-    for i, name in enumerate(chain):
+    for i, (r, name) in enumerate(plan):
         try:
             return client.models.generate_content(
                 model=name, contents=contents, config=config)
         except Exception as e:  # noqa: BLE001 - 다음 모델로 넘어가 본다
             last = e
-            if not busy_error(e) or i == len(chain) - 1:
+            if not busy_error(e) or i == len(plan) - 1:
                 raise
+            nxt = plan[i + 1][1]
             if on_event:
-                on_event(f"   {name} 이 붐빕니다 → {chain[i + 1]} 로 바꿔 봅니다")
+                on_event(f"   {name} 이 붐빕니다 → {nxt} 로 바꿔 봅니다")
             if wait:
-                time.sleep(float(wait))
+                time.sleep(float(wait) * (r + 1))
     raise last if last else RuntimeError("부를 모델이 없습니다")
 
 

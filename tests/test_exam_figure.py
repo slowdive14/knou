@@ -223,3 +223,57 @@ def test_sheets_are_found_by_the_course_name(tmp_path):
     got = [p.name for p in ef.find_pdfs(tmp_path, "컴퓨터구조")]
     assert got == ["238-컴퓨터구조-3학년.pdf"]
     assert ef.find_pdfs(tmp_path / "없다", "컴퓨터구조") == []
+
+
+# --- 글줄 없는 시험지 — 지면을 보여 주고 물어본다 ----------------------------
+# 한글 배포용 문서를 '인쇄' 로 변환하면 글자까지 벡터가 되어 좌표로는
+# 문항 경계를 찾을 수 없다.
+def test_a_single_question_box_is_read():
+    got = ef.parse_boxes('[{"no": 11, "box": [100, 50, 300, 400]}]')
+    assert got == [{"nos": [11], "box": [100.0, 50.0, 300.0, 400.0]}]
+
+
+def test_a_shared_range_becomes_every_question_in_it():
+    got = ef.parse_boxes('[{"lo": 7, "hi": 9, "box": [10, 20, 30, 40]}]')
+    assert got[0]["nos"] == [7, 8, 9]
+
+
+def test_a_code_fence_around_the_answer_is_peeled():
+    got = ef.parse_boxes('```json\n[{"no": 3, "box": [1, 2, 3, 4]}]\n```')
+    assert got[0]["nos"] == [3]
+
+
+def test_junk_in_the_answer_is_dropped():
+    raw = ('[{"no": 3}, {"box": [1,2,3]}, "글자", '
+           '{"no": "몰라", "box": [1,2,3,4]}, '
+           '{"no": 120, "box": [1,2,3,4]}]')
+    assert ef.parse_boxes(raw) == []
+
+
+def test_an_unreadable_answer_is_not_an_error():
+    assert ef.parse_boxes("죄송합니다, 찾지 못했습니다") == []
+    assert ef.parse_boxes("[]") == []
+    assert ef.parse_boxes(None) == []
+
+
+def test_the_normalised_box_is_scaled_to_the_page():
+    """모델은 쪽을 0~1000 으로 본다 — 실제 크기를 곱해야 자를 수 있다."""
+    assert ef.scale_box([0, 0, 500, 250], 800, 1000) == (0.0, 0.0, 200.0,
+                                                         500.0)
+
+
+def test_a_flipped_box_is_put_right():
+    """위아래가 뒤집혀 와도 자를 수 있어야 한다."""
+    assert ef.scale_box([500, 250, 0, 0], 800, 1000) == (0.0, 0.0, 200.0,
+                                                         500.0)
+
+
+def test_a_broken_box_gives_nothing():
+    assert ef.scale_box([1, 2, 3], 800, 1000) is None
+    assert ef.scale_box(None, 800, 1000) is None
+
+
+def test_asking_without_a_client_gives_nothing(tmp_path):
+    """API 키가 없어도 글줄 있는 시험지는 계속 된다."""
+    assert ef.ai_pdf_figures(None, _sheet(tmp_path / "s.pdf")) == {}
+    assert ef.ai_pdf_key(None, _sheet(tmp_path / "s.pdf")) is None

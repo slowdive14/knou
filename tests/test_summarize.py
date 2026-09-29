@@ -373,3 +373,31 @@ def test_the_model_can_be_set_by_the_environment(monkeypatch):
     """모델이 또 막히면 .env 의 GEMINI_MODEL 로 곧바로 바꿀 수 있어야 한다."""
     monkeypatch.setenv("GEMINI_MODEL", "고른모델")
     assert summarize._env_model() == "고른모델"
+
+
+def test_the_chain_is_walked_more_than_once():
+    """다 같이 붐비는 순간에 포기하면 안 된다 — 503 은 몇 초 뒤면 풀린다."""
+    chain = summarize.model_chain()
+    busy = RuntimeError("503 UNAVAILABLE")
+    c = _Models({m: busy for m in chain})
+
+    calls = {"n": 0}
+    real = c.generate_content
+
+    def flaky(model=None, contents=None, config=None):
+        calls["n"] += 1
+        if calls["n"] <= len(chain):      # 첫 바퀴는 모두 붐빈다
+            return real(model=model, contents=contents, config=config)
+        return type("R", (), {"text": "ok"})()
+
+    c.generate_content = flaky
+    assert summarize.generate(c, ["묻는다"], wait=0).text == "ok"
+    assert calls["n"] == len(chain) + 1
+
+
+def test_one_round_can_be_asked_for():
+    chain = summarize.model_chain()
+    c = _Models({m: RuntimeError("503 UNAVAILABLE") for m in chain})
+    with pytest.raises(RuntimeError, match="503"):
+        summarize.generate(c, ["묻는다"], wait=0, rounds=1)
+    assert len(c.tried) == len(chain)

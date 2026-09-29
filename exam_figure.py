@@ -7,9 +7,10 @@
 같은 통로(quiz_intro 의 intro_image)로 붙인다. 화면도 HTML 도 이미 그 칸을
 그리므로 붙이기만 하면 된다.
 
-⚠️ 글자까지 벡터로 인쇄된 PDF 에는 통하지 않는다. 한글 배포용 문서를 '인쇄'
-   로 변환한 시험지가 그렇다(글줄이 없어 문항 경계를 찾을 수 없다).
-   has_text_layer() 로 미리 가려낸다.
+글줄이 없는 시험지도 있다. 한글 배포용 문서를 '인쇄' 로 변환하면 글자까지
+벡터가 되어(도형이 30만 개) 문항 경계를 좌표로 찾을 수 없다. 그럴 때는 지면을
+**그림으로 보여 주고** 자료의 자리를 물어본다(ai_ 로 시작하는 함수들).
+has_text_layer() 로 어느 길을 쓸지 가른다.
 
 순수 로직(단위테스트 대상):
   - head_no(text)        : '7. 직치 주소지정…' → 7
@@ -26,6 +27,12 @@ IO(PyMuPDF):
   - page_figures(page)   : {문항번호: 그림 네모}
   - pdf_figures(pdf)     : {문항번호: (쪽, 네모)}
   - render(pdf, 쪽, 네모): PNG bytes
+
+글줄이 없는 시험지용(지면을 보여 주고 묻는다):
+  - parse_boxes(raw)     : 모델 응답 → [{nos, box}]
+  - scale_box(box, w, h) : 0~1000 좌표 → 쪽 좌표
+  - ai_pdf_figures(client, pdf) : {문항번호: (쪽, 네모)}
+  - ai_pdf_key(client, pdf)     : (연도, 학기)
 """
 from __future__ import annotations
 
@@ -309,6 +316,177 @@ def render(pdf, page_no, box, zoom: float = ZOOM, pad: float = PAD) -> bytes:
         return b""
     finally:
         doc.close()
+
+
+# ---------------------------------------------------------------------------
+# 글줄이 없는 시험지 — 지면을 보여 주고 물어본다
+# ---------------------------------------------------------------------------
+# 한글 배포용 문서를 '인쇄' 로 변환한 PDF 는 글자까지 벡터라(도형이 30만 개)
+# 문항 경계를 좌표로 찾을 수 없다. 그럴 때만 쓰는 길이다.
+FIGURE_PROMPT = """이것은 한국방송통신대학교 기말시험 문제지 한 쪽이다(보통 2단 조판).
+
+이 쪽에 그려진 **시각 자료를 하나도 빠짐없이** 찾아라. 시각 자료란 글자만
+옮겨 적어서는 문제를 풀 수 없는 것이다: 그림·블록도·회로도·표·상자에 담긴
+프로그램 코드·테두리를 두른 식.
+
+**특히 놓치기 쉬운 것 — 여러 문항이 함께 쓰는 지문의 자료다.**
+'※ (7~9) 아래 그림은 …' 처럼 범위가 적힌 안내문 아래에 놓인 그림이나 표는
+그 범위의 모든 문항에 딸린 것이다. 반드시 찾아서 lo·hi 로 적어라.
+
+자료마다 이렇게 적는다:
+  · 한 문항의 것   : {{"no": 11, "box": [y0, x0, y1, x1]}}
+  · 여러 문항의 것 : {{"lo": 7, "hi": 9, "box": [y0, x0, y1, x1]}}
+
+box 는 그 자료만 감싸는 네모다. 쪽 전체를 0~1000 으로 본 값으로,
+[위, 왼쪽, 아래, 오른쪽] 차례다. **문항 글과 보기(①②③④)는 빼라.**
+
+머리말(학과·학번·감독관 칸), 쪽 번호, 단 구분선, 과목 안내 상자는 넣지 마라.
+
+먼저 이 쪽의 문항 번호를 왼쪽 단 위에서 아래로, 이어서 오른쪽 단 위에서
+아래로 훑어보고, 각 문항에 딸린 자료가 있는지 하나씩 확인하라.
+
+JSON 배열만 출력하라. 없으면 [] 만 출력하라."""
+
+KEY_PROMPT = """이것은 한국방송통신대학교 기말시험 문제지의 첫 쪽이다.
+
+맨 위에 적힌 **학년도와 학기**를 읽어라. '2014학년도 2 학기' 처럼 적혀 있다.
+
+{"year": 2014, "term": 2} 형식의 JSON 만 출력하라. 읽을 수 없으면 {} 만."""
+
+AI_ZOOM = 2.0       # 지면을 몇 배로 그려 보여줄지(글자가 읽히는 정도)
+MAX_NO = 99         # 이보다 큰 번호는 문항 번호가 아니다
+
+
+def parse_boxes(raw) -> list:
+    """모델 응답 → [{"nos": [번호…], "box": [y0,x0,y1,x1]}] (못 읽으면 빈 목록).
+
+    0~1000 으로 정규화된 좌표를 그대로 담는다 — 쪽 크기를 곱하는 일은
+    scale_box 가 한다.
+    """
+    import json
+
+    s = str(raw or "").strip()
+    s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+    s = re.sub(r"\n?```$", "", s).strip()
+    try:
+        got = json.loads(s)
+    except ValueError:
+        return []
+    if not isinstance(got, list):
+        return []
+    out = []
+    for item in got:
+        if not isinstance(item, dict):
+            continue
+        box = item.get("box")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            box = [float(v) for v in box]
+        except (TypeError, ValueError):
+            continue
+        lo, hi = item.get("lo"), item.get("hi")
+        shared = lo is not None and hi is not None
+        try:
+            nos = (covers(int(lo), int(hi)) if shared
+                   else [int(item.get("no"))])
+        except (TypeError, ValueError):
+            continue
+        nos = [n for n in nos if 1 <= n <= MAX_NO]
+        if nos:
+            out.append({"nos": nos, "box": box})
+    return out
+
+
+def scale_box(box, width, height):
+    """0~1000 좌표 → 쪽 좌표 (x0, y0, x1, y1). 뒤집혀 있으면 바로잡는다."""
+    if not box or len(box) != 4:
+        return None
+    y0, x0, y1, x1 = [float(v) / 1000 for v in box]
+    x0, x1 = sorted((x0 * float(width), x1 * float(width)))
+    y0, y1 = sorted((y0 * float(height), y1 * float(height)))
+    return (x0, y0, x1, y1)
+
+
+def ai_page_figures(client, pdf, page_no, width, height,
+                    on_event=None) -> list:
+    """한 쪽을 보여 주고 시각 자료를 받는다 → [{"nos", "box"(쪽 좌표)}]."""
+    from google.genai import types
+
+    from pdf_render import render_page
+    from summarize import MAX_OUTPUT_TOKENS, _resp_text, generate
+
+    img = render_page(pdf, page_no, AI_ZOOM, fmt="png")
+    if not img:
+        return []
+    try:
+        resp = generate(
+            client,
+            [types.Part.from_bytes(data=img, mime_type="image/png"),
+             FIGURE_PROMPT],
+            on_event=on_event,
+            config=types.GenerateContentConfig(
+                max_output_tokens=MAX_OUTPUT_TOKENS))
+    except Exception as e:  # noqa: BLE001 - 한 쪽 실패가 전체를 막지 않게
+        if on_event:
+            on_event(f"   {page_no + 1}쪽을 읽지 못했습니다 — {str(e)[:70]}")
+        return []
+    out = []
+    for item in parse_boxes(_resp_text(resp)):
+        box = scale_box(item["box"], width, height)
+        if box and big_enough(box):
+            out.append({"nos": item["nos"], "box": box})
+    return out
+
+
+def ai_pdf_figures(client, pdf, on_event=None) -> dict:
+    """시험지 한 벌을 보여 주고 {문항번호: (쪽, 네모)} 를 받는다."""
+    fitz = _fitz()
+    if fitz is None or client is None or not Path(pdf).exists():
+        return {}
+    try:
+        doc = fitz.open(pdf)
+    except Exception:  # noqa: BLE001 - 손상 파일
+        return {}
+    out: dict[int, tuple] = {}
+    try:
+        for i in range(doc.page_count):
+            page = doc[i]
+            for item in ai_page_figures(client, pdf, i, page.rect.width,
+                                        page.rect.height, on_event):
+                for n in item["nos"]:
+                    out.setdefault(n, (i, item["box"]))
+        return out
+    finally:
+        doc.close()
+
+
+def ai_pdf_key(client, pdf, on_event=None):
+    """첫 쪽을 보여 주고 (연도, 학기)를 받는다 — 머리글을 글로 못 읽을 때."""
+    import json
+
+    from google.genai import types
+
+    from pdf_render import render_page
+    from summarize import _resp_text, generate
+
+    if client is None or not Path(pdf).exists():
+        return None
+    img = render_page(pdf, 0, AI_ZOOM, fmt="png")
+    if not img:
+        return None
+    try:
+        resp = generate(
+            client,
+            [types.Part.from_bytes(data=img, mime_type="image/png"),
+             KEY_PROMPT],
+            on_event=on_event,
+            config=types.GenerateContentConfig(max_output_tokens=2048))
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", _resp_text(resp).strip())
+        got = json.loads(re.sub(r"\n?```$", "", s).strip())
+        return (int(got["year"]), int(got["term"]))
+    except Exception:  # noqa: BLE001 - 못 읽으면 그 시험지는 건너뛴다
+        return None
 
 
 def find_pdfs(work_dir, course: str) -> list:
