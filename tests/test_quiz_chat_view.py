@@ -178,11 +178,21 @@ def test_the_answer_is_kept_in_the_bank(tmp_path, monkeypatch):
         {"role": "model", "text": "10 에 2 를 곱해서입니다."}]
 
 
-def test_a_stored_talk_shows_up_without_pressing_anything(tmp_path):
+def test_a_stored_talk_is_announced_on_the_card(tmp_path):
+    """오간 말이 있다는 것은 카드에서 바로 보여야 한다."""
     v = build_quiz_view(quiz_dir=_dir(tmp_path, _q(chat=[
         {"role": "user", "text": "왜 20 인가요?"},
         {"role": "model", "text": "10 에 2 를 곱해서입니다."}])))
     _reveal(v)
+    assert "물어본 것 2마디 — 옆에서 이어가기" in _text_buttons(v)
+
+
+def test_opening_the_panel_brings_the_stored_talk_back(tmp_path):
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q(chat=[
+        {"role": "user", "text": "왜 20 인가요?"},
+        {"role": "model", "text": "10 에 2 를 곱해서입니다."}])))
+    _reveal(v)
+    _text_buttons(v)["물어본 것 2마디 — 옆에서 이어가기"].on_click(None)
     said = _texts(v)
     assert "왜 20 인가요?" in said and "10 에 2 를 곱해서입니다." in said
     assert _fields(v), "이어서 물을 수 있어야 합니다"
@@ -293,3 +303,111 @@ def test_a_talk_from_a_gathered_view_lands_in_the_real_bank(tmp_path,
     got = [json.loads((d / f"{s}.json").read_text(encoding="utf-8"))
            ["questions"][0].get("chat") for s in (20191, 20192)]
     assert sum(1 for g in got if g) == 1, "한쪽 은행에만 남아야 합니다"
+
+
+# --- 오른쪽 붙박이 판 -------------------------------------------------------
+# 대화가 문항 아래로 쌓이면 문제를 보려고 위아래로 오르내리게 된다.
+def _panel(view):
+    """오른쪽 판(찾지 못하면 None)."""
+    for c in _walk(view):
+        if isinstance(c, ft.Container) and c.width == quiz_view.CHAT_WIDTH:
+            return c
+    return None
+
+
+def test_a_wide_window_uses_the_side_panel():
+    assert quiz_view.side_chat(1400)
+    assert not quiz_view.side_chat(900)
+
+
+def test_an_unknown_width_counts_as_wide():
+    """폭을 모르면(테스트·앱 밖) 넓은 것으로 본다."""
+    assert quiz_view.side_chat(None)
+    assert quiz_view.side_chat("몰라")
+
+
+def test_the_panel_head_names_the_question():
+    q = _q(question="즉치 주소지정방식과 직접 주소지정방식을 이용한다면?")
+    assert quiz_view.chat_head(q, 7).startswith("Q07 · 즉치 주소지정방식")
+
+
+def test_a_long_question_is_cut_in_the_head():
+    q = _q(question="가" * 200)
+    assert len(quiz_view.chat_head(q, 1)) < 90
+    assert quiz_view.chat_head(q, 1).endswith("…")
+
+
+def test_the_card_link_counts_what_was_said():
+    assert quiz_view.chat_link_text(_q()) == "이해가 안 되면 물어보기"
+    assert quiz_view.chat_link_text(_q(chat=[
+        {"role": "user", "text": "왜?"}])) == "물어본 것 1마디 — 옆에서 이어가기"
+
+
+def test_the_panel_is_closed_until_it_is_asked_for(tmp_path):
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q()))
+    _reveal(v)
+    assert _panel(v) is not None
+    assert not _panel(v).visible
+
+
+def test_pressing_the_link_opens_the_panel(tmp_path):
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q()))
+    _reveal(v)
+    _open_chat(v)
+    assert _panel(v).visible
+    assert any("Q01" in t for t in _texts(v))
+
+
+def test_the_talk_lives_in_the_panel_not_under_the_question(tmp_path,
+                                                            monkeypatch):
+    """문제는 제자리에 두고 대화만 옆으로 — 그게 이 판의 전부다."""
+    _wire(monkeypatch)
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q()))
+    _reveal(v)
+    _open_chat(v)
+    _type(v, "왜 20 인가요?")
+    _send(v)
+    panel_said = [str(t.value or "") for t in _walk(_panel(v))
+                  if isinstance(t, ft.Text)]
+    assert "왜 20 인가요?" in panel_said
+    assert "10 에 2 를 곱해서입니다." in panel_said
+
+
+def test_the_panel_can_be_closed(tmp_path):
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q()))
+    _reveal(v)
+    _open_chat(v)
+    _text_buttons(v)["옆에서 묻는 중 — 판 닫기"].on_click(None)
+    assert not _panel(v).visible
+
+
+def test_changing_the_mode_closes_the_panel(tmp_path):
+    """모드를 바꾸면 그 문항이 목록에서 사라질 수 있다 — 판도 닫는다."""
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q()))
+    _reveal(v)
+    _open_chat(v)
+    assert _panel(v).visible
+    for b in _walk(v):
+        if isinstance(b, ft.OutlinedButton) and str(b.content) == "오답만":
+            b.on_click(None)
+            break
+    assert not _panel(v).visible
+
+
+def test_shrinking_the_window_folds_the_panel_back(tmp_path):
+    """창을 줄이면 오른쪽 판이 문제를 밀어낸다 — 카드 안으로 되돌린다."""
+    class _Page:
+        width = 1400
+
+        def update(self):
+            pass
+
+    page = _Page()
+    v = build_quiz_view(page, quiz_dir=_dir(tmp_path, _q()))
+    _reveal(v)
+    _open_chat(v)
+    assert _panel(v).visible
+    page.width = 800
+    page.on_resize(None)
+    assert not _panel(v).visible
+    assert _fields(v), "좁은 창에서는 카드 안에서 물을 수 있어야 합니다"

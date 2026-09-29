@@ -43,6 +43,39 @@ EXPLAIN_BOX_HEIGHT = 320       # 상자 높이(px)
 # 지문 그림 폭(px) — 예습 노트에 넣는 그림과 같은 폭으로 맞춘다.
 INTRO_IMAGE_WIDTH = 695
 
+# 되묻기를 오른쪽에 붙박아 두는 판. 대화가 문항 아래로 쌓이면 문제를 보려고
+# 위아래로 오르내리게 된다 — 옆에 두면 문제를 보면서 물을 수 있다.
+CHAT_WIDTH = 380        # 판의 폭(px)
+CHAT_MIN_WIDTH = 1080   # 창이 이보다 좁으면 판을 접고 카드 안으로 되돌린다
+CHAT_HEAD_CHARS = 70    # 판 머리에 적는 물음 길이
+
+
+def side_chat(width) -> bool:
+    """되묻기를 오른쪽 판에 둘 만큼 창이 넓은가.
+
+    폭을 모르면(테스트·앱 밖) 넓은 것으로 본다 — 좁은 창은 예외 쪽이다.
+    """
+    try:
+        return float(width) >= CHAT_MIN_WIDTH
+    except (TypeError, ValueError):
+        return True
+
+
+def chat_head(q, num=None) -> str:
+    """판 머리에 적는 문항 한 줄 — 'Q07 · 즉치 주소지정방식과 …'."""
+    q = q or {}
+    text = " ".join(str(q.get("question") or "").split())
+    if len(text) > CHAT_HEAD_CHARS:
+        text = text[:CHAT_HEAD_CHARS].rstrip() + "…"
+    head = f"Q{int(num):02d}" if num else str(q.get("qid") or "")
+    return f"{head} · {text}" if text else head
+
+
+def chat_link_text(q) -> str:
+    """카드에 남는 되묻기 손잡이 문구 — 오간 말이 있으면 몇 마디인지 적는다."""
+    n = len(qc.chat_turns(q))
+    return f"물어본 것 {n}마디 — 옆에서 이어가기" if n else "이해가 안 되면 물어보기"
+
 
 def gemini_client():
     """Gemini 클라이언트 — 해설과 되묻기가 함께 쓴다(못 만들면 None).
@@ -228,10 +261,12 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
           "prog": qp.load(prog_path) if prog_path else {},
           "mode": "all", "order": [], "busy": None,
           "lec": 0, "virtual": {}, "importing": False,
-          # 되묻기 — 열어 둔 문항 · 치다 만 물음 · 답을 기다리는 문항.
+          # 되묻기 — 열어 둔 문항 · 치다 만 물음 · 답을 기다리는 문항 ·
+          # 오른쪽 판에 올려 둔 문항.
           # 카드를 다시 그릴 때마다 입력창이 새로 만들어지므로 치던 글은
           # 여기 담아 둬야 날아가지 않는다.
-          "chat_open": set(), "draft": {}, "asking": None}
+          "chat_open": set(), "draft": {}, "asking": None, "panel": None,
+          "wide": side_chat(getattr(page, "width", None))}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -243,11 +278,36 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     # 기출을 가져오는 동안에는 문제 대신 진행 기록을 보여준다(몇 분 걸린다).
     import_log = ft.ListView(expand=True, spacing=1, auto_scroll=True,
                              padding=10, visible=False)
+    # 되묻기를 담는 오른쪽 붙박이 판 — 문제를 보면서 물을 수 있게.
+    chat_title = ft.Text("", size=12, color=MUTE, expand=True,
+                         max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+    chat_body = ft.Column(spacing=10, expand=True,
+                          scroll=ft.ScrollMode.AUTO)
     picker = ft.Dropdown(label="강의", width=400, options=[])
     # 회차를 가로질러 '3강 문제만' 모아 보는 손잡이. 방금 들은 강의의 기출을
     # 곧바로 풀어보려면 회차별 은행을 25문항씩 훑어야 했다.
     lec_pick = ft.Dropdown(label="강 모아보기", width=150, options=[],
                            tooltip="기출·변형·강의 퀴즈에서 그 강의 문항만 모읍니다")
+
+    chat_panel = ft.Container(
+        content=ft.Column(
+            [ft.Row([ft.Text("물어보기", size=14,
+                             weight=ft.FontWeight.BOLD, color=MINT),
+                     ft.Container(expand=True),
+                     ft.IconButton(icon=ft.Icons.CLOSE, icon_size=17,
+                                   tooltip="판 닫기",
+                                   on_click=lambda e: _close_panel())],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+             chat_title,
+             ft.Divider(height=9, thickness=1,
+                        color=ft.Colors.with_opacity(.10,
+                                                     ft.Colors.ON_SURFACE)),
+             chat_body],
+            spacing=6, expand=True),
+        width=CHAT_WIDTH, visible=False, padding=14, border_radius=12,
+        bgcolor=MINT_BG,
+        border=ft.Border.all(1, ft.Colors.with_opacity(.10,
+                                                       ft.Colors.ON_SURFACE)))
 
     # 해설 생성은 워커 스레드에서 돈다. 거기서 page.update() 를 직접 부르면
     # 패치가 큐에만 쌓여 화면이 안 바뀐다(ui_async 설명 참고).
@@ -341,8 +401,34 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _wide() -> bool:
+        """되묻기를 오른쪽 판에 둘 만큼 창이 넓은가."""
+        return side_chat(getattr(page, "width", None))
+
+    def _open_panel(qid):
+        """오른쪽 판에 이 문항을 올린다."""
+        st["panel"] = qid
+        st["chat_open"].add(qid)
+        _render_cards()
+
+    def _close_panel(_e=None):
+        st["panel"] = None
+        _render_cards()
+
+    def _chat_link(q) -> ft.Control:
+        """카드에 남는 손잡이 — 누르면 오른쪽 판이 열린다."""
+        qid = q.get("qid")
+        on = st["panel"] == qid
+        press = _close_panel if on else (lambda _e, i=qid: _open_panel(i))
+        return ft.TextButton(
+            "옆에서 묻는 중 — 판 닫기" if on else chat_link_text(q),
+            icon=(ft.Icons.CHEVRON_RIGHT if on
+                  else ft.Icons.CHAT_BUBBLE_OUTLINE),
+            on_click=press,
+            style=ft.ButtonStyle(color=MUTE if on else MINT))
+
     def _chat_box(q) -> list:
-        """정답 상자 안의 되묻기 — 지난 대화와 입력 한 줄."""
+        """되묻기 — 지난 대화와 입력 한 줄(카드 안에도, 오른쪽 판에도 쓴다)."""
         qid = q.get("qid")
         turns = qc.chat_turns(q)
         if not turns and qid not in st["chat_open"]:
@@ -689,7 +775,12 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                 box.append(ft.Divider(height=9, thickness=1,
                                       color=ft.Colors.with_opacity(
                                           .10, ft.Colors.ON_SURFACE)))
-                box += _chat_box(q)
+                # 창이 넓으면 대화는 오른쪽 판으로 보낸다 — 문항 아래로 쌓이면
+                # 문제를 보려고 위아래로 오르내리게 된다.
+                if _wide():
+                    box.append(_chat_link(q))
+                else:
+                    box += _chat_box(q)
             items.append(ft.Container(
                 content=ft.Column(box, spacing=8, tight=True),
                 bgcolor=MINT_BG, padding=14, border_radius=10,
@@ -701,6 +792,27 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             bgcolor=ft.Colors.with_opacity(.03, ft.Colors.ON_SURFACE),
             border=ft.Border.all(1, ft.Colors.with_opacity(.08,
                                                            ft.Colors.ON_SURFACE)))
+
+    def _render_panel():
+        """오른쪽 판 — 올려 둔 문항의 물음과 대화만 담는다.
+
+        해설은 카드에 그대로 둔다. 여기까지 옮기면 판이 꽉 차서 정작 대화가
+        보이지 않는다.
+        """
+        qs = _questions()
+        pos = {str(q.get("qid")): i for i, q in enumerate(qs, start=1)}
+        qid = st["panel"]
+        q = next((x for x in qs if str(x.get("qid")) == str(qid)), None)
+        # 모드나 모아보기를 바꾸면 그 문항이 목록에서 사라진다 — 판도 닫는다.
+        if q is None or not _wide():
+            st["panel"] = None
+            chat_panel.visible = False
+            chat_body.controls.clear()
+            return
+        chat_panel.visible = True
+        chat_title.value = chat_head(q, pos.get(str(qid)))
+        chat_body.controls.clear()
+        chat_body.controls.extend(_chat_box(q))
 
     def _render_cards():
         cards.controls.clear()
@@ -718,6 +830,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             cards.controls.append(ft.Text(msg, color=MUTE))
         for i, q in enumerate(qs, start=1):
             cards.controls.append(_card(i, q))
+        _render_panel()
         _safe_update()
 
     def _lec_options() -> list:
@@ -851,6 +964,23 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     )
 
     _load_bank(st["idx"])
+    def _on_resize(e=None):
+        """창 폭이 기준을 넘나들 때만 다시 그린다(리사이즈마다 통째로 X).
+
+        창을 줄이면 오른쪽 판이 문제를 밀어내므로 카드 안으로 되돌려야 한다.
+        """
+        w = getattr(e, "width", None) or getattr(page, "width", None)
+        now = side_chat(w)
+        if now != st["wide"]:
+            st["wide"] = now
+            _render_cards()
+
+    if page is not None:
+        try:
+            page.on_resize = _on_resize
+        except Exception:  # noqa: BLE001 - 창 크기를 못 봐도 화면은 돈다
+            pass
+
     return ft.Column(
         [
             title, sub,
@@ -860,7 +990,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                    vertical_alignment=ft.CrossAxisAlignment.END, spacing=14,
                    wrap=True),
             bar, tools, ft.Divider(height=1),
-            ft.Stack([cards, import_log], expand=True),
+            ft.Row([ft.Stack([cards, import_log], expand=True), chat_panel],
+                   spacing=14, expand=True,
+                   vertical_alignment=ft.CrossAxisAlignment.STRETCH),
         ],
         spacing=10, expand=True,
     )
