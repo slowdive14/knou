@@ -57,6 +57,8 @@ EXPLAIN_PROMPT = """너는 한국방송통신대학교 '{course}' 과목의 학�
 4. 이제 막 C 를 배우는 사람이 읽는다. 어려운 말은 풀어 쓰되 군더더기는 빼라.
 5. 마크다운 제목(#)이나 코드펜스를 쓰지 마라. **줄글 서너 문단**으로 쓴다.
    식이나 변수는 그냥 본문에 적어라.
+6. 인사말도, '돕게 되어 기쁩니다' 같은 머리말도 쓰지 마라. **첫 문장부터
+   곧바로** 정답을 설명한다.
 
 설명만 출력하라."""
 
@@ -109,17 +111,16 @@ def make_explanation(client, q, course: str = "C프로그래밍",
     """해설 한 편을 만든다. 실패하면 빈 문자열(화면이 멈추지 않게)."""
     from google.genai import types
 
-    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+    from summarize import MAX_OUTPUT_TOKENS, _resp_text, generate
 
     if not correct_nos(q):
         return ""            # 정답을 모르는 문항은 설명할 기준이 없다
     try:
-        resp = client.models.generate_content(
-            model=model or DEFAULT_MODEL,
-            contents=[explain_prompt(q, course)],
+        # 모델이 붐비면 다음 모델로 넘어간다(summarize.generate).
+        resp = generate(
+            client, [explain_prompt(q, course)], model=model,
             config=types.GenerateContentConfig(
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                max_output_tokens=MAX_OUTPUT_TOKENS))
         return clean_explanation(_resp_text(resp))
     except Exception:  # noqa: BLE001 - 해설이 없다고 퀴즈를 막지 않는다
         return ""

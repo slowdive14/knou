@@ -67,7 +67,8 @@ from summarize import (
     timestamp_to_seconds,
 )
 
-MODEL = "gemini-2.5-flash"
+# 모델은 예고 없이 막힌다 — 쓸 모델은 summarize 한 곳에서 정한다.
+from summarize import DEFAULT_MODEL as MODEL  # noqa: E402
 # 슬라이드 본문 crop=가로:세로:x:y (1280x720 영상 기준).
 # 강의 슬라이드(흰 본문 패널)는 세로로 y≈58~668까지 차서, 예전 값(높이 470·y=80)은
 # 패널 아래쪽(하단 도식·표)을 잘라먹었다. → 세로를 패널 전체(y 40~700)로 넓혔다.
@@ -355,8 +356,10 @@ def match_concepts(client, deck: list[dict], concepts: list[dict],
             data=s["path"].read_bytes(), mime_type="image/jpeg"))
     contents.append(build_match_prompt(concepts))
 
-    resp = client.models.generate_content(
-        model=MODEL, contents=contents,
+    from summarize import generate
+    # 모델이 붐비면 다음 모델로 넘어간다(summarize.generate).
+    resp = generate(
+        client, contents, model=MODEL,
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     raw = (getattr(resp, "text", None) or "").strip()

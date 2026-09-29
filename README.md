@@ -55,6 +55,11 @@ winget install Gyan.FFmpeg
 
 이제 **실행** 탭에서 강의를 골라 돌리거나, **예약** 탭에서 자동 실행을 걸면 됩니다.
 
+> **AI 모델이 막히거나 붐빌 때** — 모델은 예고 없이 닫힙니다
+> (`404 … no longer available to new users`). 이때는 다음 모델로 저절로
+> 넘어가지만, 특정 모델로 고정하고 싶으면 `.env` 에 한 줄을 더하면 됩니다:
+> `GEMINI_MODEL=gemini-3.5-flash`
+
 📖 **자세한 사용법·문제 해결은 [README_GUI.md](README_GUI.md) 를 보세요.**
 
 ---

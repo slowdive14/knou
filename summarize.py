@@ -22,18 +22,44 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import re
 import time
 from pathlib import Path
 
 from download import sanitize
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# 쓸 모델 차례 — **앞의 것이 붐비면 다음 것으로 넘어간다.**
+#
+# ⚠️ 모델은 예고 없이 막힌다. gemini-2.5-flash 는 어느 날 신규 사용자에게
+#    404 로 닫혔고('no longer available to new users'), 그래서 API 키를 새로
+#    만든 순간 앱 전체가 멈췄다. 하나에 매달리지 않는다.
+# ⚠️ 무료 등급은 503(고부하)이 잦다. 최신 모델일수록 더 붐빈다 — 실제로
+#    3.6~3.8 은 줄줄이 503 인데 3.5 는 15초 만에 답했다.
+MODEL_CHAIN = ("gemini-3.5-flash", "gemini-3-flash-preview",
+               "gemini-3.1-flash-lite", "gemini-flash-latest")
 
-# 빈 응답(finish_reason=MAX_TOKENS) 방지용. gemini-2.5-flash 는 thinking 이
-# 출력 예산을 잠식해, 한도 미설정 시 긴 강의에서 본문이 비어 돌아올 수 있다.
+
+def _env_model() -> str:
+    """'.env' 의 GEMINI_MODEL — 설정 화면을 거치지 않고도 바꿀 수 있게."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+    except Exception:  # noqa: BLE001 - .env 가 없어도 기본값으로 돈다
+        pass
+    return os.environ.get("GEMINI_MODEL", "").strip()
+
+
+DEFAULT_MODEL = _env_model() or MODEL_CHAIN[0]
+
+# 빈 응답(finish_reason=MAX_TOKENS) 방지용. thinking 이 출력 예산을 잠식해,
+# 한도 미설정 시 긴 강의에서 본문이 비어 돌아올 수 있다.
 MAX_OUTPUT_TOKENS = 32768   # 출력 예산을 넉넉히(thinking+본문 합산 한도)
 THINKING_BUDGET = 8192      # thinking 상한(0=비활성). 본문 예산을 남겨둔다
+
+# 붐빌 때 다음 모델로 넘어가기 전에 쉬는 시간(초). 사람이 화면 앞에서
+# 기다리는 자리라 길게 끌지 않는다.
+RETRY_WAIT = 1.5
 
 # 확장자 → MIME (google-genai가 한글 경로 헤더 인코딩에 실패하므로
 # 파일 객체 업로드 시 명시적으로 넘긴다)
@@ -303,6 +329,54 @@ def _resp_text(resp) -> str:
     return _strip_code_fence(t or "")
 
 
+def busy_error(exc) -> bool:
+    """이 오류는 **잠깐 붐빈 것**인가(다음 모델로 넘어가 볼 만한가).
+
+    503(고부하)·429(호출 한도)·404(그 모델이 닫힘)가 여기 해당한다. 무료
+    등급에서는 이 셋이 대부분이라, 여기서 포기하면 앱이 그냥 멈춘 것처럼
+    보인다.
+    """
+    s = str(exc or "")
+    return any(k in s for k in ("503", "429", "404", "UNAVAILABLE",
+                                "RESOURCE_EXHAUSTED", "NOT_FOUND"))
+
+
+def model_chain(model=None) -> list:
+    """시도할 모델 차례 — 고른 것을 맨 앞에 두고 나머지를 뒤에 붙인다."""
+    first = str(model or DEFAULT_MODEL).strip()
+    out = [first] if first else []
+    for m in MODEL_CHAIN:
+        if m not in out:
+            out.append(m)
+    return out
+
+
+def generate(client, contents, config=None, model=None, on_event=None,
+             wait: float = RETRY_WAIT):
+    """모델을 불러 응답을 받는다 — 붐비면 다음 모델로 넘어간다.
+
+    ⚠️ 한 모델에 매달리지 않는 것이 요점이다. 무료 등급에서 503 은 흔한
+       일이고, 그때마다 '설명을 만들지 못했습니다' 를 보여 주면 쓸 수가 없다.
+
+    모두 실패하면 마지막 오류를 그대로 올린다(부르는 쪽이 이미 감싸고 있다).
+    """
+    chain = model_chain(model)
+    last = None
+    for i, name in enumerate(chain):
+        try:
+            return client.models.generate_content(
+                model=name, contents=contents, config=config)
+        except Exception as e:  # noqa: BLE001 - 다음 모델로 넘어가 본다
+            last = e
+            if not busy_error(e) or i == len(chain) - 1:
+                raise
+            if on_event:
+                on_event(f"   {name} 이 붐빕니다 → {chain[i + 1]} 로 바꿔 봅니다")
+            if wait:
+                time.sleep(float(wait))
+    raise last if last else RuntimeError("부를 모델이 없습니다")
+
+
 def _finish_reason(resp) -> str:
     try:
         return str(resp.candidates[0].finish_reason)
@@ -351,8 +425,10 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
         )
-        return client.models.generate_content(
-            model=model, contents=contents, config=config)
+        # 모델이 붐비면 다음 모델로 넘어간다 — 한 강의 요약에 몇 분이 걸리는데
+        # 503 하나로 처음부터 다시 돌리게 할 수는 없다.
+        return generate(client, contents, config=config, model=model,
+                        on_event=log)
 
     log(f"요약 생성 중(model={model}, max_tokens={MAX_OUTPUT_TOKENS}, "
         f"thinking={THINKING_BUDGET})…")

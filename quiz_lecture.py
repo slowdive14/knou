@@ -449,7 +449,8 @@ def make_lectures(client, questions, lectures, course: str = "C프로그래밍",
     """
     from google.genai import types
 
-    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+    from summarize import (DEFAULT_MODEL, MAX_OUTPUT_TOKENS,
+                           _resp_text, generate)
 
     def log(m):
         if on_event:
@@ -462,12 +463,12 @@ def make_lectures(client, questions, lectures, course: str = "C프로그래밍",
         part = qs[i:i + size]
         qids = [str(q.get("qid")) for q in part]
         try:
-            resp = client.models.generate_content(
-                model=model or DEFAULT_MODEL,
-                contents=[classify_prompt(part, lectures, course, hints)],
+            # 모델이 붐비면 다음 모델로(summarize.generate).
+            resp = generate(
+                client, [classify_prompt(part, lectures, course, hints)],
+                model=model, on_event=log,
                 config=types.GenerateContentConfig(
-                    max_output_tokens=MAX_OUTPUT_TOKENS,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                    max_output_tokens=MAX_OUTPUT_TOKENS))
             got = parse_lectures(_resp_text(resp), qids, lectures)
         except Exception as ex:  # noqa: BLE001 - 한 묶음이 실패해도 나머지는 간다
             log(f"   ! 분류 실패({qids[0]}…): {str(ex)[:80]}")

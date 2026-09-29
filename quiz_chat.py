@@ -181,18 +181,17 @@ def ask(client, q, course: str = "", turns=None, question: str = "",
     """후속 질문에 답 한 마디. 실패하면 빈 문자열(화면이 멈추지 않게)."""
     from google.genai import types
 
-    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+    from summarize import MAX_OUTPUT_TOKENS, _resp_text, generate
 
     question = str(question or "").strip()[:MAX_ASK]
     if not question:
         return ""
     try:
-        resp = client.models.generate_content(
-            model=model or DEFAULT_MODEL,
-            contents=[chat_prompt(q, course, turns, question)],
+        # 모델이 붐비면 다음 모델로 넘어간다(summarize.generate).
+        resp = generate(
+            client, [chat_prompt(q, course, turns, question)], model=model,
             config=types.GenerateContentConfig(
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                max_output_tokens=MAX_OUTPUT_TOKENS))
         return clean_answer(_resp_text(resp), question)
     except Exception:  # noqa: BLE001 - 답이 없다고 퀴즈를 막지 않는다
         return ""

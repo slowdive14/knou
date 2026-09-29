@@ -499,8 +499,10 @@ def select_best_frame(client, label, image_paths, model=DEFAULT_MODEL,
             parts.append(types.Part.from_bytes(
                 data=Path(p).read_bytes(), mime_type="image/jpeg"))
         parts.append(build_vision_prompt(label, n))
-        resp = client.models.generate_content(
-            model=model, contents=parts,
+        from summarize import generate
+        # 모델이 붐비면 다음 모델로 넘어간다(summarize.generate).
+        resp = generate(
+            client, parts, model=model,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"),
         )

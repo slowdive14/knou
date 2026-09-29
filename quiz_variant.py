@@ -240,7 +240,8 @@ def make_variants(client, questions, course: str = "C프로그래밍",
     """
     from google.genai import types
 
-    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+    from summarize import (DEFAULT_MODEL, MAX_OUTPUT_TOKENS,
+                           _resp_text, generate)
 
     model = model or DEFAULT_MODEL
     comp = find_compiler()
@@ -257,12 +258,12 @@ def make_variants(client, questions, course: str = "C프로그래밍",
             continue
         for i in range(1, max(1, int(per)) + 1):
             try:
-                resp = client.models.generate_content(
-                    model=model, contents=[variant_prompt(q, course)],
+                # 모델이 붐비면 다음 모델로(summarize.generate).
+                resp = generate(
+                    client, [variant_prompt(q, course)], model=model,
+                    on_event=on_event,
                     config=types.GenerateContentConfig(
-                        max_output_tokens=MAX_OUTPUT_TOKENS,
-                        thinking_config=types.ThinkingConfig(
-                            thinking_budget=0)))
+                        max_output_tokens=MAX_OUTPUT_TOKENS))
                 data = parse_variant(_resp_text(resp))
             except Exception as e:  # noqa: BLE001 - 문항 단위 격리
                 on_event(f"  {q.get('qid')}: 생성 실패 — {str(e)[:90]}")
@@ -412,15 +413,15 @@ def review_variant(client, q, course: str = "C프로그래밍",
     """변형 문항을 다시 풀어 본다 → (검토가 고른 번호, 사유)."""
     from google.genai import types
 
-    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+    from summarize import (DEFAULT_MODEL, MAX_OUTPUT_TOKENS,
+                           _resp_text, generate)
 
     try:
-        resp = client.models.generate_content(
-            model=model or DEFAULT_MODEL,
-            contents=[review_prompt(q, course)],
+        # 모델이 붐비면 다음 모델로(summarize.generate).
+        resp = generate(
+            client, [review_prompt(q, course)], model=model,
             config=types.GenerateContentConfig(
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                max_output_tokens=MAX_OUTPUT_TOKENS))
         return parse_review(_resp_text(resp))
     except Exception:  # noqa: BLE001 - 검토를 못 했다고 문항을 버리지 않는다
         return (-1, "")

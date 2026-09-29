@@ -454,7 +454,8 @@ def extract_questions(client, pdf_path, course: str, year: int, term: int,
     """
     from google.genai import types
     from pdf_render import page_count, render_page
-    from summarize import DEFAULT_MODEL, MAX_OUTPUT_TOKENS, _resp_text
+    from summarize import (DEFAULT_MODEL, MAX_OUTPUT_TOKENS,
+                           _resp_text, generate)
 
     model = model or DEFAULT_MODEL
     total = page_count(pdf_path)
@@ -471,11 +472,11 @@ def extract_questions(client, pdf_path, course: str, year: int, term: int,
         parts = [types.Part.from_bytes(data=img, mime_type="image/png"),
                  QUESTION_PROMPT.format(course=course)]
         try:
-            resp = client.models.generate_content(
-                model=model, contents=parts,
+            # 모델이 붐비면 다음 모델로 넘어간다(summarize.generate).
+            resp = generate(
+                client, parts, model=model, on_event=on_event,
                 config=types.GenerateContentConfig(
-                    max_output_tokens=MAX_OUTPUT_TOKENS,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                    max_output_tokens=MAX_OUTPUT_TOKENS))
             page_items = _clean_json(_resp_text(resp))
         except Exception as e:  # noqa: BLE001 - 한 쪽 실패가 전체를 막지 않게
             on_event(f"  {i + 1}쪽: 읽기 실패 — {str(e)[:100]}")

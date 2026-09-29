@@ -9,8 +9,11 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import summarize  # noqa: E402
 from summarize import (  # noqa: E402
     _block_reason,
     _finish_reason,
@@ -287,3 +290,86 @@ def test_save_summary_leaves_a_correct_width_alone(tmp_path):
     md = "![[그림.jpg|695]]\n본문\n"
     res = save_summary(md, tmp_path, "이산수학", 1, "집합")
     assert Path(res["md"]).read_text(encoding="utf-8") == md
+
+
+# --- 모델이 붐빌 때 ---------------------------------------------------------
+# 모델은 예고 없이 막힌다. gemini-2.5-flash 는 어느 날 신규 사용자에게 404 로
+# 닫혔고, API 키를 새로 만든 순간 앱 전체가 멈췄다. 무료 등급은 503 도 잦다.
+class _Models:
+    """genai 클라이언트 흉내 — 모델마다 정해진 반응을 돌려준다."""
+
+    def __init__(self, plan):
+        self.plan, self.tried = plan, []
+        self.models = self
+
+    def generate_content(self, model=None, contents=None, config=None):
+        self.tried.append(model)
+        got = self.plan.get(model, "ok")
+        if isinstance(got, Exception):
+            raise got
+        return type("R", (), {"text": got})()
+
+
+def test_a_busy_or_closed_model_is_told_apart():
+    assert summarize.busy_error(RuntimeError("503 UNAVAILABLE ..."))
+    assert summarize.busy_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert summarize.busy_error(RuntimeError("404 NOT_FOUND. no longer ..."))
+    assert not summarize.busy_error(RuntimeError("400 INVALID_ARGUMENT"))
+    assert not summarize.busy_error(None)
+
+
+def test_the_chosen_model_comes_first_and_the_rest_follow():
+    got = summarize.model_chain("내모델")
+    assert got[0] == "내모델"
+    assert summarize.MODEL_CHAIN[0] in got
+    assert len(got) == len(set(got))          # 같은 모델을 두 번 부르지 않는다
+
+
+def test_the_default_model_is_not_repeated():
+    got = summarize.model_chain(summarize.MODEL_CHAIN[0])
+    assert got.count(summarize.MODEL_CHAIN[0]) == 1
+
+
+def test_a_busy_model_hands_over_to_the_next_one():
+    """503 하나로 '설명을 만들지 못했습니다' 를 보여 주면 쓸 수가 없다."""
+    chain = summarize.model_chain()
+    c = _Models({chain[0]: RuntimeError("503 UNAVAILABLE")})
+    resp = summarize.generate(c, ["묻는다"], wait=0)
+    assert resp.text == "ok"
+    assert c.tried == [chain[0], chain[1]]
+
+
+def test_a_closed_model_hands_over_too():
+    chain = summarize.model_chain()
+    c = _Models({chain[0]: RuntimeError("404 NOT_FOUND no longer available")})
+    assert summarize.generate(c, ["묻는다"], wait=0).text == "ok"
+
+
+def test_an_ordinary_error_is_raised_at_once():
+    """잘못 만든 요청까지 모델을 바꿔 가며 되풀이할 일은 아니다."""
+    chain = summarize.model_chain()
+    c = _Models({chain[0]: RuntimeError("400 INVALID_ARGUMENT")})
+    with pytest.raises(RuntimeError, match="400"):
+        summarize.generate(c, ["묻는다"], wait=0)
+    assert c.tried == [chain[0]]
+
+
+def test_when_every_model_is_busy_the_last_error_comes_out():
+    c = _Models({m: RuntimeError("503 UNAVAILABLE")
+                 for m in summarize.model_chain()})
+    with pytest.raises(RuntimeError, match="503"):
+        summarize.generate(c, ["묻는다"], wait=0)
+
+
+def test_the_handover_is_told_to_the_screen():
+    chain = summarize.model_chain()
+    said = []
+    c = _Models({chain[0]: RuntimeError("503 UNAVAILABLE")})
+    summarize.generate(c, ["묻는다"], on_event=said.append, wait=0)
+    assert any(chain[1] in m for m in said)
+
+
+def test_the_model_can_be_set_by_the_environment(monkeypatch):
+    """모델이 또 막히면 .env 의 GEMINI_MODEL 로 곧바로 바꿀 수 있어야 한다."""
+    monkeypatch.setenv("GEMINI_MODEL", "고른모델")
+    assert summarize._env_model() == "고른모델"
