@@ -47,7 +47,6 @@ INTRO_IMAGE_WIDTH = 695
 # 위아래로 오르내리게 된다 — 옆에 두면 문제를 보면서 물을 수 있다.
 CHAT_WIDTH = 380        # 판의 폭(px)
 CHAT_MIN_WIDTH = 1080   # 창이 이보다 좁으면 판을 접고 카드 안으로 되돌린다
-CHAT_HEAD_CHARS = 70    # 판 머리에 적는 물음 길이
 
 
 def side_chat(width) -> bool:
@@ -62,13 +61,15 @@ def side_chat(width) -> bool:
 
 
 def chat_head(q, num=None) -> str:
-    """판 머리에 적는 문항 한 줄 — 'Q07 · 즉치 주소지정방식과 …'."""
-    q = q or {}
-    text = " ".join(str(q.get("question") or "").split())
-    if len(text) > CHAT_HEAD_CHARS:
-        text = text[:CHAT_HEAD_CHARS].rstrip() + "…"
-    head = f"Q{int(num):02d}" if num else str(q.get("qid") or "")
-    return f"{head} · {text}" if text else head
+    """판 머리에 적는 문항 표시 — 'Q07'.
+
+    ⚠️ 물음을 여기 되풀이하지 않는다. 문제는 왼쪽에 그대로 있는데 같은 글을
+       또 적으면 판의 절반을 차지해 정작 대화가 밀려난다. 어느 문항인지만
+       알면 되고, 그건 번호로 맞춰 보면 된다.
+    """
+    if num:
+        return f"Q{int(num):02d}"
+    return str((q or {}).get("qid") or "")
 
 
 def chat_link_text(q) -> str:
@@ -279,10 +280,12 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     import_log = ft.ListView(expand=True, spacing=1, auto_scroll=True,
                              padding=10, visible=False)
     # 되묻기를 담는 오른쪽 붙박이 판 — 문제를 보면서 물을 수 있게.
-    chat_title = ft.Text("", size=12, color=MUTE, expand=True,
-                         max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+    # ⚠️ chat_title 에 expand 를 주면 안 된다. Column 안에서 세로로 늘어나
+    #    판 한가운데가 텅 비고 대화가 아래로 밀려난다.
+    chat_title = ft.Text("", size=12, color=MUTE)
     chat_body = ft.Column(spacing=10, expand=True,
                           scroll=ft.ScrollMode.AUTO)
+    chat_foot = ft.Column(spacing=6, tight=True)   # 입력 한 줄(맨 아래 고정)
     picker = ft.Dropdown(label="강의", width=400, options=[])
     # 회차를 가로질러 '3강 문제만' 모아 보는 손잡이. 방금 들은 강의의 기출을
     # 곧바로 풀어보려면 회차별 은행을 25문항씩 훑어야 했다.
@@ -293,16 +296,17 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         content=ft.Column(
             [ft.Row([ft.Text("물어보기", size=14,
                              weight=ft.FontWeight.BOLD, color=MINT),
+                     chat_title,
                      ft.Container(expand=True),
                      ft.IconButton(icon=ft.Icons.CLOSE, icon_size=17,
                                    tooltip="판 닫기",
                                    on_click=lambda e: _close_panel())],
+                    spacing=8,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER),
-             chat_title,
              ft.Divider(height=9, thickness=1,
                         color=ft.Colors.with_opacity(.10,
                                                      ft.Colors.ON_SURFACE)),
-             chat_body],
+             chat_body, chat_foot],
             spacing=6, expand=True),
         width=CHAT_WIDTH, visible=False, padding=14, border_radius=12,
         bgcolor=MINT_BG,
@@ -427,17 +431,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             on_click=press,
             style=ft.ButtonStyle(color=MUTE if on else MINT))
 
-    def _chat_box(q) -> list:
-        """되묻기 — 지난 대화와 입력 한 줄(카드 안에도, 오른쪽 판에도 쓴다)."""
-        qid = q.get("qid")
-        turns = qc.chat_turns(q)
-        if not turns and qid not in st["chat_open"]:
-            return [ft.TextButton(
-                "이해가 안 되면 물어보기", icon=ft.Icons.CHAT_BUBBLE_OUTLINE,
-                on_click=lambda _e, i=qid: _open_chat(i),
-                style=ft.ButtonStyle(color=MINT))]
+    def _chat_bubbles(q) -> list:
+        """오간 말들 — 말풍선 목록."""
         out = []
-        for t in turns:
+        for t in qc.chat_turns(q):
             if t["role"] == qc.ROLE_USER:
                 # 내가 한 물음은 오른쪽에 상자로 — 답과 한눈에 갈린다.
                 bubble = ft.Container(
@@ -450,12 +447,20 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                                   alignment=ft.MainAxisAlignment.END))
             else:
                 out.append(ft.Text(t["text"], size=13, selectable=True))
+        return out
+
+    def _chat_input(q) -> list:
+        """물음을 적는 한 줄 — 답을 기다리는 중이면 그 표시.
+
+        ⚠️ 오른쪽 판에서는 이것을 **말풍선 밖 맨 아래**에 둔다. 대화가 길어지면
+           스크롤 밖으로 밀려나 물을 자리가 사라진다.
+        """
+        qid = q.get("qid")
         if st["asking"] == qid:
-            out.append(ft.Row([ft.ProgressRing(width=15, height=15,
-                                               stroke_width=2),
-                               ft.Text("답을 만드는 중…", size=12, color=MUTE)],
-                              spacing=8))
-            return out
+            return [ft.Row([ft.ProgressRing(width=15, height=15,
+                                            stroke_width=2),
+                            ft.Text("답을 만드는 중…", size=12, color=MUTE)],
+                           spacing=8)]
         # ⚠️ 카드는 통째로 다시 그려진다 — 치던 글은 st["draft"] 에서 되살린다.
         box = ft.TextField(
             value=st["draft"].get(qid, ""), expand=True, text_size=13,
@@ -464,12 +469,21 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             border_color=ft.Colors.with_opacity(.18, ft.Colors.ON_SURFACE),
             on_change=lambda e, i=qid: _draft(i, e.control.value),
             on_submit=lambda _e, qq=q: _send(qq))
-        out.append(ft.Row(
+        return [ft.Row(
             [box, ft.IconButton(icon=ft.Icons.SEND, icon_color=MINT,
                                 tooltip="묻기(Enter)",
                                 on_click=lambda _e, qq=q: _send(qq))],
-            spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER))
-        return out
+            spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)]
+
+    def _chat_box(q) -> list:
+        """카드 안에서 쓰는 되묻기 — 손잡이 하나, 또는 대화와 입력."""
+        qid = q.get("qid")
+        if not qc.chat_turns(q) and qid not in st["chat_open"]:
+            return [ft.TextButton(
+                "이해가 안 되면 물어보기", icon=ft.Icons.CHAT_BUBBLE_OUTLINE,
+                on_click=lambda _e, i=qid: _open_chat(i),
+                style=ft.ButtonStyle(color=MINT))]
+        return _chat_bubbles(q) + _chat_input(q)
 
     def _reload_banks(keep: bool = True) -> int:
         """퀴즈 폴더를 다시 읽어 목록을 새로 만든다 → 은행 수.
@@ -808,11 +822,14 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             st["panel"] = None
             chat_panel.visible = False
             chat_body.controls.clear()
+            chat_foot.controls.clear()
             return
         chat_panel.visible = True
         chat_title.value = chat_head(q, pos.get(str(qid)))
         chat_body.controls.clear()
-        chat_body.controls.extend(_chat_box(q))
+        chat_body.controls.extend(_chat_bubbles(q))
+        chat_foot.controls.clear()
+        chat_foot.controls.extend(_chat_input(q))
 
     def _render_cards():
         cards.controls.clear()

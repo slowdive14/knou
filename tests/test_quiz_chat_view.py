@@ -326,15 +326,21 @@ def test_an_unknown_width_counts_as_wide():
     assert quiz_view.side_chat("몰라")
 
 
-def test_the_panel_head_names_the_question():
+def test_the_panel_head_is_just_the_number():
+    """문제는 왼쪽에 그대로 있다 — 물음을 또 적으면 대화가 밀려난다."""
     q = _q(question="즉치 주소지정방식과 직접 주소지정방식을 이용한다면?")
-    assert quiz_view.chat_head(q, 7).startswith("Q07 · 즉치 주소지정방식")
+    assert quiz_view.chat_head(q, 7) == "Q07"
 
 
-def test_a_long_question_is_cut_in_the_head():
-    q = _q(question="가" * 200)
-    assert len(quiz_view.chat_head(q, 1)) < 90
-    assert quiz_view.chat_head(q, 1).endswith("…")
+def test_the_question_is_not_repeated_in_the_panel(tmp_path):
+    long_q = "즉치 주소지정방식과 직접 주소지정방식을 이용한다면 각각 어떤 값이?"
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q(question=long_q)))
+    _reveal(v)
+    _open_chat(v)
+    said = [str(t.value or "") for t in _walk(_panel(v))
+            if isinstance(t, ft.Text)]
+    assert "Q01" in said
+    assert long_q not in said
 
 
 def test_the_card_link_counts_what_was_said():
@@ -411,3 +417,21 @@ def test_shrinking_the_window_folds_the_panel_back(tmp_path):
     page.on_resize(None)
     assert not _panel(v).visible
     assert _fields(v), "좁은 창에서는 카드 안에서 물을 수 있어야 합니다"
+
+
+def test_the_input_stays_below_the_scrolling_talk(tmp_path, monkeypatch):
+    """대화가 길어져도 물을 자리는 판 맨 아래에 그대로 있어야 한다."""
+    _wire(monkeypatch)
+    turns = []
+    for i in range(12):
+        turns += [{"role": "user", "text": f"물음{i}"},
+                  {"role": "model", "text": f"답{i}"}]
+    v = build_quiz_view(quiz_dir=_dir(tmp_path, _q(chat=turns)))
+    _reveal(v)
+    _text_buttons(v)["물어본 것 24마디 — 옆에서 이어가기"].on_click(None)
+    panel = _panel(v)
+    # 말풍선은 굴러가는 칸에, 입력은 그 밖에 — 둘이 섞이면 안 된다.
+    scroller = next(c for c in _walk(panel) if isinstance(c, ft.Column)
+                    and c.scroll is not None)
+    assert not [f for f in _walk(scroller) if isinstance(f, ft.TextField)]
+    assert _fields(v), "입력창이 판에 있어야 합니다"
