@@ -75,6 +75,37 @@ def bank_key(bank) -> tuple:
         return (0, 0)
 
 
+def convert_hwp(work: Path, course: str, on_event=None) -> int:
+    """PDF 가 없는 한글 시험지를 변환한다 → 새로 만든 개수.
+
+    자료실에서 받은 시험지는 한글 문서인 경우가 많다. 손으로 PDF 를 만들어
+    넣어 두지 않아도 되게 여기서 한 번 돌린다(한글이 깔려 있어야 한다).
+
+    ⚠️ 변환본은 **이름을 달리해서** 둔다. 게시글 번호가 같은데 학년도가 다른
+       시험지가 실제로 있었다 — 같은 이름으로 쓰면 멀쩡한 PDF 를 덮는다.
+    """
+    import hwp_convert as hc
+
+    log = on_event or (lambda _m: None)
+    key = str(course or "").replace(" ", "")
+    made = 0
+    files = sorted(work.glob("*.hwp")) + sorted(work.glob("*.hwpx"))
+    for h in files:
+        if not key or key not in h.name:
+            continue
+        out = h.with_name(h.stem + "_한글.pdf")
+        if out.exists():
+            continue
+        log(f"   {h.name} — 한글로 PDF 를 만듭니다(몇 분 걸립니다)")
+        res = hc.hwp_to_pdf(h, out)
+        if res.get("ok"):
+            made += 1
+            log(f"   만들었습니다: {out.name}")
+        else:
+            log(f"   만들지 못했습니다 — {res.get('why') or '까닭을 모릅니다'}")
+    return made
+
+
 def usable_pdfs(work: Path, course: str, client=None, on_event=None) -> dict:
     """{(연도, 학기): (PDF 경로, 읽는 길)} — 그 과목의 시험지들.
 
@@ -182,6 +213,8 @@ def main(argv=None) -> int:
                     help="붙여 둔 그림을 모두 떼고 처음부터 다시 판정")
     ap.add_argument("--no-ai", action="store_true",
                     help="글줄 없는 시험지를 AI 에게 묻지 않는다")
+    ap.add_argument("--no-hwp", action="store_true",
+                    help="한글 시험지를 PDF 로 바꾸지 않는다")
     a = ap.parse_args(argv)
     if a.redo:
         a.force = True
@@ -202,6 +235,8 @@ def main(argv=None) -> int:
     pdfs = {}
     for c in courses:
         _log(f"■ {c} — 시험지를 훑습니다")
+        if not a.no_hwp:
+            convert_hwp(work, c, _log)
         got = usable_pdfs(work, c, client, _log)
         pdfs[c] = got
         by_ai = sum(1 for _p, how in got.values() if how == "ai")

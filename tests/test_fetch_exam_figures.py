@@ -155,3 +155,49 @@ def test_a_sheet_without_text_is_shown_to_the_model(monkeypatch, tmp_path):
         called.setdefault("ai", True) or {7: (0, (1, 1, 50, 50))}))
     got = fx.figures_of(tmp_path / "s.pdf", "ai", client=object())
     assert got and "ai" in called and "text" not in called
+
+
+# --- 한글 시험지 바꾸기 -----------------------------------------------------
+# 자료실에서 받은 시험지는 한글 문서인 경우가 많다.
+def test_a_hwp_without_a_pdf_is_converted(tmp_path, monkeypatch):
+    (tmp_path / "240-컴퓨터구조-3학년.hwp").write_bytes(b"x")
+    made = []
+    monkeypatch.setattr("hwp_convert.hwp_to_pdf", lambda s, o, **k: (
+        made.append(Path(o).name) or {"ok": True, "path": str(o)}))
+    assert fx.convert_hwp(tmp_path, "컴퓨터구조") == 1
+    assert made == ["240-컴퓨터구조-3학년_한글.pdf"]
+
+
+def test_the_converted_name_never_overwrites_an_existing_pdf(tmp_path,
+                                                             monkeypatch):
+    """게시글 번호가 같은데 학년도가 다른 시험지가 실제로 있었다."""
+    (tmp_path / "240-컴퓨터구조-3학년.hwp").write_bytes(b"x")
+    (tmp_path / "240-컴퓨터구조-3학년.pdf").write_bytes(b"OLD")
+    monkeypatch.setattr("hwp_convert.hwp_to_pdf",
+                        lambda s, o, **k: {"ok": True, "path": str(o)})
+    fx.convert_hwp(tmp_path, "컴퓨터구조")
+    assert (tmp_path / "240-컴퓨터구조-3학년.pdf").read_bytes() == b"OLD"
+
+
+def test_a_hwp_already_converted_is_left_alone(tmp_path, monkeypatch):
+    (tmp_path / "a-컴퓨터구조.hwp").write_bytes(b"x")
+    (tmp_path / "a-컴퓨터구조_한글.pdf").write_bytes(b"OLD")
+    monkeypatch.setattr("hwp_convert.hwp_to_pdf",
+                        lambda s, o, **k: {"ok": True, "path": str(o)})
+    assert fx.convert_hwp(tmp_path, "컴퓨터구조") == 0
+
+
+def test_another_courses_hwp_is_not_touched(tmp_path, monkeypatch):
+    (tmp_path / "b-자료구조.hwp").write_bytes(b"x")
+    monkeypatch.setattr("hwp_convert.hwp_to_pdf",
+                        lambda s, o, **k: {"ok": True, "path": str(o)})
+    assert fx.convert_hwp(tmp_path, "컴퓨터구조") == 0
+
+
+def test_a_failed_conversion_is_told_not_counted(tmp_path, monkeypatch):
+    (tmp_path / "c-컴퓨터구조.hwp").write_bytes(b"x")
+    monkeypatch.setattr("hwp_convert.hwp_to_pdf",
+                        lambda s, o, **k: {"ok": False, "why": "한글이 없습니다"})
+    said = []
+    assert fx.convert_hwp(tmp_path, "컴퓨터구조", said.append) == 0
+    assert any("한글이 없습니다" in m for m in said)
