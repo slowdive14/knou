@@ -76,17 +76,49 @@ def _pick_file(post, exts):
     return None, None
 
 
-def download_attachment(ctx, sbjt_id, post, exts, dest_dir: Path):
-    """첨부를 내려받아 경로 반환(원하는 확장자가 없으면 None)."""
+def saved_name(dn: str, tag: str = "") -> str:
+    """받은 첨부를 둘 이름 — 회차 표시를 앞에 붙인다.
+
+    ⚠️ 자료실의 첨부 이름은 회차마다 다르지 않다. 2015-2 와 2017-2 컴퓨터구조가
+       둘 다 '240-컴퓨터구조-3학년-3교시-(3p)' 였다. 이름 그대로 두면 먼저 받은
+       2017-2 시험지를 2015-2 차례에 '이미 받았다' 며 그대로 집어 읽고, 거기에
+       2015-2 정답표를 붙인다 — 35문항 중 33문항이 엉뚱한 문제가 되었다.
+    """
+    dn = str(dn or "")
+    return f"{tag}_{dn}" if tag else dn
+
+
+def download_attachment(ctx, sbjt_id, post, exts, dest_dir: Path,
+                        tag: str = ""):
+    """첨부를 내려받아 경로 반환(원하는 확장자가 없으면 None).
+
+    tag 를 주면 파일 이름 앞에 붙인다(회차가 달라도 첨부 이름이 같을 수 있다).
+    """
     from download import build_file_url, download_url
     dn, sn = _pick_file(post, exts)
     if not dn:
         return None
-    dest = dest_dir / dn
+    dest = dest_dir / saved_name(dn, tag)
     if dest.exists() and dest.stat().st_size > 0:
         return dest                       # 이미 받아 둔 것은 다시 받지 않는다
     res = download_url(ctx, build_file_url(sbjt_id, sn, dn), dest)
     return dest if res.get("ok") else None
+
+
+def sheet_matches(pdf, year: int, term: int, client=None):
+    """받은 시험지가 정말 그 회차인가 — 머리글의 학년도·학기로 확인한다.
+
+    → True(맞다) · False(다른 회차다) · None(머리글을 읽지 못했다)
+    글줄이 없는 시험지는 client 가 있으면 지면을 보여 주고 읽는다.
+    """
+    import exam_figure as ef
+
+    got = ef.pdf_key(pdf)
+    if got is None and client is not None:
+        got = ef.ai_pdf_key(client, pdf)
+    if got is None:
+        return None
+    return tuple(got) == (int(year), int(term))
 
 
 def answer_files(zip_path: Path, dest_dir: Path) -> dict:
@@ -178,16 +210,18 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
     year, term = got
 
     log(f"── {title}")
+    tag = f"{year}-{term}"          # 회차가 달라도 첨부 이름이 같을 수 있다
     pdf = hc.manual_pdf(work, name, year, term)
     if pdf is not None:
         log(f"   직접 넣어 두신 PDF 를 씁니다: {pdf.name}")
     else:
         log("   PDF 받는 중…")
-        pdf = download_attachment(ctx, course.sbjt_id, post, (".pdf",), work)
+        pdf = download_attachment(ctx, course.sbjt_id, post, (".pdf",), work,
+                                  tag)
     if pdf is None:
         # PDF 첨부가 없으면 HWP 를 한글에 시켜 바꿔 본다(배포용이면 거부당한다)
         hwp = download_attachment(ctx, course.sbjt_id, post,
-                                  (".hwp", ".hwpx"), work)
+                                  (".hwp", ".hwpx"), work, tag)
         if hwp is None:
             return {"title": title, "ok": False, "why": "PDF 도 HWP 도 없음"}
         log(f"   HWP 를 PDF 로 바꾸는 중: {hwp.name}")
@@ -197,6 +231,12 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
             return {"title": title, "ok": False, "why": hc.convert_note(res)}
         pdf = Path(res["path"])
 
+    # 엉뚱한 회차의 시험지에 이 회차 정답표를 붙이면 문항 전체가 어긋난다
+    # (2015-2 컴퓨터구조가 2017-2 시험지로 만들어져 있었다).
+    same = sheet_matches(pdf, year, term, client)
+    if same is False:
+        log(f"   ⚠️ {pdf.name} 는 {year}-{term} 시험지가 아닙니다 — 건너뜁니다")
+        return {"title": title, "ok": False, "why": "다른 회차의 시험지"}
     log(f"   받음: {pdf.name} — 문항을 읽습니다(몇 분 걸립니다)")
     questions = eb.extract_questions(client, pdf, name, year, term,
                                      on_event=log)

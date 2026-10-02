@@ -297,3 +297,44 @@ def test_refresh_says_when_nothing_changed(tmp_path):
     btn.on_click(None)
     texts = [str(c.value or "") for c in _walk(v) if isinstance(c, ft.Text)]
     assert any("새로 생긴 은행이 없습니다" in t for t in texts)
+
+
+# --- 회차가 달라도 첨부 이름이 같을 수 있다 -----------------------------------
+# 2015-2 와 2017-2 컴퓨터구조가 둘 다 '240-컴퓨터구조-3학년-3교시-(3p)' 였다.
+# 이름 그대로 두면 2015-2 차례에 2017-2 시험지를 '이미 받았다' 며 집어 읽는다.
+def test_a_saved_attachment_carries_its_exam():
+    import build_exam_bank as be
+    assert be.saved_name("240-컴퓨터구조.pdf", "2015-2") == \
+        "2015-2_240-컴퓨터구조.pdf"
+    assert be.saved_name("240-컴퓨터구조.pdf", "2017-2") != \
+        be.saved_name("240-컴퓨터구조.pdf", "2015-2")
+
+
+def test_without_a_tag_the_name_is_unchanged():
+    import build_exam_bank as be
+    assert be.saved_name("a.pdf") == "a.pdf"
+
+
+def test_a_sheet_of_another_exam_is_caught(monkeypatch):
+    """엉뚱한 회차의 시험지에 이 회차 정답표를 붙이면 문항 전체가 어긋난다."""
+    import build_exam_bank as be
+    import exam_figure as ef
+    monkeypatch.setattr(ef, "pdf_key", lambda p: (2017, 2))
+    assert be.sheet_matches("x.pdf", 2015, 2) is False
+    assert be.sheet_matches("x.pdf", 2017, 2) is True
+
+
+def test_an_unreadable_header_is_not_a_mismatch(monkeypatch):
+    """머리글을 못 읽었다고 막으면 멀쩡한 회차도 못 담는다."""
+    import build_exam_bank as be
+    import exam_figure as ef
+    monkeypatch.setattr(ef, "pdf_key", lambda p: None)
+    assert be.sheet_matches("x.pdf", 2015, 2) is None
+
+
+def test_a_textless_header_is_read_from_the_page(monkeypatch):
+    import build_exam_bank as be
+    import exam_figure as ef
+    monkeypatch.setattr(ef, "pdf_key", lambda p: None)
+    monkeypatch.setattr(ef, "ai_pdf_key", lambda c, p, *a: (2015, 2))
+    assert be.sheet_matches("x.pdf", 2015, 2, client=object()) is True
