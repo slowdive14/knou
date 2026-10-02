@@ -270,3 +270,102 @@ def test_variant_banks_are_not_checked_against_a_sheet():
     """변형문제는 시험지를 옮긴 것이 아니라 만든 것이다."""
     assert vx.is_variant({"exam": {"kind": "변형문제"}})
     assert not vx.is_variant({"exam": {"kind": "기말시험"}})
+
+
+# --- 같은 문제인가 ----------------------------------------------------------
+# C프로그래밍에서는 코드가 빠져 있었거나 'int main' 이 'void main' 으로 옮겨진
+# 문항이 많았다. 물음과 보기가 그대로면 같은 문제다.
+def test_only_the_code_changing_is_the_same_problem():
+    assert ev.same_problem(_q(code=""), _q(code="AND R1, R2, R3"))
+    assert ev.same_problem(_q(code="int main(void)"), _q(code="void main()"))
+
+
+def test_a_different_stem_is_another_problem():
+    assert not ev.same_problem(
+        _q(), _q(question="다음 중 M[X] ← TOS 의 기능을 수행하는 명령어는?"))
+
+
+def test_a_different_option_is_another_problem():
+    other = _q(options=[{"no": i + 1, "text": t}
+                        for i, t in enumerate(["POP X", "PUSH X", "STORE X",
+                                               "LOAD X"])])
+    assert not ev.same_problem(_q(), other)
+
+
+def test_fixing_the_same_problem_keeps_its_lecture():
+    """강 번호는 주제다 — 코드를 바로잡아도 주제는 그대로다."""
+    got = ev.apply_fix(_q(code="", lecture=5, explanation="…"),
+                       _q(code="AND R1, R2, R3"), same=True)
+    assert got["lecture"] == 5
+    assert got["explanation"] == ""          # 틀린 코드를 짚어 설명했을 수 있다
+
+
+def test_fixing_into_another_problem_drops_the_lecture():
+    got = ev.apply_fix(_q(lecture=5), _q(question="다른 문제"), same=False)
+    assert "lecture" not in got
+
+
+# --- 옮겨 적을 때 붙는 군더더기 ----------------------------------------------
+# 다시 읽은 쪽이 보기 앞에 '③' 을, 물음 앞에 '21.' 을 붙여 오는 일이 잦았다.
+def test_a_circled_number_in_front_of_an_option_is_taken_off():
+    q = ev.tidy(_q(options=[{"no": 3, "text": "③ A"}, {"no": 1, "text": "1. B"},
+                            {"no": 2, "text": "(2) C"}]))
+    assert [o["text"] for o in q["options"]] == ["A", "B", "C"]
+
+
+def test_a_question_number_in_front_of_the_stem_is_taken_off():
+    assert ev.tidy(_q(question="21. 위에서 ㉠의 결과로 올바른 것은?"))[
+        "question"] == "위에서 ㉠의 결과로 올바른 것은?"
+
+
+def test_a_number_that_belongs_to_the_text_is_kept():
+    """'2-주소 명령어', '10 진수' 같은 것은 글의 일부다."""
+    q = ev.tidy(_q(question="10 진수로 바꾸면?",
+                   options=[{"no": 1, "text": "2-주소 컴퓨터 명령어이다."}]))
+    assert q["question"] == "10 진수로 바꾸면?"
+    assert q["options"][0]["text"] == "2-주소 컴퓨터 명령어이다."
+
+
+def test_a_reading_that_only_adds_markers_counts_as_the_same():
+    """군더더기만 다른 문항까지 '다르다' 고 하면 멀쩡한 것을 건드린다."""
+    marked = _q(question="3. 다음 컴퓨터 명령어에 관한 설명으로 적절한 것은?",
+                options=[{"no": i + 1, "text": f"{'①②③④'[i]} {t}"}
+                         for i, t in enumerate(OPTS)])
+    assert ev.similar(_q(), marked) >= ev.SAME
+
+
+def test_a_fix_never_carries_the_markers_in():
+    got = ev.apply_fix(_q(), _q(options=[{"no": 1, "text": "① 가"}]))
+    assert got["options"][0]["text"] == "가"
+
+
+# --- 같은 문제를 바로잡는 것과 다른 문제로 바뀐 것 ----------------------------
+def test_one_garbled_option_is_still_the_same_problem():
+    """'⑧ ⑩' 처럼 깨져 있던 보기 하나를 바로잡는 것은 같은 문제다."""
+    fixed = _q()
+    broken = _q(options=fixed["options"][:3] + [{"no": 4, "text": "⑧   ⑩"}])
+    assert ev.same_problem(broken, fixed)
+
+
+def test_the_same_stem_with_new_values_is_another_problem():
+    """2015-2 의 7~9번 — 물음은 같은데 기억장치 값이 달라 보기가 모두 다르다."""
+    stem = "즉치 주소지정방식과 직접 주소지정방식을 이용한다면?"
+    a = _q(question=stem, options=[{"no": i, "text": t} for i, t in
+                                   enumerate(["300, 500", "300, 618",
+                                              "618, 456", "618, 458"], 1)])
+    b = _q(question=stem, options=[{"no": i, "text": t} for i, t in
+                                   enumerate(["400, 300", "400, 618",
+                                              "500, 800", "618, 456"], 1)])
+    assert not ev.same_problem(a, b)
+
+
+def test_a_points_tag_on_the_stem_is_still_the_same_problem():
+    assert ev.same_problem(_q(question="위에서 설명문은 어디인가?"),
+                           _q(question="위에서 설명문은 어디인가? (2점)"))
+
+
+def test_a_numeric_option_is_not_cut():
+    """'1.5' 를 보기 번호로 보고 깎으면 '5' 가 된다."""
+    q = ev.tidy(_q(options=[{"no": 1, "text": "1.5"}, {"no": 2, "text": "2.0"},
+                            {"no": 3, "text": "3"}]))
+    assert [o["text"] for o in q["options"]] == ["1.5", "2.0", "3"]

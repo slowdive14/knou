@@ -50,6 +50,27 @@ _SYMBOLS = str.maketrans({
 })
 
 
+# 보기 번호 표시 — '1.5' 같은 숫자 보기를 깎지 않도록, 숫자 표시는 뒤에
+# 빈칸이 있을 때만 떼어 낸다.
+_OPT_MARK = re.compile(r"^\s*(?:[①②③④⑤]\s*|\(?[1-5]\)\s+|[1-5]\.\s+)")
+_STEM_NO = re.compile(r"^\s*\d{1,2}\s*[.．]\s+")
+
+
+def tidy(q) -> dict:
+    """옮겨 적을 때 붙는 군더더기를 걷어낸 **새 dict**.
+
+    다시 읽은 쪽이 보기 글 앞에 '③' 을, 물음 앞에 '21.' 을 붙여 오는 일이
+    잦았다. 내용은 맞아도 화면에 '3  ③ A' 처럼 번호가 두 번 보이고, 견줄 때
+    멀쩡한 문항을 '다르다' 고 하게 만든다.
+    """
+    q = dict(q or {})
+    q["question"] = _STEM_NO.sub("", str(q.get("question") or ""), count=1)
+    q["options"] = [dict(o, text=_OPT_MARK.sub("", str(o.get("text") or ""),
+                                                count=1))
+                    for o in (q.get("options") or [])]
+    return q
+
+
 def norm(text) -> str:
     """비교용으로 다듬는다 — 띄어쓰기와 기호 모양 차이를 지운다.
 
@@ -87,7 +108,7 @@ def similar(a, b) -> float:
        가장 낮은 값을 쓴다 — 보기도 한 줄씩 따로 본다('400, 618' 과
        '400, 300' 은 다른 보기다).
     """
-    a, b = a or {}, b or {}
+    a, b = tidy(a), tidy(b)
     parts = [_ratio(a.get("question"), b.get("question")),
              _ratio(a.get("code"), b.get("code"))]
     oa = [o.get("text") for o in (a.get("options") or [])]
@@ -96,6 +117,32 @@ def similar(a, b) -> float:
         return 0.0
     parts += [_ratio(x, y) for x, y in zip(oa, ob)]
     return min(parts)
+
+
+PROBLEM_SAME = 0.8      # 같은 문제로 볼 물음·보기의 닮음(옮겨 적기 흔들림 허용)
+
+
+def same_problem(a, b) -> bool:
+    """같은 문제를 바로잡는 것인가 — 다른 문제로 바뀐 것인가.
+
+    C프로그래밍에서는 '코드가 아예 빠져 있던' 문항, 'int main' 이 'void main'
+    으로 옮겨진 문항, 보기 하나가 '⑧ ⑩' 처럼 깨져 있던 문항이 많았다.
+    물음이 같고 보기도 거의 같으면 **같은 문제**다 — 강 번호와 풀이 기록까지
+    버릴 까닭이 없다.
+
+    ⚠️ 물음만 보면 안 된다. 2015-2 의 7~9번은 물음이 글자까지 같은데
+       기억장치 값이 달라 보기 넷이 모두 달랐다 — 다른 문제다. 그래서 보기가
+       둘 이상 다르면 다른 문제로 본다.
+    """
+    a, b = tidy(a), tidy(b)
+    if _ratio(a.get("question"), b.get("question")) < PROBLEM_SAME:
+        return False
+    oa = [o.get("text") for o in (a.get("options") or [])]
+    ob = [o.get("text") for o in (b.get("options") or [])]
+    if len(oa) != len(ob):
+        return False
+    off = sum(1 for x, y in zip(oa, ob) if _ratio(x, y) < PROBLEM_SAME)
+    return off <= 1
 
 
 def q_no(q):
@@ -281,20 +328,24 @@ def fits(q, picked) -> bool | None:
 # ---------------------------------------------------------------------------
 # 내용을 바꾸면 **함께 버려야** 하는 것들 — 다른 문항을 두고 만든 것이다.
 STALE_KEYS = ("explanation", "chat", "lecture", "suspect")
+# 같은 문제(물음·보기가 같고 코드만 바로잡는 것)라도 버려야 하는 것 —
+# 해설과 대화는 틀린 코드를 짚어 가며 설명했을 수 있다.
+CODE_STALE_KEYS = ("explanation", "chat", "suspect")
 
 
-def apply_fix(q, new) -> dict:
+def apply_fix(q, new, same: bool = False) -> dict:
     """문항 내용을 시험지 것으로 바꾼 **새 dict** — qid·정답 번호는 지킨다.
 
     ⚠️ 해설·되묻기 대화·강 번호는 엉뚱한 문항을 두고 만든 것이라 버린다.
        남겨 두면 바뀐 문제 아래에 다른 문제의 해설이 붙는다.
+       다만 same(같은 문제 — 코드·지문만 바로잡는다)이면 강 번호는 지킨다.
     ⚠️ 정답 번호는 그대로 둔다 — 정답표에서 번호로 붙인 것이라 처음부터
        맞았다. 보기 글이 바뀌었으니 정답 글(answer_text)만 다시 맞춘다.
     """
     from quizbank import correct_nos
 
     out = dict(q or {})
-    new = new or {}
+    new = tidy(new)
     for k in ("question", "code", "intro"):
         out[k] = str(new.get(k) or "").strip()
     out["options"] = [{"no": int(o.get("no") or i + 1),
@@ -302,7 +353,7 @@ def apply_fix(q, new) -> dict:
                       for i, o in enumerate(new.get("options") or [])]
     if new.get("points"):
         out["points"] = int(new.get("points"))
-    for k in STALE_KEYS:
+    for k in (CODE_STALE_KEYS if same else STALE_KEYS):
         out.pop(k, None)
     opts = {o["no"]: o["text"] for o in out["options"]}
     pick = " · ".join(opts[n] for n in correct_nos(out) if opts.get(n))
@@ -347,7 +398,7 @@ def reread(client, pdf, course: str, year: int, term: int,
             continue
         for q in normalize_questions(_clean_json(_resp_text(resp)),
                                      year, term):
-            out.setdefault(q_no(q), (i, q))
+            out.setdefault(q_no(q), (i, tidy(q)))
     return out
 
 

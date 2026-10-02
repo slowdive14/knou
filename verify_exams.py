@@ -28,6 +28,7 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +43,7 @@ import fetch_exam_figures as fx
 import quiz_progress as qp
 
 BACKUP_DIR = "_백업"
+JUDGE_RETRY_WAIT = 20     # 판정을 못 받았을 때 다시 묻기 전에 쉬는 시간(초)
 
 
 def _log(m):
@@ -188,7 +190,14 @@ def main(argv=None) -> int:
             if old and new and ev.similar(old, new) < ev.SAME:
                 diff.setdefault(new_pages[n][0], []).append((n, old, new))
         for page_no, items in sorted(diff.items()):
-            judged.update(ev.judge(client, pdf, page_no, items, course, _log))
+            got = ev.judge(client, pdf, page_no, items, course, _log)
+            # 모델이 모두 붐벼 판정을 못 받은 문항은 잠시 쉬었다 한 번 더 묻는다
+            # (2017-2 의 3쪽 12문항이 통째로 '판정 없음' 으로 남았다).
+            left = [it for it in items if it[0] not in got]
+            if left:
+                time.sleep(JUDGE_RETRY_WAIT)
+                got.update(ev.judge(client, pdf, page_no, left, course, _log))
+            judged.update(got)
 
         plan = decide(pairs, new_pages, judged)
         counts = {k: sum(1 for v in plan.values() if v[0] == k)
@@ -210,6 +219,7 @@ def main(argv=None) -> int:
                 _log(f"   {n:>2}번 확인 필요 — {why}")
 
         fixed_ids = []
+        other_ids = []          # 아예 다른 문제로 바뀐 것
         if a.fix and counts["fix"]:
             if backup_dir is None:
                 backup_dir = backup([p for p, _b in banks] + [prog_path],
@@ -220,16 +230,21 @@ def main(argv=None) -> int:
                 n = ev.q_no(q)
                 act, _why, put = plan.get(n, ("", "", None))
                 if act == "fix" and put:
-                    qs.append(ev.apply_fix(q, put))
+                    # 물음·보기가 같으면 같은 문제다 — 코드·지문만 바로잡고
+                    # 강 번호와 풀이 기록은 지킨다.
+                    same = ev.same_problem(q, put)
+                    qs.append(ev.apply_fix(q, put, same=same))
                     fixed_ids.append(q.get("qid"))
+                    if not same:
+                        other_ids.append(q.get("qid"))
                 else:
                     qs.append(q)
             bank["questions"] = qs
             p.write_text(json.dumps(bank, ensure_ascii=False, indent=1),
                          encoding="utf-8")
             touched.append(name)
-            # 바뀐 문항의 풀이 기록은 다른 문제를 푼 기록이다.
-            for qid in fixed_ids:
+            # 다른 문제로 바뀐 문항의 풀이 기록은 다른 문제를 푼 기록이다.
+            for qid in other_ids:
                 if prog.pop(qp.record_key(bank, qid), None) is not None:
                     dropped_records += 1
 
