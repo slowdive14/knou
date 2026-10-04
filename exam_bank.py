@@ -169,24 +169,40 @@ def parse_answer_lines(lines, course: str, expect: int = 25) -> list[list[int]]:
     expect 개를 채우면 멈춘다. 길이 1인 줄은 과목 구분자라 건너뛴다 —
     정답이 아니다(실측: 각 과목 끝에 '1' 이 따로 붙어 있다).
     """
+    got = answer_span(lines, course, expect)
+    return got[2] if got else []
+
+
+def answer_span(lines, course: str, expect: int = 25, start: int = 0,
+                end=None):
+    """그 과목 정답이 놓인 자리 → (과목명 줄, 마지막 정답 줄, 정답) 또는 None.
+
+    start~end 구간 안에서만 찾는다. 한 파일에 여러 회차가 들어 있으면 구간을
+    나눠 불러야 한다 — 파일 전체에서 첫 과목명 줄을 집으면 늘 맨 앞 회차의
+    답이 나온다.
+    """
     want = _norm(course)
     rows = [str(x or "").strip() for x in (lines or [])]
-    try:
-        start = next(i for i, l in enumerate(rows) if _norm(l) == want)
-    except StopIteration:
-        return []
-    out: list[list[int]] = []
-    for l in rows[start + 1:]:
-        if not l:
+    end = len(rows) if end is None else min(int(end), len(rows))
+    for i in range(max(0, int(start)), end):
+        if _norm(rows[i]) != want:
             continue
-        if len(l) == 1 and l.isdigit():
-            continue                      # 과목 구분자
-        if not _looks_like_answers(l):
-            break                         # 다음 과목명 등 — 여기서 끝
-        out.extend(_row_answers(l))
-        if expect and len(out) >= expect:
-            break
-    return out[:expect] if expect else out
+        out: list[list[int]] = []
+        last = i
+        for j in range(i + 1, end):
+            l = rows[j]
+            if not l:
+                continue
+            if len(l) == 1 and l.isdigit():
+                continue                  # 과목 구분자
+            if not _looks_like_answers(l):
+                break                     # 다음 과목명 등 — 여기서 끝
+            out.extend(_row_answers(l))
+            last = j
+            if expect and len(out) >= expect:
+                break
+        return i, last, (out[:expect] if expect else out)
+    return None
 
 
 def question_no(q) -> int:

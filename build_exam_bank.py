@@ -237,6 +237,13 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
     if same is False:
         log(f"   ⚠️ {pdf.name} 는 {year}-{term} 시험지가 아닙니다 — 건너뜁니다")
         return {"title": title, "ok": False, "why": "다른 회차의 시험지"}
+    try:
+        # 퀴즈 화면의 '시험지' 단추가 이 파일을 찾게 회차를 적어 둔다
+        # (나중에 AI 로 다시 읽지 않아도 되게).
+        import exam_files as xf
+        xf.remember(work, pdf, (year, term))
+    except OSError:
+        pass
     log(f"   받음: {pdf.name} — 문항을 읽습니다(몇 분 걸립니다)")
     questions = eb.extract_questions(client, pdf, name, year, term,
                                      on_event=log)

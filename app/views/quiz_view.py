@@ -10,6 +10,7 @@
   - [기출 더 가져오기] — 자료실에서 아직 안 담은 회차를 찾아 담는다
   - [새로고침] — 밖에서 담은 기출도 앱을 끄지 않고 집어 온다
   - 'N강 모아보기' — 회차가 달라도 그 강의 문항을 한 자리에 모은다
+  - '기출 원본' — 이 과목의 회차마다 시험지·정답표 파일을 눌러 연다(exam_files)
   - 풀이 기록은 앱이 켜져 있는 동안 유지(HTML 페이지는 브라우저에 저장)
 
 데이터는 quiz_page.collect_banks(볼트/퀴즈) 를 그대로 쓴다(로그인·네트워크 없음).
@@ -17,9 +18,11 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import flet as ft
 
+import exam_files as xf
 import quiz_chat as qc
 import quiz_explain as qe
 import quiz_intro as qi
@@ -47,6 +50,39 @@ INTRO_IMAGE_WIDTH = 695
 # 위아래로 오르내리게 된다 — 옆에 두면 문제를 보면서 물을 수 있다.
 CHAT_WIDTH = 380        # 판의 폭(px)
 CHAT_MIN_WIDTH = 1080   # 창이 이보다 좁으면 판을 접고 카드 안으로 되돌린다
+
+EXAM_DIR_NAME = "_기출"  # 받아 둔 시험지·정답표가 있는 곳(내려받기 폴더 아래)
+
+
+def bank_term(bank):
+    """이 은행이 어느 회차의 것인가 — 기출·변형이면 (연도, 학기), 아니면 None."""
+    ex = (bank or {}).get("exam") or {}
+    try:
+        return (int(ex["year"]), int(ex["term"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def sheet_tip(term) -> str:
+    """시험지 단추의 풍선 도움말 — 어느 파일이 열리는지."""
+    ps = (term or {}).get("sheets") or []
+    if not ps:
+        return ("이 회차 시험지를 찾지 못했습니다. 받아 둔 시험지라면 "
+                "index_exam_files.py 로 회차를 읽어 두세요")
+    more = f" (같은 회차 파일 {len(ps) - 1}개 더)" if len(ps) > 1 else ""
+    return f"{Path(ps[0]).name}{more}"
+
+
+def answer_tip(term, course) -> str:
+    """정답표 단추의 풍선 도움말 — 어느 파일의 어디가 열리는지."""
+    spot = (term or {}).get("answer")
+    if not spot:
+        return "이 회차 정답표에서 이 과목을 찾지 못했습니다"
+    name = Path(spot["file"]).name
+    if spot.get("pages"):
+        return f"{name} — {course} 줄이 있는 쪽만 잘라 엽니다"
+    many = " · 여러 회차가 든 파일" if spot.get("many") else ""
+    return f"{name}{many} — 통째로 열립니다('{course}' 줄을 찾으세요)"
 
 
 def side_chat(width) -> bool:
@@ -244,12 +280,20 @@ def answer_text(q: dict) -> str:
 # ---------------------------------------------------------------------------
 # 화면 (Flet — 수동 스모크)
 # ---------------------------------------------------------------------------
-def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
-    """퀴즈 화면. initial=(과목, 차시) 를 주면 그 강의부터 연다."""
+def build_quiz_view(page=None, quiz_dir=None, initial=None,
+                    exam_dir=None) -> ft.Control:
+    """퀴즈 화면. initial=(과목, 차시) 를 주면 그 강의부터 연다.
+
+    exam_dir 는 받아 둔 시험지·정답표 폴더다. 퀴즈 폴더를 직접 넘기면(테스트)
+    따로 주지 않는 한 원본 줄을 그리지 않는다.
+    """
     if quiz_dir is None:
         try:
             from config import load_config
-            quiz_dir = default_quiz_paths(load_config())[0]
+            cfg = load_config()
+            quiz_dir = default_quiz_paths(cfg)[0]
+            if exam_dir is None:
+                exam_dir = Path(cfg.downloads_dir) / EXAM_DIR_NAME
         except Exception:  # noqa: BLE001 - 설정 전이면 빈 화면으로
             quiz_dir = None
 
@@ -267,7 +311,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
           # 카드를 다시 그릴 때마다 입력창이 새로 만들어지므로 치던 글은
           # 여기 담아 둬야 날아가지 않는다.
           "chat_open": set(), "draft": {}, "asking": None, "panel": None,
-          "wide": side_chat(getattr(page, "width", None))}
+          "wide": side_chat(getattr(page, "width", None)),
+          # 기출 원본 — 과목마다 한 번만 훑는다(정답표 HWP 를 열어 읽는다)
+          "terms": {}}
 
     title = ft.Text("강의 퀴즈", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -291,6 +337,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
     # 곧바로 풀어보려면 회차별 은행을 25문항씩 훑어야 했다.
     lec_pick = ft.Dropdown(label="강 모아보기", width=150, options=[],
                            tooltip="기출·변형·강의 퀴즈에서 그 강의 문항만 모읍니다")
+    # 이 과목의 기출 원본 — 회차마다 [시험지] [정답표]. 문항이 이상해 보이면
+    # 원래 지면과 정답표를 곧바로 대 볼 수 있어야 한다.
+    src_row = ft.Row(spacing=8, wrap=True, visible=False,
+                     vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     chat_panel = ft.Container(
         content=ft.Column(
@@ -497,6 +547,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         st["idx"] = min(st["idx"], max(0, len(banks) - 1)) if keep else 0
         st["lec"] = 0
         lec_pick.options = _lec_options()
+        st["terms"].clear()             # 새로 담은 회차의 시험지도 보이게
+        _render_sources()
         _apply()
         return len({bank_title(b) for b in banks} - before)
 
@@ -553,6 +605,87 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
             _safe_update()
 
         threading.Thread(target=work, daemon=True).start()
+
+    # --- 기출 원본 --------------------------------------------------------
+    def _terms(course) -> list:
+        """이 과목의 회차들 — 과목마다 한 번만 훑는다(AI 는 부르지 않는다)."""
+        if not exam_dir or not course:
+            return []
+        if course not in st["terms"]:
+            try:
+                st["terms"][course] = xf.course_terms(exam_dir, course)
+            except Exception:  # noqa: BLE001 - 원본을 못 찾아도 퀴즈는 푼다
+                st["terms"][course] = []
+        return st["terms"][course]
+
+    def _open_file(path, note):
+        """원본을 윈도우 기본 프로그램으로 연다 — 무엇이 열렸는지 머리말에 남긴다."""
+        from open_target import open_path
+        res = open_path(path)
+        sub.value = note if res.get("ok") else \
+            f"열지 못했습니다: {res.get('error') or Path(path).name}"
+        _safe_update()
+
+    def _open_sheet(term):
+        ps = term.get("sheets") or []
+        if ps:
+            _open_file(ps[0], f"{term['label']} 시험지를 열었습니다: "
+                              f"{Path(ps[0]).name}")
+
+    def _open_answer(term):
+        """정답표를 연다 — PDF 면 이 과목 줄이 있는 쪽만, HWP 면 통째로."""
+        spot = term.get("answer")
+        if not spot:
+            return
+        course = _course_name()
+        try:
+            target = xf.answer_target(spot, course)
+        except Exception:  # noqa: BLE001 - 자르지 못하면 원본을 통째로
+            target = Path(spot["file"])
+        if Path(target) == Path(spot["file"]):
+            spot = dict(spot, pages=[])     # 통째로 열었다 — 안내도 그에 맞게
+        _open_file(target, xf.answer_hint(spot, course))
+
+    def _src_button(text, icon, tip, on_click) -> ft.Control:
+        on = on_click is not None
+        return ft.Container(
+            content=ft.Row(
+                [ft.Icon(icon, size=14, color=MINT if on else MUTE),
+                 ft.Text(text, size=12, color=None if on else MUTE)],
+                spacing=4, tight=True),
+            padding=ft.Padding(8, 4, 8, 4), border_radius=6, tooltip=tip,
+            ink=on, on_click=on_click, opacity=1 if on else .55)
+
+    def _render_sources():
+        """'기출 원본' 줄 — 지금 과목의 회차마다 [시험지] [정답표]."""
+        course = _course_name()
+        terms = _terms(course)
+        src_row.controls.clear()
+        src_row.visible = bool(terms)
+        if not terms:
+            return
+        now = bank_term(_real_bank())
+        src_row.controls.append(ft.Text("기출 원본", size=12, color=MUTE,
+                                        weight=ft.FontWeight.BOLD))
+        for t in terms:
+            sheet = _src_button(
+                "시험지", ft.Icons.DESCRIPTION_OUTLINED, sheet_tip(t),
+                (lambda _e, tt=t: _open_sheet(tt)) if t["sheets"] else None)
+            answer = _src_button(
+                "정답표", ft.Icons.FACT_CHECK_OUTLINED, answer_tip(t, course),
+                (lambda _e, tt=t: _open_answer(tt)) if t["answer"] else None)
+            # 지금 풀고 있는 회차는 칠해 둔다 — 그 회차 원본을 찾기 쉽게.
+            src_row.controls.append(ft.Container(
+                content=ft.Row(
+                    [ft.Text(t["label"], size=12, weight=ft.FontWeight.BOLD,
+                             font_family="Consolas"), sheet, answer],
+                    spacing=2, tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding(10, 2, 4, 2), border_radius=8,
+                bgcolor=MINT_BG if t["key"] == now else None,
+                border=ft.Border.all(1, MINT if t["key"] == now else
+                                     ft.Colors.with_opacity(
+                                         .12, ft.Colors.ON_SURFACE))))
 
     def _close_dialog():
         if page is not None:
@@ -875,6 +1008,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
         # 은행을 직접 고르면 모아보기는 풀린다 — 고른 은행이 안 보이면 이상하다.
         st["lec"] = 0
         lec_pick.options = _lec_options()
+        _render_sources()
         _apply()
 
     def on_pick(_=None):
@@ -1006,7 +1140,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None) -> ft.Control:
                               spacing=0)],
                    vertical_alignment=ft.CrossAxisAlignment.END, spacing=14,
                    wrap=True),
-            bar, tools, ft.Divider(height=1),
+            bar, tools, src_row, ft.Divider(height=1),
             ft.Row([ft.Stack([cards, import_log], expand=True), chat_panel],
                    spacing=14, expand=True,
                    vertical_alignment=ft.CrossAxisAlignment.STRETCH),

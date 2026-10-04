@@ -111,21 +111,27 @@ def usable_pdfs(work: Path, course: str, client=None, on_event=None) -> dict:
 
     읽는 길은 'text'(글줄로 좌표를 찾는다) 또는 'ai'(지면을 보여 주고
     묻는다)다. client 가 없으면 글줄이 있는 시험지만 돌려준다.
+
+    회차는 회차표(exam_files)에 적힌 것을 먼저 본다 — 한 번 AI 로 읽은
+    시험지를 실행할 때마다 다시 묻지 않는다.
     """
+    import exam_files as xf
+
     log = on_event or (lambda _m: None)
+    idx = xf.load_index(work)
+    before = json.dumps(idx, sort_keys=True)
     out = {}
     for p in ef.find_pdfs(work, course):
-        if ef.has_text_layer(p):
-            key, how = ef.pdf_key(p), "text"
-        elif client is not None:
-            log(f"   {p.name} — 글줄이 없어 지면을 보여 주고 묻습니다")
-            key, how = ef.ai_pdf_key(client, p, log), "ai"
-        else:
+        how = "text" if ef.has_text_layer(p) else "ai"
+        if how == "ai" and client is None:
             continue
+        key = xf.sheet_key(p, client, idx, work, log)
         if key:
             out.setdefault(key, (p, how))
         else:
             log(f"   {p.name} — 학년도·학기를 읽지 못했습니다")
+    if json.dumps(idx, sort_keys=True) != before:
+        xf.save_index(work, idx)
     return out
 
 
