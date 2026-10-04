@@ -178,16 +178,70 @@ def test_a_passed_deadline_is_said_plainly():
     assert "목표일이 지났습니다" in sp.status_line(_plan(), date(2026, 11, 20))
 
 
-# --- 어디부터 손댈까 --------------------------------------------------------
-def test_the_course_with_the_most_left_is_named():
-    assert sp.worst_course(_plan(), TODAY) == "C프로그래밍"
+# --- 어디부터 손댈까 — 오래 손 놓은 과목부터 --------------------------------
+def test_the_last_certified_day_is_the_latest_one():
+    """강 번호 순서가 아니라 날짜로 고른다 — 3강을 먼저 보고 1강을 나중에 볼 수 있다."""
+    p = _plan(watched={"자료구조": {"1": "2026-09-20", "3": "2026-09-10"}})
+    assert sp.last_watched(p, "자료구조") == "2026-09-20"
+    assert sp.last_watched(p, "C프로그래밍") == ""
+
+
+def test_a_broken_date_is_not_the_last_day():
+    p = _plan(watched={"자료구조": {"1": "어제", "2": "2026-09-13"}})
+    assert sp.last_watched(p, "자료구조") == "2026-09-13"
+
+
+def test_the_idle_days_count_from_the_last_day():
+    assert sp.idle_days("2026-09-13", TODAY) == 16
+    assert sp.idle_days("2026-09-29", TODAY) == 0
+    assert sp.idle_days("", TODAY) is None
+
+
+def test_each_row_knows_its_last_day_and_next_lecture():
+    p = _plan(watched={"자료구조": {"1": "2026-09-07", "3": "2026-09-13"}})
+    row = sp.course_rows(p)[0]
+    assert row["last"] == "2026-09-13"
+    assert row["next"] == 2                     # 건너뛴 2강부터
+
+
+def test_the_course_left_alone_longest_comes_first():
+    p = _plan(watched={"자료구조": {"1": "2026-09-25"},
+                       "C프로그래밍": {"1": "2026-09-10"}})
+    assert [r["course"] for r in sp.idle_order(p)] == ["C프로그래밍", "자료구조"]
+
+
+def test_a_course_never_watched_is_left_alone_longest():
+    p = _plan(watched={"C프로그래밍": {"1": "2026-09-07"}})
+    assert sp.idle_order(p)[0]["course"] == "자료구조"
+
+
+def test_on_the_same_day_the_course_with_more_left_comes_first():
+    p = _plan(watched={"자료구조": {"1": "2026-09-20", "2": "2026-09-13"},
+                       "C프로그래밍": {"1": "2026-09-20"}})
+    assert sp.idle_order(p)[0]["course"] == "C프로그래밍"
+
+
+def test_a_finished_course_goes_to_the_end():
+    """다 본 과목은 오래 놓았어도 더 손댈 것이 없다."""
+    p = _plan(watched={"자료구조": {str(n): "2026-09-01"
+                                for n in range(1, 16)},
+                       "C프로그래밍": {"1": "2026-09-28"}})
+    assert [r["course"] for r in sp.idle_order(p)] == ["C프로그래밍", "자료구조"]
+
+
+def test_the_next_course_is_the_one_left_alone_longest():
+    """남은 양만 보고 고르면 한 과목에 몰려 다른 과목이 몇 주씩 잊힌다."""
+    p = _plan(watched={"자료구조": {"1": "2026-09-07"},
+                       "C프로그래밍": {str(n): "2026-09-28"
+                                  for n in range(1, 4)}})
+    assert sp.next_course(p) == "자료구조"
 
 
 def test_nothing_is_named_once_everything_is_done():
     p = _plan(watched={c["course"]: {str(n): "2026-09-07"
                                      for n in range(1, 16)}
                        for c in COURSES})
-    assert sp.worst_course(p, TODAY) is None
+    assert sp.next_course(p) is None
 
 
 # --- 눌러서 고치기 ----------------------------------------------------------

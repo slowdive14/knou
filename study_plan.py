@@ -15,6 +15,9 @@ LMS 의 '이수' 는 이 프로그램이 영상을 돌려 채운 것이라, 내�
 
 순수 로직(단위테스트 대상):
   - course_rows(plan)          : 과목마다 몇 강 봤고 몇 강 남았는지
+  - last_watched / idle_days   : 마지막으로 인증한 날과 그 뒤로 놓은 날 수
+  - idle_order(plan)           : 오래 손을 놓은 과목부터
+  - next_course(plan)          : 다음에 손댈 과목
   - totals(plan)               : 전체 합계
   - days_left(goal, today)     : 오늘을 넣어 남은 날
   - weekly_goal(left, days)    : 일주일에 몇 강(정수) — 0.3강짜리 강의는 없다
@@ -94,10 +97,28 @@ def watched_on(plan, course, no):
     return str(got.get(str(no)) or "") if isinstance(got, dict) else ""
 
 
-def course_rows(plan) -> list:
-    """과목마다 한 줄 — [{course, total, nos, done, left, pct}].
+def last_watched(plan, course) -> str:
+    """이 과목을 마지막으로 본(인증한) 날 — '2026-09-20'. 없으면 빈 문자열."""
+    got = ((plan or {}).get("watched") or {}).get(str(course)) or {}
+    if not isinstance(got, dict):
+        return ""
+    days = [d for d in (_as_date(v) for v in got.values()) if d is not None]
+    return max(days).isoformat() if days else ""
 
-    계획에 적힌 과목 순서를 지킨다(화면이 흔들리지 않게).
+
+def idle_days(last, today=None):
+    """마지막으로 본 날부터 며칠 손을 놓았나 — 본 적이 없으면 None."""
+    d = _as_date(last)
+    if d is None:
+        return None
+    return max(0, (_today(today) - d).days)
+
+
+def course_rows(plan) -> list:
+    """과목마다 한 줄 — [{course, total, nos, done, left, pct, last, next}].
+
+    last 는 마지막으로 본 날, next 는 아직 안 본 가장 앞 강(다 봤으면 None).
+    계획에 적힌 과목 순서를 지킨다 — 손 놓은 순서는 idle_order 가 정한다.
     """
     out = []
     for c in (plan or {}).get("courses") or []:
@@ -110,10 +131,32 @@ def course_rows(plan) -> list:
             total = DEFAULT_TOTAL
         nos = [n for n in watched_nos(plan, course) if n <= total]
         done = len(nos)
+        seen = set(nos)
         out.append({"course": course, "total": total, "nos": nos,
                     "done": done, "left": max(0, total - done),
-                    "pct": round(done / total * 100) if total else 0})
+                    "pct": round(done / total * 100) if total else 0,
+                    "last": last_watched(plan, course),
+                    "next": next((n for n in range(1, total + 1)
+                                  if n not in seen), None)})
     return out
+
+
+def idle_order(plan) -> list:
+    """오래 손을 놓은 과목부터 — course_rows 를 다시 늘어놓는다.
+
+      · 한 번도 안 본 과목이 맨 앞(가장 오래 놓은 셈이다)
+      · 그다음 마지막으로 본 날이 오래된 순서
+      · 같은 날이면 남은 강의가 많은 과목부터
+      · 다 본 과목은 맨 뒤 — 더 손댈 것이 없다
+    같은 자리끼리는 계획에 적힌 순서를 지킨다.
+    """
+    def key(row):
+        if not row["left"]:
+            return (2, "", 0)
+        if not row["last"]:
+            return (0, "", -row["left"])
+        return (1, row["last"], -row["left"])
+    return sorted(course_rows(plan), key=key)
 
 
 def totals(plan) -> dict:
@@ -289,15 +332,14 @@ def course_week(row, days) -> int:
     return weekly_goal((row or {}).get("left"), days)
 
 
-def worst_course(plan, today=None):
-    """가장 뒤처진 과목 이름(다 봤으면 None).
+def next_course(plan):
+    """다음에 손댈 과목 이름 — 가장 오래 손을 놓은 과목(다 봤으면 None).
 
-    남은 강의가 가장 많은 과목이다. 어디부터 손댈지 알려준다.
+    남은 양만 보고 고르면 한 과목에 몰려 다른 과목이 몇 주씩 잊힌다.
+    고르게 돌아가며 보도록 손 놓은 지 오래된 과목을 먼저 부른다.
     """
-    rows = [r for r in course_rows(plan) if r["left"]]
-    if not rows:
-        return None
-    return max(rows, key=lambda r: (r["left"], -r["done"]))["course"]
+    rows = [r for r in idle_order(plan) if r["left"]]
+    return rows[0]["course"] if rows else None
 
 
 # ---------------------------------------------------------------------------

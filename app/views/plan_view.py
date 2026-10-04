@@ -4,6 +4,8 @@ LMS 의 '이수' 는 이 프로그램이 영상을 돌려 채운 것이라, 내�
 강의와는 다르다. 여기서는 실제로 본 것만 센다.
 
   · 과목마다 1~15강 칸 — 들은 강을 누르면 채워지고, 잘못 눌렀으면 다시 눌러 뺀다
+  · 과목마다 최근 인증한 날을 적고, 오래 손을 놓은 과목을 맨 위에 둔다
+    (맨 위 과목에 '다음 차례 · 4강' 표를 붙인다)
   · 머리말은 남은 날과 하루치를 말한다(D-49 · 하루 1.3강)
   · 차질이 생기면 **남은 강의 ÷ 남은 날**을 다시 나눈다 — 하루치가 늘어난다
   · 주별 막대로 어느 주에 쉬었는지 보인다
@@ -12,6 +14,7 @@ LMS 의 '이수' 는 이 프로그램이 영상을 돌려 채운 것이라, 내�
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import flet as ft
@@ -33,6 +36,9 @@ CELL = 30          # 강 번호 칸 한 변(px)
 BAR_H = 66         # 주별 막대의 가장 높은 칸(px)
 BAR_W = 30         # 막대 폭(px)
 WEEKS = 8          # 주별 막대를 몇 주 보여줄지
+IDLE_WARN = 7      # 이만큼 손을 놓으면 귤색으로
+IDLE_ALARM = 14    # 이만큼 손을 놓으면 빨간색으로
+WEEKDAYS = "월화수목금토일"
 
 # 목표에서 빼는 과목 — 이수만 하면 되는 필수 교육이라 '한 번은 본다' 의 대상이
 # 아니다. AI네이티브는 이미 다 이수했고 강의도 13강뿐이라 함께 뺀다.
@@ -69,6 +75,43 @@ def course_line(row, days) -> str:
     return f"{body} · 남은 {left} · 주 {sp.course_week(row, days)}강"
 
 
+def short_date(iso: str) -> str:
+    """'2026-09-20' → '9/20(일)' — 요일이 있어야 언제였는지 떠오른다."""
+    try:
+        d = date.fromisoformat(str(iso or "")[:10])
+    except ValueError:
+        return ""
+    return f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})"
+
+
+def last_line(last, today=None) -> str:
+    """과목 카드의 둘째 줄 — '최근 인증 9/20(일) · 14일 전'.
+
+    며칠 전인지를 함께 적는다. 날짜만 보면 오늘이 며칠인지 따져 봐야 한다.
+    """
+    days = sp.idle_days(last, today)
+    if days is None:
+        return "아직 인증이 없습니다"
+    when = {0: "오늘", 1: "어제"}.get(days, f"{days}일 전")
+    return f"최근 인증 {short_date(last)} · {when}"
+
+
+def idle_tone(last, today=None) -> str:
+    """손 놓은 날 수의 색: fresh(오늘) | ok | warn | alarm(오래 놓음·없음)."""
+    days = sp.idle_days(last, today)
+    if days is None or days >= IDLE_ALARM:
+        return "alarm"
+    if days >= IDLE_WARN:
+        return "warn"
+    return "fresh" if days == 0 else "ok"
+
+
+def next_badge(row) -> str:
+    """다음에 손댈 과목에 붙이는 표 — '다음 차례 · 4강'."""
+    no = (row or {}).get("next")
+    return f"다음 차례 · {no}강" if no else "다음 차례"
+
+
 def bar_height(n, top) -> float:
     """주별 막대 높이(px) — 가장 많이 본 주를 꼭대기로 맞춘다.
 
@@ -103,7 +146,8 @@ def build_plan_view(page=None, plan_path=None, today=None,
             plan_path = None
     snapshot_path = snapshot_path or SNAPSHOT_PATH
 
-    st = {"plan": sp.load_plan(plan_path) if plan_path else {}}
+    # order: 카드 순서 — 화면을 열 때 '오래 손 놓은 순' 으로 한 번 정한다.
+    st = {"plan": sp.load_plan(plan_path) if plan_path else {}, "order": None}
 
     title = ft.Text("진도 트래커", size=26, weight=ft.FontWeight.BOLD)
     sub = ft.Text("", size=13, color=MUTE)
@@ -135,6 +179,19 @@ def build_plan_view(page=None, plan_path=None, today=None,
     def _days() -> int:
         return sp.days_left(st["plan"].get("goal"), today)
 
+    def _ordered(rows) -> list:
+        """카드를 오래 손 놓은 과목부터 늘어놓는다.
+
+        ⚠️ 순서는 화면을 열 때 정하고, 칸을 눌러도 **바꾸지 않는다.** 누르자마자
+           카드가 맨 아래로 달아나면 잘못 누른 것을 되돌리려고 찾아 헤매야 한다.
+           다음에 이 탭을 열면 새 순서로 늘어선다.
+        """
+        names = [r["course"] for r in rows]
+        if st["order"] is None or set(st["order"]) != set(names):
+            st["order"] = [r["course"] for r in sp.idle_order(st["plan"])]
+        rank = {c: i for i, c in enumerate(st["order"])}
+        return sorted(rows, key=lambda r: rank.get(r["course"], len(rank)))
+
     def _toggle(course, no):
         """강 하나를 봤다/안 봤다로 뒤집는다 — 누르는 즉시 저장한다."""
         st["plan"] = sp.toggle(st["plan"], course, no, today)
@@ -155,19 +212,39 @@ def build_plan_view(page=None, plan_path=None, today=None,
                      else f"{no}강 — 아직 안 봤습니다(누르면 표시)"),
             ink=True, on_click=lambda _e, c=course, n=no: _toggle(c, n))
 
-    def _course_card(row) -> ft.Control:
+    def _badge(row) -> ft.Control:
+        return ft.Container(
+            content=ft.Text(next_badge(row), size=11,
+                            weight=ft.FontWeight.BOLD, color=MINT),
+            bgcolor=MINT_BG, border_radius=6,
+            padding=ft.Padding(8, 2, 8, 2),
+            tooltip="가장 오래 손을 놓은 과목입니다")
+
+    def _course_card(row, is_next=False) -> ft.Control:
         done = set(row["nos"])
+        name = [ft.Text(row["course"], size=15, weight=ft.FontWeight.BOLD)]
+        if is_next:
+            name.append(_badge(row))
         head = ft.Row(
-            [ft.Text(row["course"], size=15, weight=ft.FontWeight.BOLD,
-                     expand=True),
+            [ft.Row(name, spacing=8, expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
              ft.Text(course_line(row, _days()), size=12,
                      color=MINT if not row["left"] else MUTE)],
             vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        tone = idle_tone(row["last"], today)
+        last = ft.Text(last_line(row["last"], today), size=12,
+                       color={"fresh": MINT, "warn": APRI,
+                              "alarm": ROSE}.get(tone, MUTE),
+                       weight=ft.FontWeight.BOLD if tone in ("warn", "alarm")
+                       else None)
         cells = ft.Row([_cell(row["course"], n, n in done)
                         for n in range(1, row["total"] + 1)],
                        spacing=5, wrap=True)
+        parts = [head, cells]
+        if row["left"]:                     # 다 본 과목은 손 놓아도 괜찮다
+            parts.insert(1, last)
         return ft.Container(
-            content=ft.Column([head, cells], spacing=10, tight=True),
+            content=ft.Column(parts, spacing=10, tight=True),
             padding=16, border_radius=12,
             bgcolor=ft.Colors.with_opacity(.03, ft.Colors.ON_SURFACE),
             border=ft.Border.all(1, ft.Colors.with_opacity(
@@ -209,10 +286,10 @@ def build_plan_view(page=None, plan_path=None, today=None,
 
         tone = drift_tone(plan, today)
         msg = sp.drift_text(plan, today)
-        worst = sp.worst_course(plan, today)
-        if tone == "behind" and worst:
+        nxt = sp.next_course(plan)
+        if tone == "behind" and nxt:
             # 뒤처졌다고만 하면 막막하다 — 어디부터 손댈지 함께 말한다.
-            msg = f"{msg} · {worst}부터 손대세요"
+            msg = f"{msg} · {nxt}부터 손대세요"
         note.value = msg
         note.color = {"behind": ROSE, "ahead": MINT}.get(tone, MUTE)
         note_box.bgcolor = {"behind": ROSE_BG, "ahead": MINT_BG}.get(
@@ -225,7 +302,8 @@ def build_plan_view(page=None, plan_path=None, today=None,
                 "아직 과목이 없습니다. [과목 불러오기] 를 누르면 강의 목록에서 "
                 "과목과 강의 수를 집어 옵니다.", color=MUTE))
         else:
-            body.controls += [_course_card(r) for r in rows]
+            body.controls += [_course_card(r, r["course"] == nxt)
+                              for r in _ordered(rows)]
             body.controls.append(_weeks_card())
         _safe_update()
 
@@ -252,6 +330,7 @@ def build_plan_view(page=None, plan_path=None, today=None,
         plan.setdefault("goal", sp.DEFAULT_GOAL)
         plan.setdefault("watched", {})
         st["plan"] = plan
+        st["order"] = None                  # 과목이 바뀌었으니 다시 늘어놓는다
         _save()
         _render()
 
