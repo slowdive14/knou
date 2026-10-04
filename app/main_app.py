@@ -28,6 +28,7 @@ from app.views.plan_view import build_plan_view  # noqa: E402
 from app.views.quiz_view import build_quiz_view  # noqa: E402
 from app.views.run_view import build_run_view  # noqa: E402
 from app.views.schedule_view import build_schedule_view  # noqa: E402
+from app.views.tools_view import build_tools_view  # noqa: E402
 from app.views.status_view import build_status_view  # noqa: E402
 from app.views.settings_view import build_settings_view  # noqa: E402
 from gui_core import ENV_PATH, first_run_needed  # noqa: E402
@@ -68,11 +69,12 @@ NAV = [
     ("진도", ft.Icons.TRENDING_UP),
     ("퀴즈", ft.Icons.QUIZ),
     ("예약", ft.Icons.SCHEDULE),
+    ("도구", ft.Icons.BUILD_OUTLINED),
     ("설정", ft.Icons.SETTINGS),
 ]
 # 네비 인덱스 — 코드에서 이름으로 부르기 위해
 (NAV_HOME, NAV_RUN, NAV_STATUS, NAV_PLAN, NAV_QUIZ, NAV_SCHEDULE,
- NAV_SETTINGS) = range(7)
+ NAV_TOOLS, NAV_SETTINGS) = range(8)
 
 
 def _placeholder(title: str, note: str) -> ft.Control:
@@ -111,12 +113,16 @@ def _build_view(index: int, page: ft.Page, go=None, quiz_start=None,
             "· 진도: 목표일까지 남은 강의와 하루치 (들은 강을 눌러 표시)\n"
             "· 퀴즈: 모아둔 돌발퀴즈·형성평가 문항 풀어보기\n"
             "· 예약: 정해진 시각에 자동 실행\n"
+            "· 도구: 가끔 돌리는 일(기출 확인·그림 붙이기·카톡 인증 불러오기 등)"
+            "을 설명 보고 눌러서 실행\n"
             "· 설정: 아이디·비밀번호·Gemini 키·볼트 경로 입력",
         )
     if index == NAV_RUN:
         return build_run_view(page)
     if index == NAV_SCHEDULE:
         return build_schedule_view(page)
+    if index == NAV_TOOLS:
+        return build_tools_view(page)
     return build_settings_view(ENV_PATH)
 
 
@@ -145,16 +151,26 @@ def main(page: ft.Page) -> None:
     # 갔다 오면 실행 중이던 표시가 없어짐). 화면에서 감춰도 컨트롤이 트리에
     # 남아 있어야 워커 스레드가 보내는 갱신이 계속 반영된다.
     run_box = ft.Container(expand=True, padding=24, visible=False)
+    # 도구 화면도 같은 까닭으로 살려 둔다 — 기출 확인처럼 몇 분 걸리는 일을
+    # 돌려 놓고 다른 탭에 다녀와도 기록이 그대로 있어야 한다.
+    tools_box = ft.Container(expand=True, padding=24, visible=False)
     nav_state = {"quiz_start": None}
     run_api: dict = {}          # 실행 화면이 넘겨주는 조작 함수(강의록만 받기 등)
 
     def show(index: int) -> None:
         start = nav_state.pop("quiz_start", None) if index == NAV_QUIZ else None
         nav_state["quiz_start"] = None
+        tools_box.visible = index == NAV_TOOLS
+        if index == NAV_TOOLS and tools_box.content is None:
+            tools_box.content = build_tools_view(page)
         if index == NAV_RUN:
             if run_box.content is None:      # 처음 들어올 때 한 번만 만든다
                 run_box.content = build_run_view(page, on_ready=run_api.update)
             run_box.visible = True
+            content.visible = False
+            content.content = None
+        elif index == NAV_TOOLS:
+            run_box.visible = False
             content.visible = False
             content.content = None
         else:
@@ -176,6 +192,7 @@ def main(page: ft.Page) -> None:
             on_back=lambda: show(NAV_STATUS),
             on_fallback=lambda: open_path(path))
         run_box.visible = False
+        tools_box.visible = False
         content.visible = True
         content.content = view
         page.update()
@@ -234,7 +251,7 @@ def main(page: ft.Page) -> None:
     page.add(
         ft.Row(
             [rail, ft.VerticalDivider(width=1),
-             ft.Stack([content, run_box], expand=True)],
+             ft.Stack([content, run_box, tools_box], expand=True)],
             expand=True,
         )
     )

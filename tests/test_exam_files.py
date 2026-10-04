@@ -276,3 +276,64 @@ def test_course_terms_join_sheets_and_answers(tmp_path, monkeypatch):
     got = xf.course_terms(tmp_path, "컴퓨터구조")
     assert [(t["label"], bool(t["sheets"]), bool(t["answer"])) for t in got] \
         == [("2015-2", False, True), ("2016-2", True, True)]
+
+
+# --- 쪽이 넘어가며 잃은 지문 나눠 주기 ---------------------------------------
+# 실측: 2014-1 C프로그래밍 12·13번은 '※ (11~13)' 지문과 코드가 앞 쪽에 있어
+# 코드 없이 '사용자 정의 함수의 호출이 일어나는 부분은?' 만 남았다.
+def _sq(no, **over):
+    d = {"qid": f"2014-1-{no:02d}", "question": f"{no}번", "intro": "",
+         "code": "", "options": []}
+    d.update(over)
+    return d
+
+
+def test_a_shared_passage_reaches_every_question_in_its_range():
+    qs = [_sq(11, intro="※ (11~13) 다음 프로그램을 보고 답하시오.",
+              code="void main() {}"), _sq(12), _sq(13), _sq(14)]
+    got = eb.share_passages(qs)
+    assert [q["code"] for q in got] == ["void main() {}"] * 3 + [""]
+    assert got[2]["intro"].startswith("※ (11~13)")
+    assert got[3]["intro"] == ""
+
+
+def test_a_question_keeps_its_own_code():
+    qs = [_sq(3, intro="※ (3~4) 다음을 보고", code="A"),
+          _sq(4, code="B")]
+    got = eb.share_passages(qs)
+    assert got[1]["code"] == "B"
+    assert got[1]["intro"].startswith("※ (3~4)")
+
+
+def test_a_question_with_its_own_passage_is_left_alone():
+    qs = [_sq(3, intro="※ (3~4) 첫 지문", code="A"),
+          _sq(4, intro="※ (4~5) 다른 지문", code="")]
+    assert eb.share_passages(qs)[1]["intro"] == "※ (4~5) 다른 지문"
+
+
+def test_sharing_does_not_change_the_given_list():
+    qs = [_sq(1, intro="※ (1~2) 지문", code="A"), _sq(2)]
+    eb.share_passages(qs)
+    assert qs[1]["code"] == ""
+
+
+# --- 건네받은 시험지 ----------------------------------------------------------
+def test_a_given_pdf_is_kept_under_its_term_name(tmp_path):
+    import build_exam_bank as bx
+    src = _pdf(tmp_path / "받은 시험지.pdf")
+    work = tmp_path / "_기출"
+    got = bx.local_sheet(src, work, "C프로그래밍", 2014, 1, lambda _m: None)
+    assert got == work / xf.MANUAL_DIR / "C프로그래밍_2014-1.pdf"
+    assert got.exists() and src.exists()          # 원본은 그대로 둔다
+
+
+def test_a_sheet_made_before_is_reused(tmp_path, monkeypatch):
+    import build_exam_bank as bx
+    import hwp_convert as hc
+    work = tmp_path / "_기출"
+    made = _pdf(hc.manual_dir(work) / "C프로그래밍_2014-1.pdf")
+    monkeypatch.setattr(hc, "hwp_to_pdf",
+                        lambda *_a, **_k: pytest.fail("다시 바꿨다"))
+    got = bx.local_sheet(tmp_path / "x.hwp", work, "C프로그래밍", 2014, 1,
+                         lambda _m: None)
+    assert got == made

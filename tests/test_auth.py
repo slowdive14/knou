@@ -71,3 +71,30 @@ def test_hidden_header_login_form_still_logged_in():
     </body></html>
     """
     assert is_logged_in(html, STUDY_URL) is True
+
+
+# --- 바이오통계학(knouon)에 다녀온 뒤 '나의 학습' 으로 돌아오기 --------------
+# 실측(2026-10-05): 주차를 읽으러 knouon 에 건너간 채로 자료구조 5강을 열어
+# 'fnCntsPopup is not defined' 로 영상·형성평가가 통째로 실패했다.
+class _Page:
+    def __init__(self, url):
+        self.url = url
+        self.went = []
+
+    def goto(self, url, **_k):
+        self.went.append(url)
+        self.url = url
+
+
+def test_a_page_left_on_knouon_comes_back():
+    from auth import MY_STUDY_URL, back_to_my_study
+    p = _Page("https://knouon.knou.ac.kr/lms/classroom/view.do")
+    assert back_to_my_study(p) is True
+    assert p.went == [MY_STUDY_URL]
+
+
+def test_a_page_already_home_stays():
+    from auth import MY_STUDY_URL, back_to_my_study
+    p = _Page(MY_STUDY_URL)
+    assert back_to_my_study(p) is False
+    assert p.went == []

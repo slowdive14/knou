@@ -502,6 +502,35 @@ def extract_questions(client, pdf_path, course: str, year: int, term: int,
     return normalize_questions(got, year, term)
 
 
+_SHARE_RE = re.compile(r"^\s*※\s*\(\s*(\d{1,2})\s*[～~∼\-–]\s*(\d{1,2})\s*\)")
+
+
+def share_passages(questions) -> list:
+    """'※ (11~13) 다음 프로그램…' 지문을 범위 안 문항 모두에 나눠 준다.
+
+    시험지를 한 쪽씩 읽으므로, 지문은 앞 쪽에 있고 문항이 다음 쪽으로 넘어가면
+    넘어간 문항에는 지문도 코드도 없다(실측: 2014-1 C프로그래밍 12·13번,
+    2019-2 컴퓨터구조 9번 — 코드나 그림 설명 없이는 풀 수 없다).
+    **비어 있는 칸만** 채운다. 제 지문이 있는 문항은 건드리지 않고, 제 코드가
+    있는 문항은 지문 글만 받는다.
+    """
+    qs = [dict(q) for q in questions or []]
+    by_no = {question_no(q): q for q in qs}
+    for q in qs:
+        m = _SHARE_RE.match(str(q.get("intro") or ""))
+        if not m:
+            continue
+        lo, hi = int(m.group(1)), int(m.group(2))
+        for n in range(lo, hi + 1):
+            t = by_no.get(n)
+            if t is None or t is q or str(t.get("intro") or "").strip():
+                continue
+            t["intro"] = q["intro"]
+            if not str(t.get("code") or "").strip() and q.get("code"):
+                t["code"] = q["code"]
+    return qs
+
+
 def normalize_questions(items, year: int, term: int) -> list:
     """모델이 준 문항 → 은행 형식(번호순, 중복 제거, 못 쓸 것 버림)."""
     seen: dict[int, dict] = {}

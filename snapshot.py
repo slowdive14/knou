@@ -117,6 +117,12 @@ def refresh_snapshot(page, path=SNAPSHOT_PATH, on_event=lambda m: None,
                     on_event(f"목록 갱신: '{cname}' knouon 조회 실패 "
                              f"— {str(e)[:100]}")
                     got = []
+                # knouon 에 남아 있으면 뒤 과목의 차시 조회가 실패한다
+                try:
+                    from auth import back_to_my_study
+                    back_to_my_study(page)
+                except Exception:  # noqa: BLE001 - 다음 과목 조회가 알린다
+                    pass
             # 조회가 **깨진** 과목은 스냅샷에서 뺀다 — 빈 채로 남기면 현황에
             # '차시 0개'인 유령 과목이 생긴다. 정상 조회로 빈 목록인 것과는
             # 다르게 다룬다.

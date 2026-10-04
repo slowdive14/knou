@@ -245,3 +245,52 @@ def test_extra_videos_field_survives_stage_marking():
     rec = st[lecture_key("자료구조", 1)]
     assert rec["extra_videos"] == [{"idx": 1}]
     assert rec["capture"]["ok"] is True
+
+
+# --- knouon 주차를 읽은 뒤에는 '나의 학습' 으로 돌아온다 ----------------------
+class _Log:
+    def info(self, *a):
+        pass
+
+    def warning(self, *a):
+        pass
+
+
+class _Page:
+    def __init__(self):
+        self.url = "https://ucampus.knou.ac.kr/ekp/user/study/retrieveUMYStudy.sdo"
+        self.went = []
+
+    def goto(self, url, **_k):
+        self.went.append(url)
+        self.url = url
+
+
+def test_reading_knouon_weeks_returns_to_my_study(monkeypatch):
+    import knouon
+    import main as m
+    from auth import MY_STUDY_URL
+    page = _Page()
+
+    def fake_fetch(pg, sbjct, course):
+        pg.url = "https://knouon.knou.ac.kr/lms/classroom/view.do"
+        return ["1주차"]
+    monkeypatch.setattr(knouon, "sbjct_id_for", lambda c: "X")
+    monkeypatch.setattr(knouon, "fetch_weeks", fake_fetch)
+    assert m._knouon_weeks(page, "바이오통계학", _Log()) == ["1주차"]
+    assert page.url == MY_STUDY_URL
+
+
+def test_a_failed_knouon_read_also_returns(monkeypatch):
+    import knouon
+    import main as m
+    from auth import MY_STUDY_URL
+    page = _Page()
+
+    def boom(pg, sbjct, course):
+        pg.url = "https://knouon.knou.ac.kr/lms/login"
+        raise RuntimeError("막힘")
+    monkeypatch.setattr(knouon, "sbjct_id_for", lambda c: "X")
+    monkeypatch.setattr(knouon, "fetch_weeks", boom)
+    assert m._knouon_weeks(page, "바이오통계학", _Log()) == []
+    assert page.url == MY_STUDY_URL

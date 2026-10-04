@@ -29,6 +29,7 @@ except Exception:  # noqa: BLE001 - 콘솔이 없어도 돈다
     pass
 
 import exam_figure as ef
+import exam_files as xf
 import quiz_intro as qi
 
 
@@ -115,13 +116,12 @@ def usable_pdfs(work: Path, course: str, client=None, on_event=None) -> dict:
     회차는 회차표(exam_files)에 적힌 것을 먼저 본다 — 한 번 AI 로 읽은
     시험지를 실행할 때마다 다시 묻지 않는다.
     """
-    import exam_files as xf
-
     log = on_event or (lambda _m: None)
     idx = xf.load_index(work)
     before = json.dumps(idx, sort_keys=True)
     out = {}
-    for p in ef.find_pdfs(work, course):
+    # 직접받은PDF(사람이 건네준 시험지)도 함께 본다
+    for p in xf.sheet_pdfs(work, course):
         how = "text" if ef.has_text_layer(p) else "ai"
         if how == "ai" and client is None:
             continue
@@ -246,7 +246,7 @@ def main(argv=None) -> int:
         got = usable_pdfs(work, c, client, _log)
         pdfs[c] = got
         by_ai = sum(1 for _p, how in got.values() if how == "ai")
-        skipped = len(ef.find_pdfs(work, c)) - len(got)
+        skipped = len(xf.sheet_pdfs(work, c)) - len(got)
         _log(f"   쓸 수 있는 시험지 {len(got)}벌"
              + (f"(그중 {by_ai}벌은 지면을 보여 주고 읽습니다)" if by_ai else "")
              + (f" · 못 쓰는 것 {skipped}벌" if skipped else ""))

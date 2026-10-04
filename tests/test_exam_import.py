@@ -215,22 +215,24 @@ def test_the_post_count_is_high_enough_to_see_old_exams():
 # 받기 + AI 가 문항 읽기, 회차당 2~3분)에서 아무 소식이 없어 멈춘 것처럼 보였다.
 def test_building_a_round_reports_through_the_given_channel():
     import inspect
-    src = inspect.getsource(bx.build_one)
-    assert "log = on_event or _log" in src
-    assert "_log(" not in src.split('"""', 2)[-1]   # 몸통에서는 콘솔로 안 찍는다
+    for fn in (bx.build_one, bx.build_from_pdf):
+        src = inspect.getsource(fn)
+        assert "log = on_event or _log" in src
+        assert "_log(" not in src.split('"""', 2)[-1]   # 몸통에서는 콘솔로 안 찍는다
 
 
 def test_the_slow_steps_say_what_they_are_doing():
     import inspect
     src = inspect.getsource(bx.build_one)
     assert "PDF 받는 중" in src
-    assert "몇 분 걸립니다" in src
+    # 문항 읽기는 받은 것·건네받은 것이 함께 쓰는 build_from_pdf 에 있다
+    assert "몇 분 걸립니다" in inspect.getsource(bx.build_from_pdf)
 
 
 def test_the_page_by_page_progress_is_passed_along():
     """비전은 쪽마다 보고한다 — 그 보고가 화면까지 와야 한다."""
     import inspect
-    src = inspect.getsource(bx.build_one)
+    src = inspect.getsource(bx.build_from_pdf)
     assert "on_event=log" in src
 
 
@@ -256,7 +258,7 @@ def test_the_importer_asks_for_as_many_answers_as_the_paper_has():
     import inspect
 
     import build_exam_bank as bx
-    src = inspect.getsource(bx.build_one)
+    src = inspect.getsource(bx.build_from_pdf)
     assert "expected_count" in src
 
 

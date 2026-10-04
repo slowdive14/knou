@@ -297,7 +297,12 @@ class _Ctx:
 
 
 def _knouon_weeks(page, course: str, logger) -> list:
-    """knouon 과목의 주차 목록. 실패해도 실행을 멈추지 않는다(빈 목록)."""
+    """knouon 과목의 주차 목록. 실패해도 실행을 멈추지 않는다(빈 목록).
+
+    주차를 읽으려면 knouon 사이트로 건너가야 한다. 읽고 나면 '나의 학습' 으로
+    **돌아온다** — 그쪽에 남아 있으면 뒤에 오는 과목의 차시 조회와 강의 팝업이
+    모두 실패한다.
+    """
     try:
         sbjct = knouon.sbjct_id_for(course)
         weeks = knouon.fetch_weeks(page, sbjct, course)
@@ -306,6 +311,18 @@ def _knouon_weeks(page, course: str, logger) -> list:
     except Exception as e:  # noqa: BLE001 - 한 과목 실패가 전체를 막지 않게
         logger.warning("%s: knouon 주차 조회 실패 — %s", course, str(e)[:120])
         return []
+    finally:
+        _back_to_lms(page, logger)
+
+
+def _back_to_lms(page, logger) -> None:
+    """전자캠퍼스 '나의 학습' 으로 돌아온다(이미 있으면 그대로)."""
+    from auth import back_to_my_study
+    try:
+        if back_to_my_study(page):
+            logger.info("  (나의 학습으로 돌아왔습니다)")
+    except Exception as e:  # noqa: BLE001 - 돌아오지 못하면 다음 단계가 알린다
+        logger.warning("  나의 학습으로 돌아오지 못했습니다 — %s", str(e)[:120])
 
 
 def _knouon_unsupported(c: _Ctx, stage: str, course: str) -> dict:
@@ -691,6 +708,10 @@ def _run(mode: str, course: str | None = None, seq=None,
             for cname, lec in todo:
                 key = lecture_key(cname, lec.seq)
                 logger.info("── %s %d강 '%s'", cname, lec.seq, lec.name)
+                # 앞 강의가 바이오통계학(knouon)이었으면 페이지가 그쪽에 남아
+                # 있다 — 전자캠퍼스 강의는 '나의 학습' 에서 열어야 한다.
+                if not knouon.is_knouon_course(cname):
+                    _back_to_lms(c.page, logger)
                 lec_failed = False
                 # 실패한 단계에 **의존하는** 단계만 건너뛴다(나머지는 계속 진행)
                 blocked: set[str] = set()

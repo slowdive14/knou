@@ -134,10 +134,10 @@ def test_main_builds_shell_without_error():
     assert page.updates >= 1
     assert len(page.controls) == 1  # 최상위 Row 하나
     row = page.controls[0]
-    # Row 안에 화면 겹침(Stack)이 있고, 그 안에 화면 두 칸(일반·실행)이 있는지
+    # Row 안에 화면 겹침(Stack)이 있고, 그 안에 화면 세 칸(일반·실행·도구)이 있는지
     stack = row.controls[-1]
     boxes = list(stack.controls)
-    assert len(boxes) == 2
+    assert len(boxes) == 3
     assert any(b.content is not None for b in boxes)
 
 
@@ -152,7 +152,7 @@ def test_run_view_is_kept_alive_across_tabs():
     page = _FakePage()
     main(page)
     stack = page.controls[0].controls[-1]
-    content_box, run_box = stack.controls
+    content_box, run_box, _tools_box = stack.controls
 
     rail = next(c for c in _walk(page.controls[0])
                 if isinstance(c, ft.NavigationRail))
@@ -168,6 +168,31 @@ def test_run_view_is_kept_alive_across_tabs():
     rail.on_change(_Ev(rail, NAV_RUN))             # 다시 실행 탭으로
     assert run_box.visible is True
     assert run_box.content is made                 # 새로 만들지 않았다
+
+
+def test_tools_view_is_kept_alive_across_tabs():
+    """도구 화면도 버려지면 안 된다 — 몇 분 걸리는 일을 돌려 놓고 다른 탭에
+    다녀와도 기록이 그대로 있어야 한다."""
+    from app.main_app import NAV_QUIZ, NAV_RUN, NAV_TOOLS, main
+
+    page = _FakePage()
+    main(page)
+    content_box, run_box, tools_box = page.controls[0].controls[-1].controls
+    rail = next(c for c in _walk(page.controls[0])
+                if isinstance(c, ft.NavigationRail))
+    rail.on_change(_Ev(rail, NAV_TOOLS))
+    made = tools_box.content
+    assert made is not None and tools_box.visible is True
+    assert content_box.visible is False and run_box.visible is False
+
+    rail.on_change(_Ev(rail, NAV_QUIZ))
+    assert tools_box.visible is False and content_box.visible is True
+    rail.on_change(_Ev(rail, NAV_RUN))
+    assert tools_box.visible is False and run_box.visible is True
+
+    rail.on_change(_Ev(rail, NAV_TOOLS))
+    assert tools_box.visible is True
+    assert tools_box.content is made               # 새로 만들지 않았다
 
 
 class _Ev:

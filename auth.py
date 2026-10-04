@@ -108,6 +108,31 @@ def ensure_logged_in(page, cfg, timeout_ms: int = 30000,
     return ok
 
 
+MY_STUDY_MARK = "retrieveUMYStudy"     # '나의 학습' 주소에 든 글자
+
+
+def on_my_study(url) -> bool:
+    """이 주소가 '나의 학습' 인가 — 강의 팝업(fnCntsPopup)·차시 조회가 사는 곳."""
+    return MY_STUDY_MARK in str(url or "")
+
+
+def back_to_my_study(page, timeout_ms: int = 30000) -> bool:
+    """'나의 학습' 밖에 나가 있으면 돌아온다 → 옮겼는가.
+
+    바이오통계학은 별도 사이트(knouon)라, 그 주차를 읽고 나면 페이지가 그쪽에
+    남는다. 그대로 전자캠퍼스 강의를 열면 'fnCntsPopup is not defined' 로
+    영상·형성평가가 통째로 실패한다(실측: 2026-10-05 자료구조 5강).
+
+    ⚠️ ensure_logged_in 과 달리 쿠키를 지우거나 다시 로그인하지 않는다 — 같은
+       세션에서 주소만 옮긴다(실행 도중 새로 로그인하면 단일 세션이라 앞 세션이
+       끊긴다).
+    """
+    if on_my_study(getattr(page, "url", "")):
+        return False
+    page.goto(MY_STUDY_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+    return True
+
+
 def login_context(p, cfg):
     """진짜 Chrome persistent context를 열고 로그인을 보장한 뒤 (ctx, page) 반환."""
     ctx = launch_context(p)

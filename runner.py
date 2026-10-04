@@ -334,14 +334,18 @@ class JobRunner:
     def running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    def start(self, argv: list[str], cwd=None) -> None:
-        """argv 로 자식 프로세스 시작 + 워커 스레드로 stdout 펌프."""
+    def start(self, argv: list[str], cwd=None, env=None) -> None:
+        """argv 로 자식 프로세스 시작 + 워커 스레드로 stdout 펌프.
+
+        env 를 주면 자식 환경을 그것으로 바꾼다(없으면 앱의 환경을 물려준다).
+        """
         if self.running:
             raise RuntimeError("이미 실행 중인 작업이 있습니다")
         self._cancelled = False
         self._proc = subprocess.Popen(
             argv,
             cwd=str(cwd) if cwd else str(PROJECT_ROOT),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding="utf-8",

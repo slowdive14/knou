@@ -9,6 +9,8 @@
     .venv/Scripts/python.exe build_exam_bank.py --year 2019      # 한 회차
     .venv/Scripts/python.exe build_exam_bank.py                  # 정답 있는 전부
     .venv/Scripts/python.exe build_exam_bank.py --course 자료구조 --list
+    .venv/Scripts/python.exe build_exam_bank.py --course C프로그래밍 \
+        --file 받은시험지.hwp --year 2014 --term 1      # 건네받은 시험지로
 
 ⚠️ 자료를 **읽기만** 한다. 서버에 아무것도 제출하지 않는다.
 """
@@ -237,6 +239,19 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
     if same is False:
         log(f"   ⚠️ {pdf.name} 는 {year}-{term} 시험지가 아닙니다 — 건너뜁니다")
         return {"title": title, "ok": False, "why": "다른 회차의 시험지"}
+    return build_from_pdf(client, pdf, ans_path, quiz_dir, work, name,
+                          year, term, log, title)
+
+
+def build_from_pdf(client, pdf, ans_path, quiz_dir: Path, work: Path,
+                   name: str, year: int, term: int, on_event=None,
+                   title: str = "") -> dict:
+    """회차가 확인된 시험지 PDF 한 벌 → 은행 JSON 저장. 반환: 요약 dict.
+
+    자료실에서 받은 것이든 사람이 건네준 것이든 여기서부터는 같다.
+    """
+    log = on_event or _log
+    title = title or f"{year}-{term} {name}"
     try:
         # 퀴즈 화면의 '시험지' 단추가 이 파일을 찾게 회차를 적어 둔다
         # (나중에 AI 로 다시 읽지 않아도 되게).
@@ -249,6 +264,8 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
                                      on_event=log)
     if not questions:
         return {"title": title, "ok": False, "why": "문항을 읽지 못함"}
+    # 쪽이 넘어가며 지문을 잃은 문항에 '※ (11~13)' 지문과 코드를 나눠 준다
+    questions = eb.share_passages(questions)
 
     # 정답을 몇 개 읽을지는 시험지가 정한다(과목마다 문항 수가 다르다)
     want = eb.expected_count(questions)
@@ -265,6 +282,85 @@ def build_one(client, ctx, course, post, ans_path, quiz_dir: Path,
     log(f"  저장: {out.name} — 문항 {len(questions)}개 (정답 있는 것 {scored}개)")
     return {"title": title, "ok": True, "n": len(questions), "scored": scored,
             "path": str(out)}
+
+
+LOCAL_EXTS = (".pdf", ".hwp", ".hwpx")
+
+
+def local_sheet(src: Path, work: Path, course: str, year: int, term: int,
+                on_event=None):
+    """건네받은 시험지 → 기출 폴더 안의 PDF(못 만들면 None).
+
+    직접받은PDF/과목_연도-학기.pdf 로 둔다. 이름만 보고 회차를 알 수 있어
+    퀴즈 화면·그림·확인 도구가 모두 같은 파일을 집는다. HWP 는 한글에 인쇄를
+    시켜 PDF 로 바꾼다(배포용 문서도 인쇄는 허용한다).
+    """
+    import shutil
+
+    log = on_event or _log
+    out = hc.manual_dir(work) / hc.manual_name(course, year, term)
+    if out.exists() and out.stat().st_size > 0:
+        log(f"   이미 만들어 둔 PDF 를 씁니다: {out.name}")
+        return out
+    if src.suffix.lower() == ".pdf":
+        shutil.copyfile(src, out)
+        return out
+    log(f"   HWP 를 PDF 로 바꾸는 중(한글로 인쇄합니다 — 몇 분 걸릴 수 있습니다): "
+        f"{src.name}")
+    res = hc.hwp_to_pdf(src, out)
+    log(f"   {hc.convert_note(res)}")
+    return Path(res["path"]) if res.get("ok") else None
+
+
+def build_local(path, year: int, term: int, course: str = DEFAULT_COURSE,
+                on_event=None, quiz_dir=None, force: bool = False) -> dict:
+    """사람이 건네준 시험지(HWP·PDF)로 한 회차를 만든다 — 로그인하지 않는다.
+
+    자료실에서 회차를 알 수 없던 시험지(배포용 HWP 라 머리글을 못 읽었다)를
+    사람이 '이건 2014-1 이다' 하고 건네줄 때 쓴다. 그래도 머리글을 한 번 읽어
+    확인한다 — 다른 회차면 정답표가 통째로 어긋난다.
+    """
+    from google import genai
+
+    import exam_files as xf
+    from config import load_config
+
+    log = on_event or _log
+    src = Path(path)
+    if not src.exists():
+        return {"ok": False, "why": f"파일이 없습니다: {src}"}
+    if src.suffix.lower() not in LOCAL_EXTS:
+        return {"ok": False, "why": "PDF·HWP 만 받습니다"}
+    cfg = load_config()
+    qd = Path(quiz_dir) if quiz_dir else Path(cfg.summary_dir) / "퀴즈"
+    work = Path(cfg.downloads_dir) / "_기출"
+    if bank_exists(qd, year, term, course) and not force:
+        return {"ok": False, "why": f"{year}-{term} 은행이 이미 있습니다"
+                                    "(--force 로 다시 만듭니다)"}
+
+    log(f"── {course} {year}-{term} ← {src.name}")
+    # 전에 넣어 둔 PDF 는 회차가 틀려도 지우지 않는다 — 이번에 만든 것만.
+    existed = (hc.manual_dir(work) /
+               hc.manual_name(course, year, term)).exists()
+    pdf = local_sheet(src, work, course, year, term, log)
+    if pdf is None:
+        return {"ok": False, "why": "PDF 를 만들지 못했습니다"}
+    client = genai.Client(api_key=cfg.gemini_api_key)
+    same = sheet_matches(pdf, year, term, client)
+    if same is False:
+        log(f"   ⚠️ 머리글이 {year}-{term} 이 아닙니다 — 만들지 않습니다")
+        if not existed:
+            pdf.unlink(missing_ok=True)   # 잘못 붙은 이름으로 남기지 않는다
+        return {"ok": False, "why": "다른 회차의 시험지"}
+    if same is None:
+        log("   (머리글을 읽지 못했습니다 — 건네주신 회차를 믿고 갑니다)")
+    spot = xf.answer_spots(work, course).get((int(year), int(term)))
+    if spot:
+        log(f"   정답표: {spot['file'].name}")
+    else:
+        log("   ⚠️ 이 회차 정답표에서 과목을 찾지 못했습니다 — 정답 없이 담습니다")
+    return build_from_pdf(client, pdf, spot["file"] if spot else None, qd,
+                          work, course, year, term, log)
 
 
 def survey(page, ctx, work: Path, on_event=None,
@@ -439,7 +535,21 @@ def main(argv=None) -> int:
                     help="어느 과목에 기출이 있는지 훑어본다")
     ap.add_argument("--all", action="store_true",
                     help="정답표가 없는 회차도 만든다(정답 없이 저장)")
+    ap.add_argument("--file", help="건네받은 시험지(HWP·PDF)로 만든다"
+                                   "(--year, --term 과 함께)")
+    ap.add_argument("--term", type=int, choices=(1, 2), help="학기(--file 과 함께)")
+    ap.add_argument("--force", action="store_true",
+                    help="--file: 이미 있는 회차도 다시 만든다")
     a = ap.parse_args(argv)
+
+    if a.file:
+        if not (a.year and a.term):
+            ap.error("--file 에는 --year 와 --term 이 필요합니다")
+        res = build_local(a.file, a.year, a.term, a.course, force=a.force)
+        if not res.get("ok"):
+            _log(f"■ 만들지 못했습니다: {res.get('why')}")
+            return 1
+        return 0
 
     if a.courses:
         rows = list_courses_with_exams()
