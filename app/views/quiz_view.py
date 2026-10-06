@@ -53,6 +53,22 @@ CHAT_MIN_WIDTH = 1080   # 창이 이보다 좁으면 판을 접고 카드 안으
 
 EXAM_DIR_NAME = "_기출"  # 받아 둔 시험지·정답표가 있는 곳(내려받기 폴더 아래)
 
+# 창이 작으면 위쪽 메뉴(드롭다운·모드·도구·기출 원본)가 줄줄이 꺾여 화면의
+# 절반을 차지하고 정작 문제는 두어 줄만 보인다. 이보다 작으면 메뉴를 접고
+# 한 줄짜리 막대만 남긴다(막대의 단추로 언제든 펼친다).
+FOLD_WIDTH = CHAT_MIN_WIDTH     # 폭이 이보다 좁으면
+FOLD_HEIGHT = 800               # 또는 높이가 이보다 낮으면
+
+
+def fold_head(width, height=None) -> bool:
+    """위쪽 메뉴를 접을 만큼 창이 작은가 — 모르는 값은 넉넉한 것으로 본다."""
+    def _small(v, limit):
+        try:
+            return float(v) < limit
+        except (TypeError, ValueError):
+            return False
+    return _small(width, FOLD_WIDTH) or _small(height, FOLD_HEIGHT)
+
 
 def bank_term(bank):
     """이 은행이 어느 회차의 것인가 — 기출·변형이면 (연도, 학기), 아니면 None."""
@@ -312,6 +328,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
           # 여기 담아 둬야 날아가지 않는다.
           "chat_open": set(), "draft": {}, "asking": None, "panel": None,
           "wide": side_chat(getattr(page, "width", None)),
+          # 위쪽 메뉴를 접었는가 — 창 크기로 정하고, 막대 단추로 뒤집는다
+          "fold": fold_head(getattr(page, "width", None),
+                            getattr(page, "height", None)),
           # 기출 원본 — 과목마다 한 번만 훑는다(정답표 HWP 를 열어 읽는다)
           "terms": {}}
 
@@ -321,6 +340,13 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
                    font_family="Consolas")
     bar = ft.ProgressBar(value=0, height=4, color=MINT,
                          bgcolor=ft.Colors.with_opacity(.08, ft.Colors.ON_SURFACE))
+    # 메뉴를 접었을 때 남는 한 줄 — 어느 은행을 얼마나 풀었는지만.
+    slim_title = ft.Text("", size=12, color=MUTE, max_lines=1,
+                         overflow=ft.TextOverflow.ELLIPSIS, expand=True)
+    slim_prog = ft.Text("0 / 0", size=13, weight=ft.FontWeight.BOLD,
+                        font_family="Consolas")
+    fold_btn = ft.TextButton("메뉴 펼치기", icon=ft.Icons.EXPAND_MORE,
+                             style=ft.ButtonStyle(color=MINT))
     cards = ft.Column(spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
     # 기출을 가져오는 동안에는 문제 대신 진행 기록을 보여준다(몇 분 걸린다).
     import_log = ft.ListView(expand=True, spacing=1, auto_scroll=True,
@@ -777,6 +803,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
         # 머리말의 '맞힘 4 · 오답 1 · 아직 12' 도 함께 고친다 — 한 문항 풀 때
         # 마다 숫자가 움직여야 어디까지 왔는지 보인다.
         sub.value = _head_text()
+        # 접힌 막대에도 같은 숫자를 — 메뉴를 접어도 어디까지 왔는지는 보인다
+        slim_title.value = sub.value
+        slim_prog.value = prog.value
         _safe_update()
 
     def _option_button(q: dict, o: dict) -> ft.Control:
@@ -1114,17 +1143,58 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
         spacing=10, wrap=True,
     )
 
+    unfold_btn = ft.TextButton("메뉴 접기", icon=ft.Icons.EXPAND_LESS,
+                               tooltip="위쪽 메뉴를 접고 문제만 크게 봅니다",
+                               style=ft.ButtonStyle(color=MUTE))
+    head = ft.Column(
+        [ft.Row([title, ft.Container(expand=True), unfold_btn],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER),
+         sub,
+         ft.Row([picker, lec_pick,
+                 ft.Column([ft.Text("푼 문제", size=11, color=MUTE), prog],
+                           spacing=0)],
+                vertical_alignment=ft.CrossAxisAlignment.END, spacing=14,
+                wrap=True),
+         tools, src_row],
+        spacing=10, tight=True)
+    slim = ft.Row([ft.Text("강의 퀴즈", size=14, weight=ft.FontWeight.BOLD),
+                   slim_title, slim_prog, fold_btn],
+                  spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    def _show_fold():
+        head.visible = not st["fold"]
+        slim.visible = st["fold"]
+
+    def _toggle_fold(_e=None):
+        """막대·머리의 단추 — 메뉴를 접거나 펼친다."""
+        st["fold"] = not st["fold"]
+        _show_fold()
+        _safe_update()
+
+    fold_btn.on_click = _toggle_fold
+    unfold_btn.on_click = _toggle_fold
+    st["fold_auto"] = st["fold"]
+    _show_fold()
+
     _load_bank(st["idx"])
     def _on_resize(e=None):
-        """창 폭이 기준을 넘나들 때만 다시 그린다(리사이즈마다 통째로 X).
+        """창 크기가 기준을 넘나들 때만 다시 그린다(리사이즈마다 통째로 X).
 
-        창을 줄이면 오른쪽 판이 문제를 밀어내므로 카드 안으로 되돌려야 한다.
+        창을 줄이면 오른쪽 판이 문제를 밀어내므로 카드 안으로 되돌려야 하고,
+        위쪽 메뉴는 접어 문제 자리를 내준다. 사람이 단추로 펼쳐 둔 것은 창이
+        기준을 넘나들 때까지 그대로 둔다.
         """
         w = getattr(e, "width", None) or getattr(page, "width", None)
+        h = getattr(e, "height", None) or getattr(page, "height", None)
         now = side_chat(w)
         if now != st["wide"]:
             st["wide"] = now
             _render_cards()
+        fold = fold_head(w, h)
+        if fold != st["fold_auto"]:
+            st["fold_auto"] = st["fold"] = fold
+            _show_fold()
+            _safe_update()
 
     if page is not None:
         try:
@@ -1134,13 +1204,7 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
 
     return ft.Column(
         [
-            title, sub,
-            ft.Row([picker, lec_pick,
-                    ft.Column([ft.Text("푼 문제", size=11, color=MUTE), prog],
-                              spacing=0)],
-                   vertical_alignment=ft.CrossAxisAlignment.END, spacing=14,
-                   wrap=True),
-            bar, tools, src_row, ft.Divider(height=1),
+            head, slim, bar, ft.Divider(height=1),
             ft.Row([ft.Stack([cards, import_log], expand=True), chat_panel],
                    spacing=14, expand=True,
                    vertical_alignment=ft.CrossAxisAlignment.STRETCH),
