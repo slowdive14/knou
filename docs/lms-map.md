@@ -14,6 +14,15 @@
 ---
 
 ## 1. 로그인  ✅ 확인 (dump_dom.py로 로그인 페이지 HTML 분석)
+
+> ⚠️ **2026-10 개편** — 아래 '예전 화면' 셀렉터는 더 이상 맞지 않는다(`auth.LOGIN_WAYS` 가 셋 다 안다).
+> - 사용자 유형 라디오 `input[name=user_type]`: `LEGACY`(기본) · `STUDENT` · `GENERAL`
+> - **(구)로그인** (LEGACY, 기본으로 보임): 탭 `#legacy_tab_stu`(학생/직원, value=1) · `#legacy_tab_gen`(일반, 2), 칸 `#username_legacy` · `#password_legacy`, 단추 `button[onclick*='actionLegacyLogin']`. JS 가 숨은 `#username`·`#password`·`loginDivCd` 에 옮겨 담고 `legacyLogin=Y` 를 붙여 예전과 같은 `processULOLogin.do` 로 제출한다. 학교 안내: "과도기 동안 한시적으로 제공되며 추후 종료될 예정".
+> - **새 로그인** (STUDENT): 탭 `#ucampus-tab_mobile`(모바일 인증, 기본) · `#ucampus-tab_id`(아이디, value=WEB), 칸 `#username_id` · `#password`, 단추 `#btn_login`(`actionIdLogin`) → `/ekp/user/login/fido/studentIdPassLogin.do` 로 제출. 그 밖에 QR·패스키 인증.
+> - **추가 인증 창**: `#addAuthSendBtn`(인증번호 전송) · `#addAuthOtpCode` · `#mobileConfirmBtn` · `#qrConfirmBtn`. 일반회원 아이디 로그인은 이메일·앱 2차 인증을 띄우고, '이 브라우저 기억'(`#modalBrowser`) 면제 쿠키가 있으면 건너뛴다. 이 창이 뜨면 자동 로그인은 멈추고 사람에게 알린다.
+> - 숨은 라디오는 요소의 `click()` 으로 고르면 라벨을 누른 것과 같이 칸이 나타난다.
+
+**예전 화면(2026-09까지):**
 - 로그인 페이지 URL: `https://ucampus.knou.ac.kr/ekp/user/login/retrieveULOLogin.do`
   - `retrieveUMYStudy.sdo` 등 보호 페이지 접근 시 자동 리다이렉트됨 (URL에 `rserpubk`=RSA공개키, `c_r_t`, `c_s_t` 쿼리 동반)
 - 로그인 폼: `form#loginForm` (name=loginForm), method=post, `onsubmit="return false"`

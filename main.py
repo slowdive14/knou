@@ -635,7 +635,7 @@ def _run(mode: str, course: str | None = None, seq=None,
     from google import genai
     from playwright.sync_api import sync_playwright
 
-    from auth import ensure_logged_in
+    from auth import LoginFailed, ensure_logged_in
     from config import load_config
     from discover import fetch_lectures, list_courses
     from recon import launch_context
@@ -663,7 +663,13 @@ def _run(mode: str, course: str | None = None, seq=None,
     with sync_playwright() as p:
         ctx = launch_context(p)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        ensure_logged_in(page, cfg)
+        try:
+            ensure_logged_in(page, cfg)
+        except LoginFailed as e:
+            # 실행 기록에 까닭을 남긴다 — 예전에는 로그인에서 멈추면 기록이
+            # '절전 억제' 한 줄에서 끊겨 무엇이 잘못됐는지 알 수 없었다.
+            logger.error("■ 로그인 실패 — %s", e)
+            raise
         client = genai.Client(api_key=cfg.gemini_api_key) \
             if _needs_gemini(stages) else None
         c = _Ctx(cfg, ctx, page, client, logger)

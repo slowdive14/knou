@@ -98,3 +98,161 @@ def test_a_page_already_home_stays():
     p = _Page(MY_STUDY_URL)
     assert back_to_my_study(p) is False
     assert p.went == []
+
+
+# --- 2026-10 에 바뀐 로그인 화면 ---------------------------------------------
+# 사용자 유형이 LEGACY((구)로그인, 기본) · STUDENT(모바일·아이디·패스키) ·
+# GENERAL 로 갈렸다. 예전 셀렉터는 숨은 칸을 30초 기다리다 멈췄다.
+from contextlib import contextmanager  # noqa: E402
+
+import pytest  # noqa: E402
+
+import auth  # noqa: E402
+
+LEGACY_PAGE = {
+    "#username_legacy": False, "#password_legacy": False,
+    "button[onclick*='actionLegacyLogin']": True,
+    "#username_id": False, "#password": False, "#btn_login": False,
+    "#username": False,
+    "#addAuthSendBtn": False,
+}
+# 라디오를 고르면 보이게 되는 칸
+REVEALS = {
+    "#legacy_tab_stu": ("#username_legacy", "#password_legacy"),
+    "#ucampus-tab_id": ("#username_id", "#password", "#btn_login"),
+}
+
+
+class _El:
+    def __init__(self, page, sel):
+        self.page, self.sel = page, sel
+
+    def is_visible(self):
+        return self.page.dom[self.sel]
+
+
+class _LoginPage:
+    def __init__(self, dom, after_url=None, after_dom=None):
+        self.dom = dict(dom)
+        self.url = auth.LOGIN_URL
+        self.filled, self.clicked, self.picked = {}, [], []
+        self.after_url = after_url or auth.MY_STUDY_URL
+        self.after_dom = after_dom
+        self.context = self
+
+    def clear_cookies(self):
+        pass
+
+    def goto(self, url, **_k):
+        if self.clicked and url == auth.MY_STUDY_URL:
+            self.url = self.after_url
+        elif not self.clicked:
+            self.url = auth.LOGIN_URL
+
+    def content(self):
+        if self.url == auth.MY_STUDY_URL:
+            return '<a href="/ekp/user/login/processULOLogout.do">로그아웃</a>'
+        return '<input type="password" id="password">'
+
+    def query_selector(self, sel):
+        return _El(self, sel) if sel in self.dom else None
+
+    def evaluate(self, _js, sel):
+        self.picked.append(sel)
+        for s in REVEALS.get(sel, ()):
+            if s in self.dom:
+                self.dom[s] = True
+
+    def wait_for_selector(self, sel, state="visible", timeout=0):
+        if not self.dom.get(sel):
+            raise TimeoutError(sel)
+
+    def fill(self, sel, value):
+        if not self.dom.get(sel):
+            raise TimeoutError(sel)
+        self.filled[sel] = value
+
+    def click(self, sel):
+        self.clicked.append(sel)
+        if self.after_dom:
+            self.dom.update(self.after_dom)
+
+    @contextmanager
+    def expect_navigation(self, **_k):
+        yield
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+class _Cfg:
+    knou_id = "student01"
+    knou_pw = "pw-secret"
+
+
+def test_the_old_style_login_is_used_while_it_lasts():
+    page = _LoginPage(LEGACY_PAGE)
+    way = auth.submit_login(page, _Cfg())
+    assert way.name == "(구)로그인"
+    assert page.picked[:2] == ["input[name=user_type][value=LEGACY]",
+                               "#legacy_tab_stu"]
+    assert page.filled == {"#username_legacy": "student01",
+                           "#password_legacy": "pw-secret"}
+    assert page.clicked == ["button[onclick*='actionLegacyLogin']"]
+
+
+def test_when_the_old_style_closes_the_id_login_is_used():
+    dom = {k: v for k, v in LEGACY_PAGE.items() if "legacy" not in k.lower()}
+    page = _LoginPage(dom)
+    way = auth.submit_login(page, _Cfg())
+    assert way.name == "아이디 로그인"
+    assert "#ucampus-tab_id" in page.picked
+    assert page.filled == {"#username_id": "student01",
+                           "#password": "pw-secret"}
+    assert page.clicked == ["#btn_login"]
+
+
+def test_a_way_whose_fields_never_show_is_skipped():
+    """(구)로그인 칸이 안 보이면 오래 기다리지 않고 아이디 로그인으로 간다."""
+    page = _LoginPage(LEGACY_PAGE)
+    saved = dict(REVEALS)
+    REVEALS["#legacy_tab_stu"] = ()
+    try:
+        way = auth.submit_login(page, _Cfg())
+    finally:
+        REVEALS.update(saved)
+    assert way.name == "아이디 로그인"
+
+
+def test_the_page_before_the_change_still_works():
+    page = _LoginPage({"#username": True, "#password": True,
+                       "button[onclick*='actionLogin']": True})
+    assert auth.submit_login(page, _Cfg()).name == "예전 로그인"
+
+
+def test_an_unknown_login_page_says_so_without_the_password():
+    page = _LoginPage({"#somethingElse": True})
+    with pytest.raises(auth.LoginFailed) as e:
+        auth.submit_login(page, _Cfg())
+    assert "로그인 화면이 또 바뀐" in str(e.value)
+    assert "pw-secret" not in str(e.value)
+
+
+def test_a_full_login_lands_on_my_study():
+    page = _LoginPage(LEGACY_PAGE)
+    assert auth.ensure_logged_in(page, _Cfg()) is True
+
+
+def test_extra_authentication_stops_with_a_clear_reason():
+    """이메일·앱 인증번호는 앱이 대신 넘길 수 없다 — 멈추고 알린다."""
+    page = _LoginPage(LEGACY_PAGE, after_dom={"#addAuthSendBtn": True})
+    with pytest.raises(auth.LoginFailed) as e:
+        auth.ensure_logged_in(page, _Cfg())
+    assert "추가 인증" in str(e.value)
+
+
+def test_coming_back_to_the_login_page_is_a_failure():
+    page = _LoginPage(LEGACY_PAGE, after_url=auth.LOGIN_URL)
+    with pytest.raises(auth.LoginFailed) as e:
+        auth.ensure_logged_in(page, _Cfg())
+    assert "아이디·비밀번호를 확인" in str(e.value)
