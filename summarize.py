@@ -406,7 +406,7 @@ def model_chain(model=None) -> list:
 
 
 def generate(client, contents, config=None, model=None, on_event=None,
-             wait: float = RETRY_WAIT, rounds: int = ROUNDS):
+             wait: float = RETRY_WAIT, rounds: int = ROUNDS, exclude=()):
     """모델을 불러 응답을 받는다 — 붐비면 다음 모델로 넘어간다.
 
     ⚠️ 한 모델에 매달리지 않는 것이 요점이다. 무료 등급에서 503 은 흔한
@@ -417,8 +417,10 @@ def generate(client, contents, config=None, model=None, on_event=None,
        돌 때마다 조금 더 오래 기다린다.
 
     모두 실패하면 마지막 오류를 그대로 올린다(부르는 쪽이 이미 감싸고 있다).
+    exclude 에 든 모델은 건너뛴다(다 빠지면 원래 차례를 쓴다).
     """
-    chain = model_chain(model)
+    chain = ([m for m in model_chain(model) if m not in set(exclude or ())]
+             or model_chain(model))
     plan = [(r, m) for r in range(max(1, int(rounds))) for m in chain]
     last = None
     for i, (r, name) in enumerate(plan):
@@ -525,7 +527,52 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
         text = _resp_text(resp)
         if not text:
             log(f"⚠️ 재시도도 빈 응답(finish_reason={_finish_reason(resp)})")
+
+    # 덜 쓴 노트 — 붐빌 때 가벼운 모델이 받으면 긴 강의를 앞부분만 얕게 쓴다
+    # (실측: 2강 69분을 flash-lite 가 35분까지 3천 자로). 가벼운 모델을 빼고
+    # 조금 기다렸다가 한 번 더 쓰게 하고, 더 많이 다룬 쪽을 고른다.
+    cov = note_coverage(text, duration if has_audio else None)
+    if text and cov is not None and cov < COVER_MIN:
+        log(f"⚠️ 노트가 음성의 {cov:.0%}까지만 다룹니다 → 가벼운 모델을 빼고 "
+            "다시 씁니다")
+        config = types.GenerateContentConfig(
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            thinking_config=types.ThinkingConfig(
+                thinking_budget=THINKING_BUDGET))
+        try:
+            again = _resp_text(generate(
+                client, contents, config=config, model=model, on_event=log,
+                wait=RETRY_SLOW_WAIT, rounds=ROUNDS + 1,
+                exclude=light_models(model)))
+        except Exception as e:  # noqa: BLE001 - 첫 노트라도 남긴다
+            log(f"   다시 쓰지 못했습니다: {str(e)[:80]}")
+            again = ""
+        cov2 = note_coverage(again, duration)
+        if again and (cov2 or 0) > cov:
+            log(f"   다시 쓴 노트가 {cov2:.0%}까지 다룹니다 — 이쪽을 씁니다")
+            text = again
     return text
+
+
+COVER_MIN = 0.6         # 마지막 🎬 이 음성의 이 비율보다 앞이면 덜 쓴 노트
+RETRY_SLOW_WAIT = 20.0  # 덜 쓴 노트를 다시 쓸 때 모델 사이에 기다리는 시간(초)
+
+
+def light_models(model=None) -> list:
+    """긴 노트를 맡기기엔 가벼운 모델들(이름에 'lite')."""
+    return [m for m in model_chain(model) if "lite" in m]
+
+
+def note_coverage(markdown, duration):
+    """노트가 음성의 어디까지 다루나 — 마지막 🎬 마커 ÷ 음성 길이(모르면 None)."""
+    try:
+        total = float(duration)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    secs = [timestamp_to_seconds(t) for t in _TS_RE.findall(str(markdown or ""))]
+    return (max(secs) / total) if secs else 0.0
 
 
 SECRET_PLACEHOLDER = "[발급받은 인증키]"

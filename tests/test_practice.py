@@ -181,3 +181,55 @@ def test_an_empty_note_never_overwrites_a_good_one(tmp_path):
         summarize.save_summary("  \n", tmp_path, "오픈소스기반데이터분석", 5,
                                "데이터의 저장")
     assert good.read_text(encoding="utf-8") == "# 멀쩡한 노트"
+
+
+# --- 덜 쓴 노트 다시 쓰기 ------------------------------------------------------
+# 실측: 붐빌 때 flash-lite 가 2강 69분을 35분까지 3천 자로 썼다.
+def test_coverage_is_the_last_marker_over_the_audio():
+    md = "### a\n🎬 [00:10:00]\n### b\n🎬 [00:35:00]"
+    assert round(summarize.note_coverage(md, 70 * 60), 2) == 0.5
+    assert summarize.note_coverage(md, None) is None
+    assert summarize.note_coverage("마커 없음", 600) == 0.0
+
+
+def test_the_light_models_are_the_lite_ones():
+    lite = summarize.light_models()
+    assert lite and all("lite" in m for m in lite)
+
+
+def test_excluded_models_are_skipped():
+    tried = []
+
+    class _Models:
+        def generate_content(self, model, contents, config):
+            tried.append(model)
+            return "ok"
+
+    class _Client:
+        models = _Models()
+    summarize.generate(_Client(), ["x"], exclude=summarize.model_chain()[:1])
+    assert tried == [summarize.model_chain()[1]]
+
+
+def test_a_thin_note_is_written_again_without_the_light_model(monkeypatch,
+                                                              tmp_path):
+    """덜 쓴 노트가 오면 가벼운 모델을 빼고 다시 쓰고, 더 많이 다룬 쪽을 고른다."""
+    thin = "# 2강\n### a\n🎬 [00:10:00]"
+    full = "# 2강\n### a\n🎬 [00:10:00]\n### b\n🎬 [01:05:00]"
+    calls = []
+
+    def fake_generate(client, contents, config=None, model=None,
+                      on_event=None, wait=0, rounds=0, exclude=()):
+        calls.append(tuple(exclude))
+        return thin if len(calls) == 1 else full
+    monkeypatch.setattr(summarize, "generate", fake_generate)
+    monkeypatch.setattr(summarize, "_resp_text", lambda r: r)
+    monkeypatch.setattr(summarize, "upload_and_wait",
+                        lambda client, path, on_event=None: "uploaded")
+    mp3 = tmp_path / "2강.mp3"
+    mp3.write_bytes(b"ID3")
+    md = summarize.summarize_lecture(object(), "오픈소스기반데이터분석", 2,
+                                     "파이썬 1", mp3_path=mp3,
+                                     duration=69 * 60)
+    assert md == full
+    assert calls[1] and all("lite" in m for m in calls[1])

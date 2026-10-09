@@ -469,9 +469,56 @@ def forward_fill(concepts: list[dict],
 # ---------------------------------------------------------------------------
 # 노트 반영
 # ---------------------------------------------------------------------------
+PRACTICE_HEAD_RE = re.compile(r"^##\s+.*실습")
+SHOT_LEAD = 10        # 다음 단계가 시작하기 이만큼 전 화면을 고른다(초)
+SHOT_MIN = 15         # 단계 시작 뒤 적어도 이만큼은 지난 화면(초)
+SHOT_LAST = 60        # 마지막 단계는 시작에서 이만큼 뒤 화면(초)
+
+
+def practice_concepts(md: str, concepts: list[dict]) -> set[int]:
+    """`## 실습…` 대주제 아래에 있는 개념(실습 단계)의 번호들."""
+    lines = md.splitlines()
+    out = set()
+    for ci, c in enumerate(concepts):
+        for j in range(c["marker_idx"], -1, -1):
+            line = lines[j]
+            if line.startswith("## "):
+                if PRACTICE_HEAD_RE.match(line):
+                    out.add(ci)
+                break
+    return out
+
+
+def practice_shots(md: str, concepts: list[dict], n_frames: int) -> dict:
+    """실습 단계마다 붙일 화면의 초 — {개념 번호: 초}.
+
+    슬라이드 덱에서 고르면 안 된다. Colab 화면은 흰 바탕에 코드만 조금씩
+    바뀌어 몇 분이 한 장으로 묶이고, 그 묶음의 첫 장은 **코드를 채우기 전**
+    빈 실습지다(실측: 4강 4-1·4-2 가 모두 36:50 빈 칸 화면). 그 단계가 끝날
+    무렵(다음 단계 10초 전)이면 코드가 다 채워져 있고 실행 결과도 보인다.
+    """
+    idx = practice_concepts(md, concepts)
+    last = max(0, int(n_frames) - 1)
+    out = {}
+    for ci in sorted(idx):
+        cur = int(concepts[ci]["cur_sec"])
+        nxt = (int(concepts[ci + 1]["cur_sec"]) if ci + 1 < len(concepts)
+               else None)
+        if nxt is not None and nxt - SHOT_LEAD >= cur + SHOT_MIN:
+            sec = nxt - SHOT_LEAD
+        else:
+            sec = cur + (SHOT_LAST if nxt is None else SHOT_MIN)
+        out[ci] = max(0, min(sec, last))
+    return out
+
+
 def apply_to_note(md: str, concepts: list[dict], plan: dict[int, int],
-                  course: str, seq: int) -> str:
-    """plan: {concept_index(0base): slide_sec}. 마커 줄 + embed 줄 재작성."""
+                  course: str, seq: int, keep_marker=frozenset()) -> str:
+    """plan: {concept_index(0base): slide_sec}. 마커 줄 + embed 줄 재작성.
+
+    keep_marker 에 든 개념(실습 단계)은 🎬 위치를 그대로 두고 그림만 바꾼다 —
+    그림은 단계가 끝날 무렵 화면이지만 위치는 단계가 시작하는 곳이어야 한다.
+    """
     lines = md.splitlines()
     for ci, c in enumerate(concepts):
         if ci not in plan:
@@ -480,8 +527,9 @@ def apply_to_note(md: str, concepts: list[dict], plan: dict[int, int],
         ts = seconds_to_timestamp(sec)
         fn = capture_filename(course, seq, sec, DEFAULT_EXT)
         mi = c["marker_idx"]
-        head = lines[mi].split("🎬")[0]
-        lines[mi] = f"{head}🎬 [{ts}]"
+        if ci not in keep_marker:
+            head = lines[mi].split("🎬")[0]
+            lines[mi] = f"{head}🎬 [{ts}]"
         embed = embed_text(fn)
         if c["embed_idx"] is not None:
             lines[c["embed_idx"]] = embed
@@ -587,12 +635,25 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
     out_dir = note_path.parent / "_captures"
     out_dir.mkdir(parents=True, exist_ok=True)
     path_of = {s["sec"]: s["path"] for s in deck}
+    # 실습 단계는 덱 대신 그 단계가 끝날 무렵의 1초 프레임을 쓴다
+    frames_dir = Path(deck[0]["path"]).parent if deck else None
+    shots = {}
+    if frames_dir is not None:
+        n = len(list(frames_dir.glob("f_*.jpg")))
+        shots = {ci: sec for ci, sec in practice_shots(md, concepts, n).items()
+                 if (frames_dir / f"f_{sec + 1:06d}.jpg").exists()}
+        for ci, sec in shots.items():
+            plan[ci] = sec
+            path_of.setdefault(sec, frames_dir / f"f_{sec + 1:06d}.jpg")
+        if shots:
+            on_event(f"실습 단계 {len(shots)}개는 단계가 끝날 무렵 화면을 붙입니다")
     for ci, sec in plan.items():
         src = path_of.get(sec)
         if src:
             shutil.copy2(src, out_dir / capture_filename(course, seq, sec,
                                                           DEFAULT_EXT))
-    new_md = apply_to_note(md, concepts, plan, course, seq)
+    new_md = apply_to_note(md, concepts, plan, course, seq,
+                           keep_marker=frozenset(shots))
     new_md, scrubbed = scrub_empty_embeds(new_md, out_dir)
     if scrubbed:
         on_event(f"빈 슬라이드 임베드 {len(scrubbed)}개 청소")

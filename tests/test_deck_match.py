@@ -161,3 +161,52 @@ def test_matched_plan_ignores_unknown_slide_numbers():
     deck = [{"n": 5, "sec": 100}]
     concepts = [{"heading": "가"}]
     assert matched_plan(deck, concepts, [{"c": 1, "slide": 99}]) == {}
+
+
+# --- 실습 단계 그림 — 단계가 끝날 무렵 화면, 위치는 그대로 -------------------
+# 실측: 4강 4-1·4-2 가 모두 36:50 '빈 실습지' 화면을 받았고, 4-2 의 위치도
+# 43:15 에서 36:50 으로 끌려갔다. Colab 화면은 몇 분이 슬라이드 한 장으로 묶인다.
+from deck_match import (  # noqa: E402
+    apply_to_note, parse_concepts, practice_concepts, practice_shots)
+
+PRACTICE_MD = """# 4강
+## 데이터 수집
+### 정형 데이터
+🎬 [00:09:00]
+본문
+## 실습
+### 4-1 CSV 파일 읽기
+🎬 [00:37:00]
+코드
+### 4-2 JSON 파일 읽기
+🎬 [00:43:15]
+코드
+## 한눈에 정리
+"""
+
+
+def test_only_steps_under_the_practice_heading_count():
+    concepts = parse_concepts(PRACTICE_MD)
+    assert practice_concepts(PRACTICE_MD, concepts) == {1, 2}
+
+
+def test_a_step_gets_the_screen_just_before_the_next_step():
+    concepts = parse_concepts(PRACTICE_MD)
+    shots = practice_shots(PRACTICE_MD, concepts, n_frames=5000)
+    assert shots[1] == 43 * 60 + 15 - 10            # 4-2 시작 10초 전
+    assert shots[2] == 43 * 60 + 15 + 60            # 마지막 단계는 시작+60초
+
+
+def test_a_shot_never_runs_past_the_video():
+    concepts = parse_concepts(PRACTICE_MD)
+    shots = practice_shots(PRACTICE_MD, concepts, n_frames=2600)
+    assert max(shots.values()) <= 2599
+
+
+def test_a_step_keeps_its_marker_and_gets_the_new_picture():
+    concepts = parse_concepts(PRACTICE_MD)
+    out = apply_to_note(PRACTICE_MD, concepts, {0: 540, 2: 2655},
+                        "오픈소스기반데이터분석", 4, keep_marker={2})
+    assert "🎬 [00:43:15]" in out                     # 위치는 그대로
+    assert "오픈소스기반데이터분석_4강_00-44-15.jpg" in out
+    assert "🎬 [00:09:00]" in out
