@@ -324,31 +324,70 @@ def build_practice_prompt(subject: str, seq: int, name: str, duration=None,
     return "\n".join(lines)
 
 
-_PRACTICE_HEAD_RE = re.compile(r"^## .*실습.*$", re.M)
-_TAIL_HEAD_RE = re.compile(r"^## (?:한눈에 정리|예습 체크리스트)", re.M)
+_FENCE_LINE_RE = re.compile(r"^\s*(```|~~~)")
+_TAIL_NAMES = ("한눈에 정리", "예습 체크리스트")
+
+
+def md_sections(markdown: str) -> list:
+    """`## ` 대주제 단위로 나눈다 → [(제목 줄 또는 None, 글)].
+
+    코드 블록 안의 '## 주석' 줄은 대주제가 아니다(실습 코드에 흔하다).
+    맨 앞(제목 `#`·머리말)은 제목 None 으로 돌려준다.
+    """
+    out, head, buf, inside = [], None, [], False
+    for line in str(markdown or "").splitlines():
+        if _FENCE_LINE_RE.match(line):
+            inside = not inside
+        elif not inside and line.startswith("## "):
+            out.append((head, "\n".join(buf)))
+            head, buf = line, []
+        buf.append(line)
+    out.append((head, "\n".join(buf)))
+    return [(h, t) for h, t in out if h is not None or t.strip()]
+
+
+def _is_tail(head) -> bool:
+    return bool(head) and any(n in head for n in _TAIL_NAMES)
+
+
+def _trim_rule(text: str) -> str:
+    """덩어리 끝의 빈 줄과 `---` 구분선을 걷어 낸다(다시 붙일 때 겹치지 않게)."""
+    return re.sub(r"(\s*\n-{3,}\s*)+$", "", text.rstrip()).rstrip()
+
+
+_RULE = "\n\n---\n\n"
 
 
 def merge_practice(theory: str, practice: str) -> str:
-    """이론 노트에 실습 부분을 붙인다 — `## 한눈에 정리` 바로 앞에.
+    """이론 노트에 실습 부분을 붙인다 → 이론 본문 · 실습 · 한눈에 정리 순서.
 
-    실습 쪽이 정리·체크리스트까지 덧붙였으면 떼고, 이론 쪽이 지시를 어기고
-    `## 실습` 을 썼으면 그 대주제는 뺀다(같은 실습이 두 번 나오지 않게).
+    응답이 어떤 모양으로 오든 대주제 단위로 다시 짠다:
+      · 이론 쪽 '## …실습…' 대주제는 뺀다(같은 실습이 두 번 나오지 않게)
+      · 실습 쪽의 정리·체크리스트는 뗀다(정리는 이론 쪽 것 하나)
+      · 정리·체크리스트는 어디에 있었든 맨 끝으로 보낸다
+    실습 쪽에 대주제가 없으면(`없음`) 이론 노트를 그대로 둔다.
     """
-    t = str(theory or "").rstrip()
-    p = tidy_headings(str(practice or "")).strip()
-    start = _PRACTICE_HEAD_RE.search(p) or re.search(r"^## ", p, re.M)
-    if not t or not start:
-        return t + "\n" if t else ""
-    p = _TAIL_HEAD_RE.split(p[start.start():])[0].rstrip()
-    # 이론 쪽의 '## 실습…' 대주제를 다음 '## ' 전까지 뺀다
-    t = re.sub(r"^## [^\n]*실습[^\n]*\n(?:(?!^## )[^\n]*\n?)*", "", t + "\n",
-               flags=re.M).rstrip()
-    tail = _TAIL_HEAD_RE.search(t)
+    if not str(theory or "").strip():
+        return ""
+    t_secs = md_sections(theory)
+    prac = [_trim_rule(t) for h, t in md_sections(tidy_headings(practice))
+            if h is not None and not _is_tail(h)]
+    if not prac:
+        return str(theory).rstrip() + "\n"
+    body = [_trim_rule(t) for h, t in t_secs
+            if not _is_tail(h) and not (h and "실습" in h)]
+    tail = [_trim_rule(t) for h, t in t_secs if _is_tail(h)]
+    parts = [_RULE.join(x for x in body if x.strip()), _RULE.join(prac)]
     if tail:
-        head = t[:tail.start()].rstrip()
-        head = re.sub(r"\n-{3,}\s*$", "", head).rstrip()
-        return f"{head}\n\n---\n\n{p}\n\n---\n\n{t[tail.start():]}\n"
-    return f"{t}\n\n---\n\n{p}\n"
+        parts.append("\n\n".join(tail))
+    return _RULE.join(x for x in parts if x.strip()) + "\n"
+
+
+def reorder_practice(markdown: str) -> str:
+    """이미 저장된 노트의 실습 대주제를 정리 앞으로 옮긴다(내용은 그대로)."""
+    prac = "\n\n".join(t for h, t in md_sections(markdown)
+                         if h and "실습" in h and not _is_tail(h))
+    return merge_practice(markdown, prac) if prac else markdown
 
 
 def _base_prompt(subject: str, seq: int, name: str) -> str:
