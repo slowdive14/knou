@@ -198,8 +198,52 @@ def extract_timestamps(markdown: str) -> list[dict]:
     return out
 
 
+def practice_rules(duration=None, notebook: bool = False,
+                   screens: bool = False) -> str:
+    """강의 전체·실습을 빠뜨리지 말라는 요구 — build_prompt 끝에 붙는다.
+
+    오픈소스기반데이터분석은 슬라이드가 끝난 뒤 30분을 코드 실습에 쓰는데,
+    노트는 슬라이드가 끝나는 곳에서 함께 끝났다(5강: 57분 중 26분까지).
+    음성 길이를 알려 주고 끝까지 다루게 하며, 실습은 개념 카드(쉬운 정의·
+    비유…) 대신 단계별 완성 코드로 담게 한다.
+    """
+    lines = []
+    if duration:
+        mins = int(round(float(duration) / 60))
+        lines.append(
+            f"9. 이 강의 음성은 약 **{mins}분**이다. **처음부터 끝까지** 다뤄라 — "
+            f"슬라이드 설명이 끝난 뒤에도 강의는 이어진다. 노트의 마지막 `🎬` "
+            f"마커는 음성 끝 무렵(약 {max(1, mins - 8)}분 이후)이어야 한다.")
+    lines.append(
+        "10. 강사가 코드를 직접 작성·실행하는 **실습(시연)**이 있으면 생략하지 말고 "
+        "`## 실습` 대주제(여러 묶음이면 `## 실습: …`) 아래 단계별 `###`로 정리하라. "
+        "실습 단계에는 2번 항목(쉬운 정의·비유 등) 대신 다음을 담는다:\n"
+        "   - 개념과 같은 규칙의 `🎬 [HH:MM:SS]` 마커(그 단계를 시작하는 위치)\n"
+        "   - 이 단계에서 하는 일 한두 줄\n"
+        "   - 강사가 작성한 **완성 코드**(```python 블록). 보이지도 들리지도 않는 "
+        "부분은 지어내지 말고 `# (확인 필요)` 주석으로 남긴다\n"
+        "   - 화면이나 음성에 나온 **실행 결과**와 코드에서 눈여겨볼 점\n"
+        "   실습 단계도 `## 한눈에 정리`·`## 예습 체크리스트`에 반영하라.\n"
+        "   ⚠️ API 인증키·토큰·비밀번호는 화면에 보여도 **옮기지 말고** "
+        "`'[발급받은 인증키]'` 로 적어라.")
+    if notebook:
+        lines.append(
+            "11. 첨부한 **실습 노트북**은 강의에서 쓰는 빈칸 실습지다. 실습 단계의 "
+            "순서·번호·제목(예: `5-1 CSV 형식 저장`)은 노트북을 따르고, 주석만 "
+            "있는 빈칸은 강사가 채운 코드로 완성하라. 노트북에 이미 있는 코드도 "
+            "빠뜨리지 말고 함께 적는다.")
+    if screens:
+        lines.append(
+            "12. 첨부한 **화면 사진**에는 `[HH:MM:SS]` 시각이 붙어 있다(음성과 같은 "
+            "시간축). 코드와 실행 결과는 **화면을 우선으로** 그대로 옮기고, 화면에서 "
+            "잘린 줄 끝만 음성으로 보충하라. 실습 단계의 `🎬` 마커도 화면 시각에 "
+            "맞춘다.")
+    return "\n".join(lines)
+
+
 def build_prompt(subject: str, seq: int, name: str,
-                 has_audio: bool = True) -> str:
+                 has_audio: bool = True, duration=None,
+                 notebook: bool = False, screens: bool = False) -> str:
     """Gemini에 보낼 한국어 '예습 학습 노트' 지시문.
 
     has_audio=False 는 MP3 를 못 구한 과목(LMS 에 음성 링크가 없고 영상에서도
@@ -207,9 +251,18 @@ def build_prompt(subject: str, seq: int, name: str,
     지어내고, 있지도 않은 `🎬 [HH:MM:SS]` 마커까지 만들어 낸다(그 마커는 덱 매칭이
     실제 영상 위치로 쓰는 값이라 틀리면 이미지가 엉뚱한 곳에 붙는다) → 지시문에서
     음성·타임스탬프 요구를 통째로 뺀다.
+
+    duration(음성 초)·notebook(실습 노트북 첨부)·screens(화면 사진 첨부)를 주면
+    강의를 끝까지, 실습을 빠짐없이 다루라는 요구가 붙는다(practice_rules).
     """
     if not has_audio:
         return _build_prompt_no_audio(subject, seq, name)
+    extra = practice_rules(duration, notebook, screens)
+    return _base_prompt(subject, seq, name) + "\n" + extra + \
+        "\n위 9번 이후 요구를 지키되, 8번(마크다운 본문만 출력)은 그대로 따른다."
+
+
+def _base_prompt(subject: str, seq: int, name: str) -> str:
     return f"""너는 한국방송통신대학교 '{subject}' {seq}강 '{name}'의 학습 도우미다.
 첨부한 **강의 음성(MP3)**과 **강의록(PDF)**을 함께 분석해, 학습자가 이 노트만 읽어도
 **강의 전체 내용을 효율적으로 예습**할 수 있는 **한국어 마크다운 학습 노트**를 작성하라.
@@ -400,12 +453,17 @@ def _block_reason(resp):
 
 
 def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
-                      model=DEFAULT_MODEL, on_event=None):
+                      model=DEFAULT_MODEL, on_event=None, duration=None,
+                      notebook_text: str = "", screens=None):
     """MP3+PDF 업로드 → Gemini 요약(마크다운 텍스트) 반환.
 
     gemini-2.5-flash 의 빈 응답(thinking 이 출력 예산 잠식)을 막기 위해
     max_output_tokens 와 thinking 상한을 명시하고, 그래도 비면 finish_reason 을
     남긴 뒤 thinking 을 꺼서 1회 재시도한다.
+
+    실습이 있는 강의는 notebook_text(빈칸 실습지를 글로 바꾼 것)와
+    screens([(초, 그림 경로)] — 강사가 코드를 쳐 넣는 화면)를 함께 넘긴다.
+    duration(음성 초)을 주면 끝까지 다루라고 지시한다.
     """
     def log(m):
         if on_event:
@@ -423,9 +481,27 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
     else:
         # 음성 없이 '음성을 분석하라'고 시키면 없는 내용·타임스탬프를 지어낸다
         log("강의 음성 없음 → 강의록(PDF)만으로 요약(타임스탬프 마커 생략)")
-    contents.append(build_prompt(subject, seq, name, has_audio=has_audio))
 
     from google.genai import types
+
+    # 실습 자료 — 음성이 있을 때만 쓴다(화면 시각은 음성 시간축이다)
+    nb = str(notebook_text or "").strip() if has_audio else ""
+    if nb:
+        contents.append("[실습 노트북 — 강의에서 쓰는 빈칸 실습지]\n\n" + nb)
+    shown = 0
+    for sec, path in (screens or []) if has_audio else []:
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        contents.append(f"[{seconds_to_timestamp(int(sec))}] 화면")
+        contents.append(types.Part.from_bytes(data=data, mime_type="image/jpeg"))
+        shown += 1
+    if nb or shown:
+        log(f"실습 자료 첨부: 노트북 {'있음' if nb else '없음'} · 화면 {shown}장")
+    contents.append(build_prompt(subject, seq, name, has_audio=has_audio,
+                                 duration=duration if has_audio else None,
+                                 notebook=bool(nb), screens=bool(shown)))
 
     def _generate(thinking_budget: int):
         config = types.GenerateContentConfig(
@@ -452,16 +528,41 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
     return text
 
 
+SECRET_PLACEHOLDER = "[발급받은 인증키]"
+# 이름이 key·token·secret·password 류인 변수나 인자에 긴 문자열이 들어간 자리.
+# 실습 화면에는 강사가 발급받은 실제 인증키가 그대로 보인다(실측: 5강 공공데이터
+# 포털 serviceKey) — 노트로 옮겨 적으면 남의 키를 퍼뜨리게 된다.
+_SECRET_RE = re.compile(
+    r"""(?ix)
+    (\b[\w.\[\]'"]*?(?:api_?key|service_?key|secret|token|passw(?:or)?d|pwd)
+       [\w\]'"]*\s*[:=]\s*)          # 이름과 = 또는 :
+    (['"])([^'"\s]{12,})\2           # 따옴표 안의 긴 값
+    """)
+
+
+def mask_secrets(markdown: str) -> str:
+    """노트 속 인증키·토큰 값을 가린다 — 이미 가린 자리는 그대로 둔다."""
+    def _sub(m):
+        if m.group(3).startswith("["):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}{SECRET_PLACEHOLDER}{m.group(2)}"
+    return _SECRET_RE.sub(_sub, str(markdown or ""))
+
+
 def save_summary(markdown: str, out_dir, subject, seq, name, duration=None) -> dict:
     """요약 .md + 타임스탬프 사이드카 .timestamps.json 저장. 경로 dict 반환.
 
     duration(매체 길이, 초)을 주면 Gemini 의 'MM:SS:00' 오형식 마커를 미리 교정해
     저장한다(노트 본문·timestamps.json 모두 올바른 시각으로 통일).
+    화면에서 옮겨 온 인증키·토큰 값은 가린다(mask_secrets).
     """
     from note_embed import write_note
+    if not str(markdown or "").strip():
+        # 빈 응답으로 멀쩡한 노트를 덮으면 되돌릴 수 없다
+        raise ValueError("빈 노트는 저장하지 않습니다")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    markdown = normalize_markdown_timestamps(markdown, duration)
+    markdown = mask_secrets(normalize_markdown_timestamps(markdown, duration))
     md_path = out_dir / note_filename(subject, seq, name)
     # write_note 가 이미지 임베드 폭을 맞춰 준다 — Gemini 응답에 임베드가
     # 섞여 들어와도 폭이 빠지지 않게 하는 것이 여기 있는 이유다.

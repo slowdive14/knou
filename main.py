@@ -514,17 +514,51 @@ def _stage_summarize(c: _Ctx, course: str, lec) -> dict:
         return {"ok": True, "skipped": True}
     mp3 = c.downloads_dir / build_filename(course, lec.seq, "mp3")
     pdf = c.downloads_dir / build_filename(course, lec.seq, "pdf")
+    # 음성 길이 — 끝까지 다루라고 알려 주고, 'MM:SS:00' 오형식 마커도 교정한다
+    dur = probe_duration(str(mp3)) if mp3.exists() else None
+    notebook, screens = _practice_inputs(c, course, lec, has_audio=mp3.exists())
     md = summarize_lecture(
         c.client, course, lec.seq, lec.name,
         mp3_path=mp3 if mp3.exists() else None,
         pdf_path=pdf if pdf.exists() else None,
-        on_event=lambda m: c.logger.info("    %s", m))
+        on_event=lambda m: c.logger.info("    %s", m),
+        duration=dur, notebook_text=notebook, screens=screens)
     if not md:
         return {"ok": False, "error": "빈 요약 응답"}
-    # MP3 길이로 Gemini 'MM:SS:00' 오형식 마커를 저장 전에 교정
-    dur = probe_duration(str(mp3)) if mp3.exists() else None
     save_summary(md, c.summary_dir, course, lec.seq, lec.name, duration=dur)
     return {"ok": True}
+
+
+def _practice_inputs(c: _Ctx, course: str, lec, has_audio: bool):
+    """실습이 있는 과목의 실습 노트북 글과 화면 [(초, 경로)] — 없으면 ("", []).
+
+    화면은 캡처 단계가 쓰는 1초 간격 프레임을 먼저 뽑아 고른다(캡처 단계는
+    그것을 다시 쓴다). 무엇이 안 돼도 요약은 음성·강의록만으로 계속한다.
+    """
+    import practice
+    if not has_audio or not practice.source_for(course):
+        return "", []
+    log = lambda m: c.logger.info("    %s", m)          # noqa: E731
+    notebook = ""
+    try:
+        nb_path = practice.fetch_notebook(course, lec.seq, c.downloads_dir)
+        notebook = practice.load_notebook_text(nb_path) if nb_path else ""
+        log(f"실습 노트북: {nb_path.name}" if nb_path else
+            "실습 노트북을 찾지 못했습니다(음성·화면으로만 정리)")
+    except Exception as e:  # noqa: BLE001
+        log(f"실습 노트북을 받지 못했습니다: {str(e)[:80]}")
+    screens = []
+    try:
+        from deck_match import DEFAULT_CROP, lecture_frames
+        frames_dir = c.cfg.base_dir / f"frames_{lec.seq}"
+        log("실습 화면을 보려고 영상에서 화면을 뽑습니다(몇 분 걸림 — 캡처 단계가 "
+            "다시 씁니다)")
+        if lecture_frames(c.page, lec, course, frames_dir, DEFAULT_CROP,
+                          on_event=log):
+            screens = practice.screen_frames(frames_dir)
+    except Exception as e:  # noqa: BLE001
+        log(f"화면을 뽑지 못했습니다 — 음성으로만 정리합니다: {str(e)[:80]}")
+    return notebook, screens
 
 
 def _stage_capture(c: _Ctx, course: str, lec) -> dict:

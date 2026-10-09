@@ -243,23 +243,53 @@ def _pick_main_clip(clips, on_event=lambda m: None,
     return main
 
 
-def build_deck_live(page, lec, frames_dir: Path, crop: str, thresh: int,
-                    empty_thresh: float = DEFAULT_EMPTY_THRESH,
-                    on_event=lambda m: None,
-                    out_clips: list | None = None) -> list[dict]:
-    """영상 주소 받기→가장 긴 클립 HLS 추출→dedup→빈 표지 제외. 반환: 덱.
+def lecture_frames(page, lec, course, frames_dir: Path, crop: str = DEFAULT_CROP,
+                   on_event=lambda m: None,
+                   out_clips: list | None = None) -> int:
+    """이 강의의 1초 간격 화면을 frames_dir 에 둔다 → 장 수(못 하면 0).
 
+    같은 강의 것이 이미 있으면(꼬리표 — frames_5 는 과목이 달라도 같은
+    이름이다) 다시 뽑지 않는다. 실습이 있는 과목은 요약 단계가 화면을 보려고
+    먼저 뽑고, 캡처 단계가 그것을 그대로 쓴다(영상을 두 번 받지 않는다).
     주소는 플레이어 창 없이 받는다(capture.lecture_clips — 안 되면 창을 연다).
-    out_clips 를 주면 이 차시의 전체 클립 목록(길이 포함)을 담아준다 —
-    주소를 한 번 더 받지 않고 '두 번째 영상' 유무를 알아내기 위한 통로.
     """
+    import practice
     from capture import lecture_clips
+
+    have = sorted(Path(frames_dir).glob("f_*.jpg"))
+    reuse = bool(have) and course is not None and practice.stamp_matches(
+        practice.read_stamp(frames_dir), course, lec.seq)
+    if reuse and out_clips is None:
+        on_event(f"뽑아 둔 화면을 다시 씁니다({len(have)}장)")
+        return len(have)
     with lecture_clips(page, lec, on_event) as clips:
         main = _pick_main_clip(clips, on_event, out_clips=out_clips)
         if not main:
             on_event("유효 클립 없음")
-            return []
-        extract_frames(main["hlsUrl"], frames_dir, crop, on_event=on_event)
+            return 0
+        if reuse:
+            on_event(f"뽑아 둔 화면을 다시 씁니다({len(have)}장)")
+            return len(have)
+        practice.clear_stamp(frames_dir)
+        n = extract_frames(main["hlsUrl"], frames_dir, crop, on_event=on_event)
+    if n and course is not None:
+        practice.write_stamp(frames_dir, course, lec.seq)
+    return n
+
+
+def build_deck_live(page, lec, frames_dir: Path, crop: str, thresh: int,
+                    empty_thresh: float = DEFAULT_EMPTY_THRESH,
+                    on_event=lambda m: None,
+                    out_clips: list | None = None,
+                    course: str | None = None) -> list[dict]:
+    """화면 뽑기(lecture_frames)→dedup→빈 표지 제외. 반환: 덱.
+
+    out_clips 를 주면 이 차시의 전체 클립 목록(길이 포함)을 담아준다 —
+    주소를 한 번 더 받지 않고 '두 번째 영상' 유무를 알아내기 위한 통로.
+    """
+    if not lecture_frames(page, lec, course, frames_dir, crop,
+                          on_event=on_event, out_clips=out_clips):
+        return []
     deck = dedup_frames(frames_dir, thresh)
     deck = drop_empty_slides(deck, empty_thresh, on_event=on_event)
     on_event(f"덱 {len(deck)}장 (thresh={thresh})")
@@ -610,7 +640,8 @@ def deck_capture_lecture(page, lec, course: str, seq: int, name: str, *,
     """
     frames_dir = cfg.base_dir / f"frames_{seq}"
     deck = build_deck_live(page, lec, frames_dir, crop, thresh,
-                           on_event=on_event, out_clips=out_clips)
+                           on_event=on_event, out_clips=out_clips,
+                           course=course)
     if not deck:
         return {"ok": False, "error": "덱 추출 실패(클립/프레임 없음)"}
     summary = match_and_apply(
