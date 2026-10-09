@@ -113,6 +113,14 @@
   - ⚠️ 짧은 클립은 종료 시 `ended` 플래그 없이 `<video>`가 언로드(pos=0/dur=None)될 수 있음 → 종료감지에 "재생후 video 사라짐 2회연속" 보강(`_play_until_end`).
 - 구현: `watch.py` `watch_lecture()` / `_play_until_end()` / `_trigger_save()` / `_handle_resume_modal()`. 검증 스크립트 `watch_one.py`.
 
+### 4-2. 영상 주소만 받기 — 플레이어 창 없이 (2026-10)
+- `fnCntsPopup` 은 `window.open('', '_POPUP_STUDY')` 로 빈 창을 띄우고 `frmStudy`(`pSbjtId`·`pLectPldcTocNo`·`pAtlcNo`·`pTmpCode`)를 그 창으로 POST `retrieveUSTStudy.do` 할 뿐이다.
+- 클립 정보는 그 응답 HTML 에 `var ifrmVODPlayer_dataN = {…}` (주석·작은따옴표가 섞인 JS 객체)로 들어 있다 — 제목 `source[0].fileTitle`, 주소 `source[0].stream[0].hlsUrl`(고화질), 번호 `lectPldcTocNo`.
+- 그래서 '나의 학습' 페이지에서 같은 폼을 `fetch` 로 보내고 응답을 읽으면 창이 필요 없다(`capture.lecture_clips`). 받은 주소는 ffprobe 로 길이를 재 보고, 하나도 열리지 않으면 예전처럼 플레이어 창을 연다.
+- 플레이어를 띄우지도 재생하지도 않으므로 `registerUSTStudyRslt`(재생 중에만 나감)도 나가지 않는다. 영상 이수·형성평가는 실제로 재생해야 하므로 계속 창을 연다.
+- ⚠️ 응답 HTML 에 시한부 영상 토큰이 있다 — 로그·파일에 남기지 않는다.
+- 클립 중 고화질 주소가 빈 것이 있다(실측: '보충강의' 는 고화질 `""`, 저화질만 있음). 플레이어 창에서 읽을 때와 같게 첫 화질만 본다.
+
 ## 5. 🔑 DRM / 화면 캡처 가능 여부  ✅ 확정
 - 전체 화면 스크린샷 밝기: 148.9~237.3/255 → 검은화면 아님(내용 보임) ✅
 - **영상 영역 스크린샷 밝기: 231.2/255 → 검은화면 아님, 실제 영상 프레임 캡처됨** ✅ (tab2_video.png)

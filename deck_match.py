@@ -48,14 +48,11 @@ from capture import (
     FFMPEG,
     _EMBED_LINE_RE,
     capture_filename,
-    collect_clips,
     embed_name,
     embed_names,
     embed_text,
     orphan_captures,
     write_note,
-    probe_duration,
-    wait_for_clips,
 )
 from proc_util import run_hidden
 from download import sanitize
@@ -227,15 +224,13 @@ def scrub_empty_embeds(md: str, out_dir, thresh: float = DEFAULT_EMPTY_THRESH):
     return text, removed
 
 
-def _pick_main_clip(popup, on_event=lambda m: None,
+def _pick_main_clip(clips, on_event=lambda m: None,
                     out_clips: list | None = None) -> dict | None:
-    """플레이어 팝업에서 가장 긴(학습하기) 클립 1개 선택.
+    """길이까지 잰 클립 목록에서 가장 긴(학습하기) 클립 1개 선택.
 
-    out_clips 를 주면 길이까지 잰 전체 클립 목록을 담아준다(두 번째 영상 탐지용).
+    out_clips 를 주면 전체 클립 목록을 담아준다(두 번째 영상 탐지용).
     """
-    clips = wait_for_clips(popup)   # 늦게 채워지는 플레이어 대응(폴링)
-    for c in clips:
-        c["duration"] = probe_duration(c.get("hlsUrl") or "")
+    clips = list(clips or [])
     valid = [c for c in clips
              if isinstance(c.get("duration"), (int, float)) and c["duration"] > 0]
     if not valid:
@@ -252,24 +247,19 @@ def build_deck_live(page, lec, frames_dir: Path, crop: str, thresh: int,
                     empty_thresh: float = DEFAULT_EMPTY_THRESH,
                     on_event=lambda m: None,
                     out_clips: list | None = None) -> list[dict]:
-    """플레이어 열기→가장 긴 클립 HLS 추출→dedup→빈 표지 제외. 반환: 덱.
+    """영상 주소 받기→가장 긴 클립 HLS 추출→dedup→빈 표지 제외. 반환: 덱.
 
+    주소는 플레이어 창 없이 받는다(capture.lecture_clips — 안 되면 창을 연다).
     out_clips 를 주면 이 차시의 전체 클립 목록(길이 포함)을 담아준다 —
-    플레이어를 한 번 더 열지 않고 '두 번째 영상' 유무를 알아내기 위한 통로.
+    주소를 한 번 더 받지 않고 '두 번째 영상' 유무를 알아내기 위한 통로.
     """
-    from watch import open_player
-    popup = open_player(page, lec)
-    try:
-        main = _pick_main_clip(popup, on_event, out_clips=out_clips)
+    from capture import lecture_clips
+    with lecture_clips(page, lec, on_event) as clips:
+        main = _pick_main_clip(clips, on_event, out_clips=out_clips)
         if not main:
             on_event("유효 클립 없음")
             return []
         extract_frames(main["hlsUrl"], frames_dir, crop, on_event=on_event)
-    finally:
-        try:
-            popup.close()
-        except Exception:
-            pass
     deck = dedup_frames(frames_dir, thresh)
     deck = drop_empty_slides(deck, empty_thresh, on_event=on_event)
     on_event(f"덱 {len(deck)}장 (thresh={thresh})")

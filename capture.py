@@ -15,6 +15,8 @@
 ffmpeg/브라우저/IO(수동 검증):
   - probe_duration(url)                            : ffprobe 길이
   - collect_clips(popup)                           : ifrmVODPlayer_dataN → [{title,hlsUrl}]
+  - parse_clip_data(html)  (순수)                  : 같은 것을 응답 HTML 에서
+  - lecture_clips(page, lec)                       : 창 없이 클립+길이, 안 되면 플레이어로
   - resolve_clips(page, lec)                       : 플레이어 열고 클립+길이 조회
   - capture_frame(url, seconds, out_path)          : ffmpeg 단일 프레임
   - capture_lecture(...)                           : 전체 오케스트레이션
@@ -27,6 +29,7 @@ import json
 import re
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 from proc_util import run_hidden
@@ -270,6 +273,126 @@ _COLLECT_JS = """
   return JSON.stringify(out);
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# 클립 주소를 창 없이 받기
+# ---------------------------------------------------------------------------
+# 학교의 fnCntsPopup 은 빈 창(_POPUP_STUDY)을 띄우고 frmStudy 를 그 창으로
+# 제출할 뿐이다(POST retrieveUSTStudy.do — pSbjtId · pLectPldcTocNo · pAtlcNo).
+# 클립 주소는 그 응답 HTML 에 `var ifrmVODPlayer_data0 = {…}` 로 적혀 있다.
+# 그래서 같은 요청을 '나의 학습' 페이지 안에서 fetch 로 보내고 응답에서 주소만
+# 꺼내면 창이 뜨지 않는다. 플레이어를 띄우지도 재생하지도 않으므로 진도 기록
+# (registerUSTStudyRslt — 재생 중에만 나간다)도 남지 않는다.
+#
+# ⚠️ 응답 HTML 에는 시한부 영상 토큰이 들어 있다 — 로그·파일에 남기지 않는다.
+STUDY_PATH = "/ekp/user/study/retrieveUSTStudy.do"
+
+_FETCH_STUDY_JS = """
+async (a) => {
+  const body = new URLSearchParams({pSbjtId: a.s, pLectPldcTocNo: a.t,
+                                    pAtlcNo: a.atlc, pTmpCode: ''});
+  const r = await fetch(a.path, {method: 'POST', body: body,
+                                 credentials: 'same-origin'});
+  return r.ok ? await r.text() : '';
+}
+"""
+
+_DATA_HEAD_RE = re.compile(r"var\s+ifrmVODPlayer_data(\d+)\s*=\s*\{")
+
+
+def _js_field(body: str, key: str) -> str:
+    """객체 글 안의 첫 `"key" : "값"`(작은따옴표도) — 없으면 빈 문자열."""
+    m = re.search(r'"%s"\s*:\s*(["\'])(.*?)\1' % re.escape(key), body, re.S)
+    return m.group(2) if m else ""
+
+
+def parse_clip_data(html) -> list[dict]:
+    """retrieveUSTStudy.do 응답 → [{idx, title, fileId, hlsUrl}] (collect_clips 와 같은 모양).
+
+    플레이어가 쓰는 것과 같은 자리를 읽는다: 제목은 source[0].fileTitle,
+    주소는 source[0].stream[0].hlsUrl(첫 화질), 번호는 lectPldcTocNo.
+    """
+    s = str(html or "")
+    heads = list(_DATA_HEAD_RE.finditer(s))
+    out = []
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(s)
+        body = s[m.end():end]
+        stop = body.find("};")
+        body = body[:stop] if stop >= 0 else body
+        out.append({"idx": int(m.group(1)),
+                    "title": _js_field(body, "fileTitle"),
+                    "fileId": (_js_field(body, "lectPldcTocNo")
+                               or _js_field(body, "fileId")),
+                    "hlsUrl": _js_field(body, "hlsUrl")})
+    return sorted(out, key=lambda c: c["idx"])
+
+
+def fetch_clips(page, lec) -> list[dict]:
+    """플레이어 창 없이 이 차시의 클립 목록을 받는다(못 받으면 빈 목록).
+
+    '나의 학습' 페이지에서 보내야 학교 쿠키·출처가 플레이어 창을 열 때와 같다.
+    """
+    from auth import back_to_my_study
+
+    back_to_my_study(page)
+    html = page.evaluate(_FETCH_STUDY_JS, {
+        "s": lec.enc_sbjt_id, "t": lec.enc_toc_no, "atlc": lec.enc_atlc_no,
+        "path": STUDY_PATH})
+    return parse_clip_data(html)
+
+
+def _timed(clips) -> list[dict]:
+    for c in clips:
+        if c.get("duration") is None:
+            c["duration"] = probe_duration(c.get("hlsUrl") or "")
+    return clips
+
+
+def playable(clips) -> bool:
+    """재 본 길이가 있는 클립이 하나라도 있는가 — 주소가 실제로 열린다는 뜻."""
+    return any(isinstance(c.get("duration"), (int, float)) and c["duration"] > 0
+               for c in clips or [])
+
+
+@contextmanager
+def lecture_clips(page, lec, on_event=None):
+    """이 차시의 클립 목록(길이까지 잰 것) — **창 없이 먼저**, 안 되면 플레이어로.
+
+    창 없이 받은 주소를 ffprobe 로 재 보고, 하나도 열리지 않으면 예전처럼
+    플레이어 창을 열어 다시 받는다. 창을 연 경우에는 with 블록이 끝날 때까지
+    창을 살려 둔다(그동안 주소를 쓴다).
+    """
+    def log(m):
+        if on_event:
+            try:
+                on_event(m)
+            except Exception:  # noqa: BLE001
+                pass
+
+    clips: list[dict] = []
+    try:
+        clips = _timed(fetch_clips(page, lec))
+    except Exception as e:  # noqa: BLE001 - 안 되면 창을 여는 길이 있다
+        log(f"창 없이 영상 주소를 받지 못했습니다({type(e).__name__}) — "
+            "플레이어를 엽니다")
+        clips = []
+    if playable(clips):
+        log(f"영상 주소를 창 없이 받았습니다(클립 {len(clips)}개)")
+        yield clips
+        return
+    if clips:
+        log("창 없이 받은 영상 주소가 열리지 않아 플레이어를 엽니다")
+    from watch import open_player
+    popup = open_player(page, lec)
+    try:
+        yield _timed(wait_for_clips(popup))
+    finally:
+        try:
+            popup.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def probe_duration(url: str, timeout: float = 120.0):

@@ -161,16 +161,9 @@ def extract_audio(url: str, out_path, timeout: float = 3600.0,
     return res
 
 
-def detect_extra_clips(popup, on_event=lambda m: None) -> list[dict]:
-    """열려 있는 플레이어 팝업에서 두 번째 영상(클립) 목록을 뽑는다.
-
-    capture 단계가 이미 연 팝업을 재사용하려고 분리해 둔 함수.
-    """
-    from capture import collect_clips
-    clips = collect_clips(popup)
-    for c in clips:
-        if c.get("duration") is None:
-            c["duration"] = probe_duration(c.get("hlsUrl") or "")
+def detect_extra_clips(clips, on_event=lambda m: None) -> list[dict]:
+    """길이까지 잰 클립 목록에서 두 번째 영상(클립)만 뽑는다."""
+    clips = list(clips or [])
     extras = pick_extra_clips(clips)
     on_event(f"클립 {len(clips)}개 · 두 번째 영상 {len(extras)}개")
     return extras
@@ -180,22 +173,21 @@ def make_extra_notes(page, lec, course: str, *, client,
                      downloads_dir, out_dir, on_event=lambda m: None) -> dict:
     """두 번째(이후) 영상의 예습노트를 만들어 저장한다. main.py 'extra' 단계용.
 
-    플레이어를 열어 클립 목록을 얻고(hlsUrl 토큰은 팝업이 살아있는 동안만 유효
-    하므로 오디오 추출까지 팝업 유지), 본강의를 뺀 클립마다:
+    영상 주소를 받아(플레이어 창 없이 — 안 되면 창을 열고, 연 창은 오디오
+    추출이 끝날 때까지 유지) 본강의를 뺀 클립마다:
       HLS→MP3 → Gemini 요약 → '{과목} {seq}강 - {차시명} (N).md' 저장.
     두 번째 영상이 없으면 skip(ok) 로 끝난다.
     """
+    from capture import lecture_clips
     from summarize import (needs_summary, note_filename, save_summary,
                            summarize_lecture)
-    from watch import open_player
 
     downloads_dir, out_dir = Path(downloads_dir), Path(out_dir)
     seq, name = lec.seq, lec.name
 
-    popup = open_player(page, lec)
     jobs: list[tuple[int, Path]] = []      # (part, mp3 경로)
-    try:
-        extras = detect_extra_clips(popup, on_event)
+    with lecture_clips(page, lec, on_event) as clips:
+        extras = detect_extra_clips(clips, on_event)
         if not extras:
             return {"ok": True, "skipped": True, "detail": "두 번째 영상 없음"}
 
@@ -216,13 +208,8 @@ def make_extra_notes(page, lec, course: str, *, client,
                     return {"ok": False,
                             "error": f"오디오 추출 실패({part}): {r.get('error')}"}
             jobs.append((part, mp3))
-    finally:
-        try:
-            popup.close()
-        except Exception:
-            pass
 
-    # 요약·저장은 토큰이 필요 없으므로 플레이어를 닫고 진행한다.
+    # 요약·저장은 토큰이 필요 없으므로 주소를 다 쓴 뒤에 진행한다.
     made = []
     for part, mp3 in jobs:
         disp = extra_note_name(name, part)

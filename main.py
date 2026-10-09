@@ -446,20 +446,16 @@ def _mp3_from_video(c: _Ctx, course: str, lec) -> bool:
 
     ⚠️ hlsUrl 에는 시한부 JWT 가 들어 있어 로그에 남기지 않는다(길이만 기록).
     """
-    from capture import probe_duration, wait_for_clips
+    from capture import lecture_clips
     from download import build_filename
     from extra_video import extract_audio
-    from watch import open_player
 
     out = c.downloads_dir / build_filename(course, lec.seq, "mp3")
     if out.exists() and out.stat().st_size > 0:
         return True
-    popup = open_player(c.page, lec)
-    try:
-        clips = wait_for_clips(popup)
-        for cl in clips:
-            if cl.get("duration") is None:
-                cl["duration"] = probe_duration(cl.get("hlsUrl") or "")
+    # 영상 주소는 플레이어 창 없이 받는다(안 되면 lecture_clips 가 창을 연다)
+    with lecture_clips(c.page, lec,
+                       lambda m: c.logger.info("    %s", m)) as clips:
         valid = [cl for cl in clips
                  if isinstance(cl.get("duration"), (int, float))
                  and cl["duration"] > 0]
@@ -475,11 +471,6 @@ def _mp3_from_video(c: _Ctx, course: str, lec) -> bool:
             return True
         c.logger.warning("    오디오 추출 실패: %s", (r.get("error") or "")[:120])
         return False
-    finally:
-        try:
-            popup.close()
-        except Exception:
-            pass
 
 
 def _stage_download(c: _Ctx, course: str, lec) -> dict:
