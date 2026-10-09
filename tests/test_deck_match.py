@@ -259,3 +259,53 @@ def test_a_concept_without_a_time_is_not_judged_by_distance():
     deck = [{"n": 1, "sec": 3000}]
     assert matched_plan(deck, [{"cur_sec": 0}], [{"c": 1, "slide": 1}]) == \
         {0: 3000}
+
+
+# --- 실습 화면 후보 — 다음 칸으로 넘어가기 직전 ------------------------------
+# 실측: 4강 4-2 는 47:33(완성 코드 + 실행 결과) 직후 47:36 에 4-3 으로 스크롤했다.
+from deck_match import (  # noqa: E402
+    first_jump, pre_jump_secs, with_practice_frames)
+
+
+def _hashes(jumps, n=400):
+    """jumps 초마다 화면이 확 바뀌는 해시 열."""
+    out, cur = [], 0
+    for s in range(n):
+        if s in jumps:
+            cur = (1 << 40) - 1 if cur == 0 else 0
+        out.append(cur)
+    return lambda s: out[max(0, min(s, n - 1))]
+
+
+def test_the_screen_just_before_a_scroll_is_found():
+    h = _hashes({100})
+    assert first_jump(h, 10, 200) == 97          # 3초 떨어진 화면끼리 비교
+
+
+def test_no_scroll_gives_nothing():
+    assert first_jump(_hashes(set()), 10, 200) is None
+
+
+def test_candidates_are_spaced_and_include_the_end():
+    h = _hashes({50, 55, 150})
+    got = pre_jump_secs(h, 0, 300)
+    assert got == [47, 147, 300]                 # 50·55 는 20초 안이라 하나
+
+
+def test_a_step_falls_back_to_the_screen_before_the_scroll():
+    md = PRACTICE_MD
+    concepts = parse_concepts(md)
+    h = _hashes({37 * 60 + 300}, n=5000)         # 4-1 구간 안의 스크롤
+    shots = practice_shots(md, concepts, 5000, hash_at=h)
+    assert shots[1] == 37 * 60 + 297
+
+
+def test_candidates_are_merged_into_the_deck_by_time(tmp_path):
+    deck = [{"n": 1, "sec": 10, "ts": "00:00:10", "path": tmp_path / "a.jpg"},
+            {"n": 2, "sec": 3000, "ts": "00:50:00", "path": tmp_path / "b.jpg"}]
+    concepts = parse_concepts(PRACTICE_MD)
+    h = _hashes({37 * 60 + 100}, n=3100)
+    got = with_practice_frames(deck, PRACTICE_MD, concepts, tmp_path, h, 3100)
+    assert [s["n"] for s in got] == list(range(1, len(got) + 1))
+    assert [s["sec"] for s in got] == sorted(s["sec"] for s in got)
+    assert any(s.get("practice") for s in got)

@@ -379,6 +379,9 @@ def build_match_prompt(concepts: list[dict]) -> str:
         "- 개념마다 노트에 적힌 대략의 시각이 있다. 그 근처의 슬라이드를 고르고,",
         "  강의 끝의 '정리하기' 처럼 여러 내용을 한 줄씩 모아 둔 요약 슬라이드는",
         "  고르지 마라(그 개념을 설명하는 슬라이드가 따로 있다).",
+        "- 덱에는 강의 후반 실습 화면(Colab 코드 편집기)도 섞여 있다. 실습 단계",
+        "  개념에는 그 단계의 칸 제목·코드가 보이고 **코드가 다 채워진** 화면을",
+        "  골라라(빈칸만 있는 화면이나 다음 단계 칸 화면은 고르지 마라).",
         "",
         "개념 목록:",
     ]
@@ -534,27 +537,116 @@ def practice_concepts(md: str, concepts: list[dict]) -> set[int]:
     return out
 
 
-def practice_shots(md: str, concepts: list[dict], n_frames: int) -> dict:
-    """실습 단계마다 붙일 화면의 초 — {개념 번호: 초}.
+JUMP_GAP = 3         # 이만큼 떨어진 화면끼리 비교한다(스크롤은 2~3초에 걸친다)
+JUMP_MIN = 12        # 해시 거리가 이 이상이면 화면이 크게 바뀐 것(다음 칸으로 스크롤)
+JUMP_FROM = 0.4      # 단계 구간의 이 비율이 지난 뒤부터 큰 변화를 찾는다
+CAND_SPACING = 20    # 실습 후보 화면 사이 최소 간격(초)
+CAND_MAX = 60        # 실습 후보 화면 수 상한
+STEP_SLACK = 180     # 고른 화면이 단계 구간에서 이만큼까지 벗어나도 받는다(초)
+
+
+def first_jump(hash_at, lo: int, hi: int, gap: int = JUMP_GAP,
+               jump: int = JUMP_MIN, dist=None):
+    """lo~hi 사이에서 화면이 처음 크게 바뀌기 **직전**의 초(없으면 None).
+
+    hash_at(초) → 해시. 강사가 다음 칸으로 스크롤하기 직전 화면에는 그 칸의
+    코드가 다 채워져 있고 실행 결과도 보인다(실측: 4강 4-2 → 47:33).
+    """
+    d = dist or hamming
+    for s in range(int(lo), int(hi) - gap + 1):
+        if d(hash_at(s), hash_at(s + gap)) >= jump:
+            return s
+    return None
+
+
+def pre_jump_secs(hash_at, start: int, end: int, gap: int = JUMP_GAP,
+                  jump: int = JUMP_MIN, spacing: int = CAND_SPACING,
+                  cap: int = CAND_MAX, dist=None) -> list:
+    """start~end 사이에서 '크게 바뀌기 직전' 화면들의 초 — 실습 후보.
+
+    바로 앞 후보와 spacing 초 안이면 하나로 친다. 끝 화면도 넣는다.
+    """
+    d = dist or hamming
+    out = []
+    s = int(start)
+    while s <= int(end) - gap:
+        if d(hash_at(s), hash_at(s + gap)) >= jump:
+            if not out or s - out[-1] >= spacing:
+                out.append(s)
+            s += gap
+            continue
+        s += 1
+    if int(end) >= 0 and (not out or int(end) - out[-1] >= spacing):
+        out.append(int(end))
+    if len(out) > cap:
+        step = len(out) / cap
+        out = [out[int(i * step)] for i in range(cap)]
+    return out
+
+
+def _step_window(concepts, ci, n_frames):
+    cur = int(concepts[ci]["cur_sec"])
+    nxt = (int(concepts[ci + 1]["cur_sec"]) if ci + 1 < len(concepts)
+           else None)
+    return cur, nxt
+
+
+def practice_shots(md: str, concepts: list[dict], n_frames: int,
+                   hash_at=None) -> dict:
+    """실습 단계마다 붙일 화면의 초 — {개념 번호: 초}(AI 가 못 고를 때 쓴다).
 
     슬라이드 덱에서 고르면 안 된다. Colab 화면은 흰 바탕에 코드만 조금씩
     바뀌어 몇 분이 한 장으로 묶이고, 그 묶음의 첫 장은 **코드를 채우기 전**
-    빈 실습지다(실측: 4강 4-1·4-2 가 모두 36:50 빈 칸 화면). 그 단계가 끝날
-    무렵(다음 단계 10초 전)이면 코드가 다 채워져 있고 실행 결과도 보인다.
+    빈 실습지다(실측: 4강 4-1·4-2 가 모두 36:50 빈 칸 화면).
+
+    hash_at 이 있으면 단계 구간의 40% 이후 처음 크게 바뀌기 직전 화면을,
+    없거나 못 찾으면 다음 단계 10초 전 화면을 고른다(다음 단계 시각은 AI 가
+    적은 근사치라 늦을 수 있다 — 실측 4강 4-3 은 1분 늦게 적혀 있었다).
     """
     idx = practice_concepts(md, concepts)
     last = max(0, int(n_frames) - 1)
     out = {}
     for ci in sorted(idx):
-        cur = int(concepts[ci]["cur_sec"])
-        nxt = (int(concepts[ci + 1]["cur_sec"]) if ci + 1 < len(concepts)
-               else None)
-        if nxt is not None and nxt - SHOT_LEAD >= cur + SHOT_MIN:
-            sec = nxt - SHOT_LEAD
-        else:
-            sec = cur + (SHOT_LAST if nxt is None else SHOT_MIN)
+        cur, nxt = _step_window(concepts, ci, n_frames)
+        sec = None
+        if hash_at is not None:
+            end = nxt if nxt is not None else min(cur + 300, last)
+            lo = cur + max(SHOT_MIN, int(JUMP_FROM * max(0, end - cur)))
+            sec = first_jump(hash_at, lo, min(end + 60, last))
+        if sec is None:
+            if nxt is not None and nxt - SHOT_LEAD >= cur + SHOT_MIN:
+                sec = nxt - SHOT_LEAD
+            else:
+                sec = cur + (SHOT_LAST if nxt is None else SHOT_MIN)
         out[ci] = max(0, min(sec, last))
     return out
+
+
+def with_practice_frames(deck: list[dict], md: str, concepts: list[dict],
+                         frames_dir: Path, hash_at, n_frames: int,
+                         on_event=lambda m: None) -> list[dict]:
+    """덱에 실습 후보 화면을 시각 순으로 섞고 번호를 다시 매긴다.
+
+    AI 가 칸 제목과 코드를 읽고 단계마다 **코드가 다 채워진 화면**을 고르게
+    한다 — 시각만으로 고르면 단계가 1~2분으로 짧은 강의(3강)에서 앞뒤 단계
+    화면이 붙었다.
+    """
+    idx = practice_concepts(md, concepts)
+    if not idx or n_frames <= 0:
+        return deck
+    start = max(0, min(int(concepts[ci]["cur_sec"]) for ci in idx) - 60)
+    have = {s["sec"] for s in deck}
+    extra = [{"sec": s, "ts": seconds_to_timestamp(s),
+              "path": Path(frames_dir) / f"f_{s + 1:06d}.jpg", "practice": True}
+             for s in pre_jump_secs(hash_at, start, n_frames - 1)
+             if s not in have]
+    if not extra:
+        return deck
+    on_event(f"실습 후보 화면 {len(extra)}장을 덱에 섞습니다")
+    merged = sorted([dict(s) for s in deck] + extra, key=lambda s: s["sec"])
+    for k, s in enumerate(merged, 1):
+        s["n"] = k
+    return merged
 
 
 def apply_to_note(md: str, concepts: list[dict], plan: dict[int, int],
@@ -645,6 +737,20 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
     """덱과 노트를 받아 개념 매칭→(옵션)노트 반영. 반환: 요약 dict."""
     md = note_path.read_text(encoding="utf-8")
     concepts = parse_concepts(md)
+    # 실습 단계가 있으면 '다음 칸으로 넘어가기 직전' 화면을 후보로 덱에 섞는다
+    frames_dir = Path(deck[0]["path"]).parent if deck else None
+    n_frames = (len(list(frames_dir.glob("f_*.jpg")))
+                if frames_dir is not None else 0)
+    _hashes: dict = {}
+
+    def hash_at(sec):
+        sec = max(0, min(int(sec), n_frames - 1))
+        if sec not in _hashes:
+            _hashes[sec] = dhash(frames_dir / f"f_{sec + 1:06d}.jpg")
+        return _hashes[sec]
+    if n_frames:
+        deck = with_practice_frames(deck, md, concepts, frames_dir, hash_at,
+                                    n_frames, on_event=on_event)
     on_event(f"덱 {len(deck)}장, 개념 {len(concepts)}개")
 
     if result is None:
@@ -680,18 +786,27 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
     out_dir = note_path.parent / "_captures"
     out_dir.mkdir(parents=True, exist_ok=True)
     path_of = {s["sec"]: s["path"] for s in deck}
-    # 실습 단계는 덱 대신 그 단계가 끝날 무렵의 1초 프레임을 쓴다
-    frames_dir = Path(deck[0]["path"]).parent if deck else None
+    # 실습 단계: AI 가 고른 화면을 쓰되 단계 구간에서 너무 벗어나면 시각 기준
+    # (처음 크게 바뀌기 직전 화면)으로 대신 고른다. 🎬 위치는 옮기지 않는다.
     shots = {}
-    if frames_dir is not None:
-        n = len(list(frames_dir.glob("f_*.jpg")))
-        shots = {ci: sec for ci, sec in practice_shots(md, concepts, n).items()
-                 if (frames_dir / f"f_{sec + 1:06d}.jpg").exists()}
-        for ci, sec in shots.items():
-            plan[ci] = sec
-            path_of.setdefault(sec, frames_dir / f"f_{sec + 1:06d}.jpg")
+    if n_frames:
+        fallback = practice_shots(md, concepts, n_frames, hash_at)
+        chosen = 0
+        for ci, fb in fallback.items():
+            cur, nxt = _step_window(concepts, ci, n_frames)
+            end = nxt if nxt is not None else cur + SHOT_LAST
+            sec = plan.get(ci)
+            if sec is not None and cur - STEP_SLACK <= sec <= end + STEP_SLACK:
+                chosen += 1
+            else:
+                sec = fb
+            if (frames_dir / f"f_{sec + 1:06d}.jpg").exists():
+                shots[ci] = sec
+                plan[ci] = sec
+                path_of.setdefault(sec, frames_dir / f"f_{sec + 1:06d}.jpg")
         if shots:
-            on_event(f"실습 단계 {len(shots)}개는 단계가 끝날 무렵 화면을 붙입니다")
+            on_event(f"실습 단계 {len(shots)}개 — AI 가 고른 화면 {chosen}개 · "
+                     f"시각으로 고른 화면 {len(shots) - chosen}개")
     for ci, sec in plan.items():
         src = path_of.get(sec)
         if src:
