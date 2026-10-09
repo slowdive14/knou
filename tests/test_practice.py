@@ -233,3 +233,11 @@ def test_a_thin_note_is_written_again_without_the_light_model(monkeypatch,
                                      duration=69 * 60)
     assert md == full
     assert calls[1] and all("lite" in m for m in calls[1])
+
+
+def test_a_doubled_heading_mark_is_tidied():
+    """모델이 지시문의 '## 실습' 을 글자 그대로 제목에 붙여 썼다."""
+    md = "## ## 실습: 파이썬 1\n### 2-1 리스트\n```python\n## 주석은 그대로\n```"
+    out = summarize.tidy_headings(md)
+    assert out.startswith("## 실습: 파이썬 1\n")
+    assert "## 주석은 그대로" in out

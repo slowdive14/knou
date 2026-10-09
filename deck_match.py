@@ -305,6 +305,26 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def fenced_lines(lines) -> set[int]:
+    """코드 블록(``` … ```) 안의 줄 번호들 — 울타리 줄 포함.
+
+    실습 코드에는 '## DataFrame 생성' 같은 주석이 흔하다. 이것을 제목으로
+    읽으면 실습 단계가 '## 실습' 아래에 있는지 가릴 수 없다(실측: 5강 5-2
+    부터 실습으로 보지 않아 위치가 옮겨졌다).
+    """
+    out, inside = set(), False
+    for i, line in enumerate(lines):
+        if _FENCE_RE.match(line):
+            out.add(i)
+            inside = not inside
+        elif inside:
+            out.add(i)
+    return out
+
+
 def parse_concepts(md: str) -> list[dict]:
     """노트 → 개념 블록 목록.
 
@@ -312,10 +332,13 @@ def parse_concepts(md: str) -> list[dict]:
     현재 첫 마커 시각(secs), 마커 줄 인덱스, 바로 아래 embed 줄 인덱스(있으면).
     """
     lines = md.splitlines()
+    fenced = fenced_lines(lines)
     concepts: list[dict] = []
     last_heading = ""
     boundary = -1   # 직전 heading 또는 마커 줄
     for i, line in enumerate(lines):
+        if i in fenced:
+            continue            # 코드 속 '## 주석' 은 제목이 아니다
         if re.match(r"^#{1,6}\s", line):
             last_heading = _clean(line)
             boundary = i
@@ -353,11 +376,16 @@ def build_match_prompt(concepts: list[dict]) -> str:
         "- 슬라이드의 제목과 본문 텍스트를 읽고 개념 내용과 의미가 일치하는지 보라.",
         "- 도입부 애니메이션/표지처럼 해당 개념이 없으면 slide=0(없음)으로.",
         "- 여러 개념이 같은 슬라이드를 가리켜도 된다.",
+        "- 개념마다 노트에 적힌 대략의 시각이 있다. 그 근처의 슬라이드를 고르고,",
+        "  강의 끝의 '정리하기' 처럼 여러 내용을 한 줄씩 모아 둔 요약 슬라이드는",
+        "  고르지 마라(그 개념을 설명하는 슬라이드가 따로 있다).",
         "",
         "개념 목록:",
     ]
     for k, c in enumerate(concepts, 1):
-        lines.append(f"  개념 {k} [{c['heading']}]: {c['body']}")
+        at = seconds_to_timestamp(int(c.get("cur_sec") or 0))
+        lines.append(f"  개념 {k} [{c['heading']}] (노트 시각 약 {at}): "
+                     f"{c['body']}")
     lines += [
         "",
         '반드시 JSON 배열로만 답하라. 각 원소: '
@@ -425,16 +453,30 @@ def index_map(result) -> dict:
     return out
 
 
+MAX_SHIFT = 15 * 60     # 노트 시각에서 이보다 멀리 떨어진 슬라이드는 받지 않는다
+
+
 def matched_plan(deck: list[dict], concepts: list[dict],
-                 result: list[dict]) -> dict[int, int]:
-    """Gemini 응답 → {concept_index(0base): slide_sec}. 매칭된 것만."""
+                 result: list[dict], max_shift: int = MAX_SHIFT) -> dict[int, int]:
+    """Gemini 응답 → {concept_index(0base): slide_sec}. 매칭된 것만.
+
+    노트 시각에서 max_shift 초보다 멀리 떨어진 슬라이드는 버린다. 강의 끝의
+    '정리하기' 슬라이드는 앞 개념들을 한 줄씩 다 담고 있어 그럴듯해 보이지만,
+    붙이면 0분 개념의 위치가 54분으로 끌려간다(실측: 5강). 노트 시각은 음성
+    기준 근사치라 몇 분은 어긋날 수 있어 넉넉히 잡는다. cur_sec 가 0 이면
+    (시각이 없다) 따지지 않는다.
+    """
     by_c = index_map(result)
     sec_of = {s["n"]: s["sec"] for s in deck}
     plan: dict[int, int] = {}
     for k in range(1, len(concepts) + 1):
         slide = as_index((by_c.get(k, {}) or {}).get("slide")) or 0
-        if slide and slide in sec_of:
-            plan[k - 1] = sec_of[slide]
+        if not slide or slide not in sec_of:
+            continue
+        cur = int(concepts[k - 1].get("cur_sec") or 0)
+        if cur and max_shift and abs(sec_of[slide] - cur) > max_shift:
+            continue
+        plan[k - 1] = sec_of[slide]
     return plan
 
 
@@ -478,9 +520,12 @@ SHOT_LAST = 60        # 마지막 단계는 시작에서 이만큼 뒤 화면(�
 def practice_concepts(md: str, concepts: list[dict]) -> set[int]:
     """`## 실습…` 대주제 아래에 있는 개념(실습 단계)의 번호들."""
     lines = md.splitlines()
+    fenced = fenced_lines(lines)
     out = set()
     for ci, c in enumerate(concepts):
         for j in range(c["marker_idx"], -1, -1):
+            if j in fenced:
+                continue
             line = lines[j]
             if line.startswith("## "):
                 if PRACTICE_HEAD_RE.match(line):

@@ -587,6 +587,18 @@ _SECRET_RE = re.compile(
     """)
 
 
+_DOUBLE_HEAD_RE = re.compile(r"^(#{1,6})[ \t]+#{1,6}[ \t]+", re.M)
+
+
+def tidy_headings(markdown: str) -> str:
+    """'## ## 실습' 처럼 제목 기호가 겹친 줄을 바로잡는다.
+
+    지시문에 `## 실습` 이라고 적어 두었더니 모델이 그 글자를 그대로 제목에
+    붙여 썼다(실측: 2강 '## ## 실습: 데이터 분석을 위한 파이썬 1').
+    """
+    return _DOUBLE_HEAD_RE.sub(r"\1 ", str(markdown or ""))
+
+
 def mask_secrets(markdown: str) -> str:
     """노트 속 인증키·토큰 값을 가린다 — 이미 가린 자리는 그대로 둔다."""
     def _sub(m):
@@ -601,7 +613,8 @@ def save_summary(markdown: str, out_dir, subject, seq, name, duration=None) -> d
 
     duration(매체 길이, 초)을 주면 Gemini 의 'MM:SS:00' 오형식 마커를 미리 교정해
     저장한다(노트 본문·timestamps.json 모두 올바른 시각으로 통일).
-    화면에서 옮겨 온 인증키·토큰 값은 가린다(mask_secrets).
+    화면에서 옮겨 온 인증키·토큰 값은 가리고(mask_secrets), 겹친 제목 기호는
+    바로잡는다(tidy_headings).
     """
     from note_embed import write_note
     if not str(markdown or "").strip():
@@ -609,7 +622,8 @@ def save_summary(markdown: str, out_dir, subject, seq, name, duration=None) -> d
         raise ValueError("빈 노트는 저장하지 않습니다")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    markdown = mask_secrets(normalize_markdown_timestamps(markdown, duration))
+    markdown = tidy_headings(mask_secrets(
+        normalize_markdown_timestamps(markdown, duration)))
     md_path = out_dir / note_filename(subject, seq, name)
     # write_note 가 이미지 임베드 폭을 맞춰 준다 — Gemini 응답에 임베드가
     # 섞여 들어와도 폭이 빠지지 않게 하는 것이 여기 있는 이유다.

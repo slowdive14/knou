@@ -210,3 +210,52 @@ def test_a_step_keeps_its_marker_and_gets_the_new_picture():
     assert "🎬 [00:43:15]" in out                     # 위치는 그대로
     assert "오픈소스기반데이터분석_4강_00-44-15.jpg" in out
     assert "🎬 [00:09:00]" in out
+
+
+# --- 코드 속 '## 주석' 은 제목이 아니다 · 멀리 떨어진 슬라이드는 거절 --------
+# 실측: 5강 5-2 부터 '## CSV 형식 저장' 같은 코드 주석을 제목으로 읽어 실습으로
+# 보지 않았고, 0분 개념이 54분 '정리하기' 슬라이드에 붙어 위치가 끌려갔다.
+from deck_match import fenced_lines, matched_plan  # noqa: E402
+
+FENCED_MD = """# 5강
+## 실습
+### 5-1 CSV 형식 저장
+🎬 [00:28:00]
+```python
+## DataFrame 생성
+df = pd.DataFrame(data)
+```
+### 5-2 JSON 형식 저장
+🎬 [00:30:30]
+```python
+## json.dump를 이용한 저장
+```
+## 한눈에 정리
+"""
+
+
+def test_lines_inside_code_blocks_are_known():
+    lines = FENCED_MD.splitlines()
+    got = fenced_lines(lines)
+    assert lines.index("## DataFrame 생성") in got
+    assert lines.index("## 실습") not in got
+
+
+def test_a_code_comment_is_not_taken_for_a_heading():
+    concepts = parse_concepts(FENCED_MD)
+    assert [c["heading"] for c in concepts] == ["5-1 CSV 형식 저장",
+                                                "5-2 JSON 형식 저장"]
+    assert practice_concepts(FENCED_MD, concepts) == {0, 1}
+
+
+def test_a_slide_far_from_the_note_time_is_refused():
+    deck = [{"n": 1, "sec": 30}, {"n": 2, "sec": 54 * 60 + 48}]
+    concepts = [{"cur_sec": 60}, {"cur_sec": 5 * 60}]
+    result = [{"c": 1, "slide": 2}, {"c": 2, "slide": 1}]
+    assert matched_plan(deck, concepts, result) == {1: 30}
+
+
+def test_a_concept_without_a_time_is_not_judged_by_distance():
+    deck = [{"n": 1, "sec": 3000}]
+    assert matched_plan(deck, [{"cur_sec": 0}], [{"c": 1, "slide": 1}]) == \
+        {0: 3000}
