@@ -516,13 +516,16 @@ def _stage_summarize(c: _Ctx, course: str, lec) -> dict:
     pdf = c.downloads_dir / build_filename(course, lec.seq, "pdf")
     # 음성 길이 — 끝까지 다루라고 알려 주고, 'MM:SS:00' 오형식 마커도 교정한다
     dur = probe_duration(str(mp3)) if mp3.exists() else None
+    import practice
     notebook, screens = _practice_inputs(c, course, lec, has_audio=mp3.exists())
     md = summarize_lecture(
         c.client, course, lec.seq, lec.name,
         mp3_path=mp3 if mp3.exists() else None,
         pdf_path=pdf if pdf.exists() else None,
         on_event=lambda m: c.logger.info("    %s", m),
-        duration=dur, notebook_text=notebook, screens=screens)
+        duration=dur, notebook_text=notebook, screens=screens,
+        # 실습이 있는 과목은 이론·실습을 나눠 쓴다(한 번에 쓰면 이론이 준다)
+        split_practice=bool(practice.source_for(course)))
     if not md:
         return {"ok": False, "error": "빈 요약 응답"}
     save_summary(md, c.summary_dir, course, lec.seq, lec.name, duration=dur)

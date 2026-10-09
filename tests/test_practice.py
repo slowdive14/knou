@@ -241,3 +241,87 @@ def test_a_doubled_heading_mark_is_tidied():
     out = summarize.tidy_headings(md)
     assert out.startswith("## 실습: 파이썬 1\n")
     assert "## 주석은 그대로" in out
+
+
+# --- 이론·실습을 나눠 쓰기 -----------------------------------------------------
+# 실측: 한 번에 다 쓰게 했더니 실습이 늘어난 만큼 이론을 줄여 썼다(2강 이론
+# 13,232자 → 3,860자). 이론은 예전 지시문 그대로, 실습은 따로 써서 붙인다.
+THEORY = """# 5강
+## 데이터 저장
+### CSV
+🎬 [00:05:00]
+설명
+
+---
+
+## 한눈에 정리
+- 요점
+## 예습 체크리스트
+1. 질문
+"""
+PRACTICE = """## 실습
+### 5-1 CSV 형식 저장
+🎬 [00:28:00]
+```python
+df.to_csv('a.csv')
+```
+## 한눈에 정리
+- 실습 쪽이 덧붙인 정리
+"""
+
+
+def test_the_practice_goes_before_the_summary():
+    out = summarize.merge_practice(THEORY, PRACTICE)
+    assert out.index("## 데이터 저장") < out.index("## 실습") < \
+        out.index("## 한눈에 정리")
+    assert "실습 쪽이 덧붙인 정리" not in out
+    assert out.count("## 한눈에 정리") == 1
+
+
+def test_no_practice_leaves_the_theory_alone():
+    assert summarize.merge_practice(THEORY, "없음").strip() == THEORY.strip()
+
+
+def test_a_practice_section_the_theory_wrote_anyway_is_dropped():
+    theory = THEORY.replace("## 한눈에 정리",
+                            "## 실습: 미리 쓴 것\n### 엉뚱한 단계\n🎬 [00:30:00]\n\n"
+                            "## 한눈에 정리")
+    out = summarize.merge_practice(theory, PRACTICE)
+    assert "미리 쓴 것" not in out and "엉뚱한 단계" not in out
+    assert "5-1 CSV 형식 저장" in out
+
+
+def test_the_theory_prompt_leaves_the_practice_out():
+    p = summarize.build_theory_prompt("오픈소스기반데이터분석", 5, "데이터의 저장")
+    assert "`## 실습` 대주제는 쓰지" in p
+    assert "쉬운 정의" in p                          # 예전 개념 카드 그대로
+
+
+def test_the_practice_prompt_asks_only_for_the_practice():
+    p = summarize.build_practice_prompt("오픈소스기반데이터분석", 5, "데이터의 저장",
+                                        duration=57 * 60, notebook=True,
+                                        screens=True)
+    assert "실습(시연) 부분만" in p and "완성 코드" in p
+    assert "약 57분" in p and "실습 노트북" in p and "화면 사진" in p
+    assert "`없음` 한 단어" in p
+
+
+def test_a_practice_course_is_written_in_two_parts(monkeypatch, tmp_path):
+    prompts = []
+
+    def fake_generate(client, contents, config=None, model=None,
+                      on_event=None, wait=0, rounds=0, exclude=()):
+        prompt = contents[-1]
+        prompts.append(prompt)
+        return PRACTICE if "실습(시연) 부분만" in prompt else THEORY
+    monkeypatch.setattr(summarize, "generate", fake_generate)
+    monkeypatch.setattr(summarize, "_resp_text", lambda r: r)
+    monkeypatch.setattr(summarize, "upload_and_wait",
+                        lambda client, path, on_event=None: "uploaded")
+    mp3 = tmp_path / "5강.mp3"
+    mp3.write_bytes(b"ID3")
+    md = summarize.summarize_lecture(
+        object(), "오픈소스기반데이터분석", 5, "데이터의 저장", mp3_path=mp3,
+        duration=40 * 60, notebook_text="## 5-1", split_practice=True)
+    assert len(prompts) == 2
+    assert "## 데이터 저장" in md and "5-1 CSV 형식 저장" in md

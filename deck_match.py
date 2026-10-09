@@ -542,7 +542,10 @@ JUMP_MIN = 12        # 해시 거리가 이 이상이면 화면이 크게 바뀐
 JUMP_FROM = 0.4      # 단계 구간의 이 비율이 지난 뒤부터 큰 변화를 찾는다
 CAND_SPACING = 20    # 실습 후보 화면 사이 최소 간격(초)
 CAND_MAX = 60        # 실습 후보 화면 수 상한
-STEP_SLACK = 180     # 고른 화면이 단계 구간에서 이만큼까지 벗어나도 받는다(초)
+STEP_SLACK = 360     # 고른 화면이 단계 구간에서 이만큼까지 벗어나도 받는다(초)
+                     # — 노트의 단계 시각은 3~5분 어긋나기도 한다(실측: 3강)
+CAND_EVERY = 30      # 실습 구간에서는 이 간격으로도 후보를 넣는다(초)
+STEP_CODE_CHARS = 240  # 대조할 때 개념 설명에 붙이는 그 단계 코드 길이
 
 
 def first_jump(hash_at, lo: int, hi: int, gap: int = JUMP_GAP,
@@ -582,6 +585,25 @@ def pre_jump_secs(hash_at, start: int, end: int, gap: int = JUMP_GAP,
         step = len(out) / cap
         out = [out[int(i * step)] for i in range(cap)]
     return out
+
+
+def step_code(md: str, marker_idx: int, limit: int = STEP_CODE_CHARS) -> str:
+    """🎬 마커 아래 그 단계의 코드(다음 제목 전까지) — 대조할 때 붙인다.
+
+    실습 단계는 제목 바로 아래 마커가 와서 설명(body)이 비어 있다. 제목만으로는
+    비슷한 칸(언패킹·확장 언패킹…)을 가리기 어렵다.
+    """
+    lines = md.splitlines()
+    fenced = fenced_lines(lines)
+    code = []
+    for j in range(int(marker_idx) + 1, len(lines)):
+        if j not in fenced and re.match(r"^#{1,6}\s", lines[j]):
+            break
+        if j in fenced and not _FENCE_RE.match(lines[j]):
+            t = lines[j].strip()
+            if t:
+                code.append(t)
+    return " ".join(code)[:limit]
 
 
 def _step_window(concepts, ci, n_frames):
@@ -636,10 +658,20 @@ def with_practice_frames(deck: list[dict], md: str, concepts: list[dict],
         return deck
     start = max(0, min(int(concepts[ci]["cur_sec"]) for ci in idx) - 60)
     have = {s["sec"] for s in deck}
+    # 스크롤 직전 화면에 더해 일정 간격 화면도 넣는다 — 노트북 전체가 작은
+    # 글씨로 보이는 강의(3강)는 스크롤해도 화면 변화가 작아 후보가 6장뿐이었다.
+    secs = set(pre_jump_secs(hash_at, start, n_frames - 1))
+    secs |= set(range(start, n_frames, CAND_EVERY))
+    picked = []
+    for sec in sorted(secs):
+        if not picked or sec - picked[-1] >= CAND_SPACING // 2:
+            picked.append(sec)
+    if len(picked) > CAND_MAX * 2:
+        step = len(picked) / (CAND_MAX * 2)
+        picked = [picked[int(i * step)] for i in range(CAND_MAX * 2)]
     extra = [{"sec": s, "ts": seconds_to_timestamp(s),
               "path": Path(frames_dir) / f"f_{s + 1:06d}.jpg", "practice": True}
-             for s in pre_jump_secs(hash_at, start, n_frames - 1)
-             if s not in have]
+             for s in picked if s not in have]
     if not extra:
         return deck
     on_event(f"실습 후보 화면 {len(extra)}장을 덱에 섞습니다")
@@ -751,6 +783,10 @@ def match_and_apply(client, deck: list[dict], note_path: Path,
     if n_frames:
         deck = with_practice_frames(deck, md, concepts, frames_dir, hash_at,
                                     n_frames, on_event=on_event)
+    for ci in practice_concepts(md, concepts):
+        code = step_code(md, concepts[ci]["marker_idx"])
+        if code:
+            concepts[ci]["body"] = f"{concepts[ci]['body']} 코드: {code}".strip()
     on_event(f"덱 {len(deck)}장, 개념 {len(concepts)}개")
 
     if result is None:

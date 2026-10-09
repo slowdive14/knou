@@ -309,3 +309,21 @@ def test_candidates_are_merged_into_the_deck_by_time(tmp_path):
     assert [s["n"] for s in got] == list(range(1, len(got) + 1))
     assert [s["sec"] for s in got] == sorted(s["sec"] for s in got)
     assert any(s.get("practice") for s in got)
+
+
+def test_a_step_carries_its_code_for_matching():
+    """실습 단계는 설명이 비어 있다 — 코드로 비슷한 칸을 가린다."""
+    from deck_match import step_code
+    concepts = parse_concepts(FENCED_MD)
+    code = step_code(FENCED_MD, concepts[0]["marker_idx"])
+    assert code == "## DataFrame 생성 df = pd.DataFrame(data)"
+
+
+def test_regular_candidates_fill_a_practice_with_few_scrolls(tmp_path):
+    """스크롤해도 화면 변화가 작은 강의(3강)는 후보가 6장뿐이었다."""
+    deck = [{"n": 1, "sec": 10, "ts": "00:00:10", "path": tmp_path / "a.jpg"}]
+    concepts = parse_concepts(PRACTICE_MD)
+    got = with_practice_frames(deck, PRACTICE_MD, concepts, tmp_path,
+                               _hashes(set(), n=3000), 3000)
+    practice = [s for s in got if s.get("practice")]
+    assert len(practice) >= 10
