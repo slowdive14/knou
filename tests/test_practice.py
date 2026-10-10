@@ -325,3 +325,10 @@ def test_a_practice_course_is_written_in_two_parts(monkeypatch, tmp_path):
         duration=40 * 60, notebook_text="## 5-1", split_practice=True)
     assert len(prompts) == 2
     assert "## 데이터 저장" in md and "5-1 CSV 형식 저장" in md
+
+
+def test_the_prompt_asks_for_depth():
+    """새 모델은 같은 지시문으로도 이론을 짧게 썼다(2강 3,283자 → 깊이 요구 뒤 8,277자)."""
+    for p in (summarize.build_prompt("자료구조", 3, "연결 리스트"),
+              summarize.build_theory_prompt("오픈소스기반데이터분석", 2, "파이썬 1")):
+        assert "분량과 깊이" in p and "각각 2~4문장" in p
