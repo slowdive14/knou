@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -401,3 +403,175 @@ def test_one_round_can_be_asked_for():
     with pytest.raises(RuntimeError, match="503"):
         summarize.generate(c, ["묻는다"], wait=0, rounds=1)
     assert len(c.tried) == len(chain)
+
+
+# --- 무료 한도 --------------------------------------------------------------
+# 무료 한도는 모델마다 따로다. 하나를 다 쓰면 기다리지 않고 다음 모델로 넘어가고,
+# 그 모델은 한도가 풀릴 때(하루 한도는 태평양 자정)까지 부르지 않는다.
+DAY_SPENT = RuntimeError(
+    "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: generate_content_"
+    "free_tier_requests, limit: 20, model: m, description: Generate content "
+    "requests per day limit exceeded on Free Tier. Please retry in "
+    "4h12m43.4s. 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-"
+    "FreeTier' 'retryDelay': '15163s'")
+NOT_FREE = RuntimeError(
+    "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: generate_content_"
+    "free_tier_requests, limit: 0, model: gemini-4-argon, description: "
+    "Generate content requests per minute limit exceeded on Free Tier.")
+MINUTE_SPENT = RuntimeError(
+    "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: generate_content_"
+    "free_tier_requests, limit: 5, description: Generate content requests "
+    "per minute limit exceeded on Free Tier. Please retry in 30.5s. "
+    "'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier'")
+
+
+def _utc(*a) -> float:
+    return _dt.datetime(*a, tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_the_chain_holds_only_free_models_newest_first():
+    """Pro·4-argon 은 무료 등급에 없고(limit: 0), 2.5 계열은 404 로 닫혔다."""
+    chain = summarize.MODEL_CHAIN
+    assert chain[0] == "gemini-3.8-flash"
+    assert not [m for m in chain if "pro" in m or "argon" in m or "2.5" in m]
+    first_lite = min(i for i, m in enumerate(chain) if "lite" in m)
+    assert "gemini-3.6-flash" in chain[:first_lite]
+    assert len(chain) == len(set(chain))
+
+
+def test_a_timeout_hands_over_too():
+    """실측: gemini-flash-latest 가 504 DEADLINE_EXCEEDED 를 냈다."""
+    assert summarize.busy_error(RuntimeError("504 DEADLINE_EXCEEDED"))
+
+
+def test_a_daily_limit_is_told_apart_from_a_minute_limit():
+    assert summarize.daily_quota(DAY_SPENT)
+    assert summarize.daily_quota(NOT_FREE)          # 무료 등급에 없는 모델
+    assert not summarize.daily_quota(MINUTE_SPENT)
+    assert not summarize.daily_quota(RuntimeError("503 UNAVAILABLE"))
+
+
+def test_the_retry_delay_is_read_in_every_form():
+    assert summarize.retry_after(MINUTE_SPENT) == 30.5
+    assert summarize.retry_after(DAY_SPENT) == pytest.approx(15163.4)
+    assert summarize.retry_after(RuntimeError("'retryDelay': '41s'")) == 41
+    assert summarize.retry_after(RuntimeError("503 UNAVAILABLE")) is None
+
+
+@pytest.mark.parametrize("now, reset", [
+    (_utc(2026, 10, 27, 2, 47), _utc(2026, 10, 27, 7)),    # PDT 오후
+    (_utc(2026, 10, 27, 7, 30), _utc(2026, 10, 28, 7)),    # 자정 막 지나서
+    (_utc(2026, 10, 31, 20), _utc(2026, 11, 1, 7)),        # 서머타임 끝나는 날 자정
+    (_utc(2026, 11, 1, 12), _utc(2026, 11, 2, 8)),         # PST 로 바뀐 뒤
+    (_utc(2026, 12, 1, 10), _utc(2026, 12, 2, 8)),         # 겨울
+    (_utc(2026, 3, 8, 12), _utc(2026, 3, 9, 7)),           # 서머타임 시작한 날
+])
+def test_the_daily_limit_resets_at_pacific_midnight(now, reset):
+    assert summarize.next_reset(now) == reset
+
+
+def test_a_spent_model_is_skipped_until_it_resets():
+    chain = summarize.model_chain()
+    c = _Models({chain[0]: DAY_SPENT})
+    assert summarize.generate(c, ["묻는다"], wait=0).text == "ok"
+    assert c.tried == [chain[0], chain[1]]
+
+    again = _Models({})
+    summarize.generate(again, ["묻는다"], wait=0)
+    assert again.tried == [chain[1]]             # 다 쓴 모델을 또 부르지 않는다
+    left = summarize.rest_until(chain[0]) - time.time()
+    assert 4 * 3600 < left < 4.3 * 3600          # 서버가 알려 준 남은 시간만큼
+
+
+def test_a_spent_model_hands_over_without_waiting(monkeypatch):
+    """하루 한도는 몇 초 기다린다고 풀리지 않는다."""
+    slept = []
+    monkeypatch.setattr(summarize.time, "sleep", slept.append)
+    chain = summarize.model_chain()
+    said = []
+    summarize.generate(_Models({chain[0]: DAY_SPENT}), ["묻는다"],
+                       on_event=said.append, wait=5)
+    assert slept == []
+    assert any("한도" in m and chain[1] in m for m in said)
+
+
+def test_a_minute_limit_rests_only_as_long_as_told():
+    m = summarize.model_chain()[0]
+    assert summarize.note_failure(m, MINUTE_SPENT) == "minute"
+    left = summarize.rest_until(m) - time.time()
+    assert 25 < left <= 31
+
+
+def test_a_closed_model_is_checked_again_the_next_day():
+    m = summarize.model_chain()[0]
+    now = time.time()
+    assert summarize.note_failure(m, RuntimeError("404 NOT_FOUND"), now) \
+        == "closed"
+    assert summarize.rest_until(m) == summarize.next_reset(now)
+
+
+def test_when_every_model_is_spent_the_reset_time_is_told():
+    chain = summarize.model_chain()
+    c = _Models({m: DAY_SPENT for m in chain})
+    with pytest.raises(summarize.QuotaSpent, match="429") as got:
+        summarize.generate(c, ["묻는다"], wait=0)
+    assert "한국 시각" in str(got.value)
+    assert len(c.tried) == len(chain)            # 다 쓴 모델을 되풀이하지 않는다
+
+    again = _Models({})
+    with pytest.raises(summarize.QuotaSpent):
+        summarize.generate(again, ["묻는다"], wait=0)
+    assert again.tried == []                     # 부르지도 않는다
+
+
+def test_a_rest_ends_on_time():
+    m = summarize.model_chain()[0]
+    summarize.rest_model(m, time.time() - 1)
+    assert summarize.rest_until(m) == 0
+
+
+def test_a_busy_model_goes_to_the_back_for_a_while():
+    """3.8·3.7 이 차례로 503 을 내기까지 107초가 걸렸다 — 매번 기다릴 수 없다."""
+    chain = summarize.model_chain()
+    summarize.generate(_Models({chain[0]: RuntimeError("503 UNAVAILABLE")}),
+                       ["묻는다"], wait=0)
+    again = _Models({})
+    summarize.generate(again, ["묻는다"], wait=0)
+    assert again.tried == [chain[1]]
+    later = time.time() + summarize.BUSY_DEMOTE + 1
+    assert summarize.by_freshness(chain, now=later)[0] == chain[0]
+    assert summarize.by_freshness(chain)[-1] == chain[0]
+
+
+def test_the_record_holds_only_model_names_and_times(tmp_path):
+    chain = summarize.model_chain()
+    summarize.note_failure(chain[0], DAY_SPENT)
+    summarize.note_failure(chain[1], RuntimeError("503 UNAVAILABLE"))
+    data = json.loads(Path(summarize.LIMITS_PATH).read_text(encoding="utf-8"))
+    assert set(data) == {"rest", "busy"}
+    assert set(data["rest"]) == {chain[0]} and set(data["busy"]) == {chain[1]}
+    assert all(isinstance(v, float) for part in data.values()
+               for v in part.values())
+
+
+def test_a_broken_record_is_ignored():
+    Path(summarize.LIMITS_PATH).write_text("{깨짐", encoding="utf-8")
+    assert summarize.rest_until(summarize.model_chain()[0]) == 0
+    assert summarize.by_freshness(["a", "b"]) == ["a", "b"]
+
+
+def test_the_spent_note_is_empty_while_a_model_is_left():
+    assert summarize.spent_note() == ""
+    for m in summarize.model_chain():
+        summarize.rest_model(m, time.time() + 3600)
+    assert "한국 시각" in summarize.spent_note()
+
+
+def test_the_first_model_skips_the_busy_and_the_spent():
+    """진행 화면에 '어느 모델이 쓰는지' 를 바로 보여 준다."""
+    chain = summarize.model_chain()
+    assert summarize.first_model() == chain[0]
+    summarize.note_failure(chain[0], RuntimeError("503 UNAVAILABLE"))
+    summarize.note_failure(chain[1], DAY_SPENT)
+    assert summarize.first_model() == chain[2]
+    assert summarize.first_model(exclude=chain[2:3]) == chain[3]

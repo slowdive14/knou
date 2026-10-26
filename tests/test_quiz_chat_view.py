@@ -435,3 +435,15 @@ def test_the_input_stays_below_the_scrolling_talk(tmp_path, monkeypatch):
                     and c.scroll is not None)
     assert not [f for f in _walk(scroller) if isinstance(f, ft.TextField)]
     assert _fields(v), "입력창이 판에 있어야 합니다"
+
+
+def test_a_failed_answer_says_when_the_free_limit_resets():
+    """한도를 다 쓴 날에 '잠시 뒤 다시' 라고 하면 몇 번이고 눌러 보게 된다."""
+    import time
+
+    import summarize
+    assert quiz_view.retry_hint("잠시 뒤 다시") == "잠시 뒤 다시"
+    for m in summarize.model_chain():
+        summarize.rest_model(m, time.time() + 3600)
+    hint = quiz_view.retry_hint("잠시 뒤 다시")
+    assert "한국 시각" in hint and "잠시 뒤" not in hint

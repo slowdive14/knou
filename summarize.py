@@ -35,9 +35,18 @@ from download import sanitize
 #    404 로 닫혔고('no longer available to new users'), 그래서 API 키를 새로
 #    만든 순간 앱 전체가 멈췄다. 하나에 매달리지 않는다.
 # ⚠️ 무료 등급은 503(고부하)이 잦다. 최신 모델일수록 더 붐빈다 — 실제로
-#    3.6~3.8 은 줄줄이 503 인데 3.5 는 15초 만에 답했다.
-MODEL_CHAIN = ("gemini-3.5-flash", "gemini-3-flash-preview",
-               "gemini-3.1-flash-lite", "gemini-flash-latest")
+#    3.7~3.8 은 줄줄이 503 인데 3.6 은 1초 만에 답했다. 붐빈 모델은 한동안
+#    차례의 맨 뒤로 보낸다(by_freshness).
+# ⚠️ 무료 한도는 **모델마다 따로**다. 하나를 다 쓰면 다음 모델로 넘어가고,
+#    그 모델은 한도가 풀릴 때까지 부르지 않는다(note_failure).
+# 무료 등급에서 답하는 모델만, 새것부터 둔다. Pro·4-argon 은 무료 등급에 없고
+# (429 'limit: 0'), 2.5 계열은 신규 사용자에게 닫혔다(404). 가벼운(lite)
+# 모델은 긴 노트를 얕게 써서 뒤에 둔다. 맨 끝의 '-latest' 는 이름이 또 바뀔
+# 때를 대비한 별칭이다.
+MODEL_CHAIN = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+               "gemini-3.5-flash", "gemini-3-flash-preview",
+               "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+               "gemini-flash-latest", "gemini-flash-lite-latest")
 
 
 def _env_model() -> str:
@@ -519,13 +528,232 @@ def _resp_text(resp) -> str:
 def busy_error(exc) -> bool:
     """이 오류는 **잠깐 붐빈 것**인가(다음 모델로 넘어가 볼 만한가).
 
-    503(고부하)·429(호출 한도)·404(그 모델이 닫힘)가 여기 해당한다. 무료
-    등급에서는 이 셋이 대부분이라, 여기서 포기하면 앱이 그냥 멈춘 것처럼
-    보인다.
+    503(고부하)·504(시간 초과)·429(호출 한도)·404(그 모델이 닫힘)가 여기
+    해당한다. 무료 등급에서는 이것들이 대부분이라, 여기서 포기하면 앱이 그냥
+    멈춘 것처럼 보인다.
     """
     s = str(exc or "")
-    return any(k in s for k in ("503", "429", "404", "UNAVAILABLE",
-                                "RESOURCE_EXHAUSTED", "NOT_FOUND"))
+    return any(k in s for k in ("503", "504", "429", "404", "UNAVAILABLE",
+                                "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED",
+                                "NOT_FOUND"))
+
+
+# --- 무료 한도 ---------------------------------------------------------------
+# 무료 등급은 모델마다 하루 요청 수(RPD)가 따로 정해져 있고, 다 쓰면 429
+# RESOURCE_EXHAUSTED 가 온다. 하루 한도는 **태평양 시각 자정**에 풀린다.
+# 다 쓴 모델을 부를 때마다 먼저 불러 보면 요청 하나와 기다림 하나를 버리므로,
+# 언제 풀리는지 적어 두고 그때까지는 건너뛴다. 앱은 작업마다 새 프로세스를
+# 띄우므로 파일에 남긴다(모델 이름과 시각만 — 키는 담지 않는다).
+#
+# 실측(2026-10-26, 무료 키): 3.6-flash·3.5-flash·3-flash-preview·3.5-flash-lite·
+# 3.1-flash-lite·flash-lite-latest 는 답했고, 3.8-flash·3.7-flash 는 503(고부하),
+# 4-argon·3.1-pro-preview·pro-latest 는 429 'limit: 0'(무료 등급에 없음),
+# 2.5 계열은 404 였다.
+LIMITS_PATH = Path(__file__).resolve().parent / "model_limits.json"
+MINUTE_REST = 60.0      # 분당 한도에 걸렸는데 서버가 언제 풀리는지 말해 주지 않을 때(초)
+SHORT_REST_WAIT = 90.0  # 모두 쉬는 중이어도 이만큼 안에 풀리면 기다렸다가 부른다(초)
+# 503 을 낸 모델은 이만큼 동안 차례의 맨 뒤로 보낸다(초). 실측: 3.8·3.7 이
+# 차례로 503 을 내기까지 107초가 걸렸고, 뒤로 돌린 다음 호출은 2초였다.
+BUSY_DEMOTE = 60 * 60
+KST = 9 * 3600          # 한국 시각(UTC+9) — 언제 풀리는지 알려 줄 때 쓴다
+
+
+class QuotaSpent(RuntimeError):
+    """부를 수 있는 모델이 모두 한도에 걸려 부를 모델이 없다."""
+
+
+def quota_error(exc) -> bool:
+    """호출 한도(429)에 걸렸나."""
+    s = str(exc or "")
+    return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+
+def daily_quota(exc) -> bool:
+    """**하루** 한도인가 — 그렇다면 그 모델은 태평양 자정까지 다시 부르지 않는다.
+
+    'limit: 0' 은 그 모델이 이 키의 등급에서 아예 열려 있지 않다는 뜻이라
+    하루 한도와 똑같이 다룬다(하루에 한 번만 다시 확인해 본다).
+    """
+    s = str(exc or "")
+    return quota_error(exc) and bool(
+        re.search(r"PerDay|per[ _]day|\blimit:\s*0\b", s, re.I))
+
+
+def retry_after(exc):
+    """서버가 알려 준 '몇 초 뒤에 다시'(모르면 None).
+
+    'Please retry in 41.9s.' · 'retry in 4h12m43.4s' · retryDelay '15163s'
+    모두 읽는다. 하루 한도일 때는 이 값이 태평양 자정까지 남은 시간이다.
+    """
+    s = str(exc or "")
+    m = re.search(r"retry in\s+(?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?",
+                  s, re.I)
+    if m and any(m.groups()):
+        h, mi, sec = m.groups()
+        return int(h or 0) * 3600 + int(mi or 0) * 60 + float(sec or 0)
+    m = re.search(r"retryDelay['\"]?:\s*['\"]?([\d.]+)s", s)
+    return float(m.group(1)) if m else None
+
+
+def _nth_sunday(year: int, month: int, n: int) -> int:
+    """그달 n번째 일요일의 날짜."""
+    import datetime as dt
+    first = dt.date(year, month, 1)
+    return 1 + (6 - first.weekday()) % 7 + 7 * (n - 1)
+
+
+def pacific_offset(utc) -> int:
+    """그 순간 미국 태평양 시각이 UTC 에서 몇 시간 늦은가(PDT -7, PST -8).
+
+    ⚠️ Windows 의 파이썬에는 시간대 자료(tzdata)가 없어 zoneinfo 를 못 쓴다.
+       미국 서머타임 규칙(3월 둘째 일요일 ~ 11월 첫째 일요일, 현지 오전 2시)을
+       그대로 셈한다.
+    """
+    import datetime as dt
+    y = utc.year
+    start = dt.datetime(y, 3, _nth_sunday(y, 3, 2), 10, tzinfo=dt.timezone.utc)
+    end = dt.datetime(y, 11, _nth_sunday(y, 11, 1), 9, tzinfo=dt.timezone.utc)
+    return -7 if start <= utc < end else -8
+
+
+def next_reset(now=None) -> float:
+    """하루 한도가 다음에 풀리는 순간(태평양 시각 자정, epoch 초)."""
+    import datetime as dt
+    t = time.time() if now is None else float(now)
+    utc = dt.datetime.fromtimestamp(t, dt.timezone.utc)
+    local = utc + dt.timedelta(hours=pacific_offset(utc))
+    day = local.date() + dt.timedelta(days=1)
+    # 현지 자정의 벽시계 시각 → 그 무렵의 시차로 UTC 에 되돌린다. 서머타임은
+    # 현지 오전 2시에 바뀌므로 어림한 시각으로 시차를 다시 재도 틀리지 않는다.
+    wall = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
+    near = wall - dt.timedelta(hours=pacific_offset(utc))
+    return (wall - dt.timedelta(hours=pacific_offset(near))).timestamp()
+
+
+def _load_limits() -> dict:
+    """{'rest': {모델: 풀리는 시각}, 'busy': {모델: 503 을 낸 시각}}."""
+    try:
+        data = json.loads(Path(LIMITS_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    out = {}
+    for part in ("rest", "busy"):
+        got = data.get(part)
+        out[part] = ({str(k): float(v) for k, v in got.items()
+                      if isinstance(v, (int, float))}
+                     if isinstance(got, dict) else {})
+    return out
+
+
+def _save_limits(data: dict) -> None:
+    path = Path(LIMITS_PATH)
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass  # 못 적으면 다음에 한 번 더 429 를 받을 뿐이다
+
+
+def _note(part: str, model, value: float) -> None:
+    """기록 하나를 남긴다. 지난 기록은 함께 치운다."""
+    now = time.time()
+    data = _load_limits()
+    data["rest"] = {k: v for k, v in data["rest"].items() if v > now}
+    data["busy"] = {k: v for k, v in data["busy"].items()
+                    if v > now - BUSY_DEMOTE}
+    keep = data[part].get(str(model), 0.0) if part == "rest" else 0.0
+    data[part][str(model)] = max(float(value), keep)
+    _save_limits(data)
+
+
+def rest_until(model, now=None) -> float:
+    """그 모델이 쉬는 중이면 풀리는 시각(epoch 초), 아니면 0."""
+    t = time.time() if now is None else float(now)
+    until = _load_limits()["rest"].get(str(model), 0.0)
+    return until if until > t else 0.0
+
+
+def rest_model(model, until: float) -> None:
+    """그 모델을 until(epoch 초)까지 부르지 않는다."""
+    _note("rest", model, until)
+
+
+def note_failure(model, exc, now=None) -> str:
+    """실패를 보고 그 모델을 얼마나 쉬게 할지 적는다 → 실패의 종류.
+
+    'day'(하루 한도·이 등급에 없음) · 'minute'(분당 한도) · 'closed'(404) ·
+    'busy'(503·504 — 쉬게 하지는 않고 한동안 차례의 맨 뒤로 보낸다).
+    """
+    t = time.time() if now is None else float(now)
+    if quota_error(exc):
+        if daily_quota(exc):
+            # 서버가 알려 준 남은 시간이 가장 정확하다(태평양 자정까지)
+            later = retry_after(exc)
+            rest_model(model, t + later if later and later > MINUTE_REST
+                       else next_reset(t))
+            return "day"
+        rest_model(model, t + (retry_after(exc) or MINUTE_REST))
+        return "minute"
+    s = str(exc or "")
+    if "404" in s or "NOT_FOUND" in s:
+        # 닫힌 모델도 하루에 한 번만 다시 확인한다(GEMINI_MODEL 오타일 수도 있다)
+        rest_model(model, next_reset(t))
+        return "closed"
+    _note("busy", model, t)
+    return "busy"
+
+
+def by_freshness(chain, now=None) -> list:
+    """쉬는 모델은 빼고, 최근에 붐볐던 모델은 맨 뒤로 보낸 차례.
+
+    가장 새 모델(3.8-flash)은 무료 등급에 열려 있지만 503 이 잦고, 503 이
+    오기까지 50초 넘게 걸리기도 한다. 한 번 붐볐던 모델을 BUSY_DEMOTE 동안
+    뒤로 돌려 두면 그동안의 호출은 곧바로 답하는 모델부터 부른다.
+    """
+    t = time.time() if now is None else float(now)
+    data = _load_limits()
+    live = [m for m in chain if data["rest"].get(m, 0.0) <= t]
+    fresh = [m for m in live if data["busy"].get(m, 0.0) <= t - BUSY_DEMOTE]
+    return fresh + [m for m in live if m not in fresh]
+
+
+_HANDOVER = {"day": " — 오늘 무료 한도를 다 썼습니다",
+             "minute": " — 잠깐 호출 한도에 걸렸습니다",
+             "closed": " 은 지금 쓸 수 없는 모델입니다",
+             "busy": " 이 붐빕니다"}
+
+
+def handover_text(model, kind, nxt) -> str:
+    """다음 모델로 넘어간다고 화면에 알리는 한 줄."""
+    why = _HANDOVER.get(kind, _HANDOVER["busy"])
+    return f"   {model}{why} → {nxt} 로 바꿔 봅니다"
+
+
+def kst_clock(t: float) -> str:
+    """epoch 초 → '10/27 16:00'(한국 시각)."""
+    import datetime as dt
+    k = (dt.datetime.fromtimestamp(float(t), dt.timezone.utc)
+         + dt.timedelta(seconds=KST))
+    return f"{k.month}/{k.day} {k.hour:02d}:{k.minute:02d}"
+
+
+def spent_message(chain, now=None) -> str:
+    """부를 모델이 남지 않았을 때 화면에 보일 말 — 언제 풀리는지까지."""
+    t = time.time() if now is None else float(now)
+    ends = [u for u in (rest_until(m, t) for m in chain) if u]
+    when = f" 한국 시각 {kst_clock(min(ends))}에 다시 풀립니다." if ends else ""
+    return ("남은 무료 모델이 모두 호출 한도에 걸렸습니다"
+            f"(429 RESOURCE_EXHAUSTED).{when}")
+
+
+def spent_note(model=None) -> str:
+    """부를 모델이 하나도 남지 않았다면 그 사정(spent_message), 아니면 ''."""
+    chain = model_chain(model)
+    return "" if by_freshness(chain) else spent_message(chain)
 
 
 def model_chain(model=None) -> list:
@@ -538,9 +766,21 @@ def model_chain(model=None) -> list:
     return out
 
 
+def _chain(model=None, exclude=()) -> list:
+    """exclude 를 뺀 모델 차례(다 빠지면 원래 차례)."""
+    out = [m for m in model_chain(model) if m not in set(exclude or ())]
+    return out or model_chain(model)
+
+
+def first_model(model=None, exclude=()) -> str:
+    """generate 가 맨 먼저 부를 모델 — 쉬는 모델은 빼고, 붐볐던 모델은 뒤로."""
+    chain = _chain(model, exclude)
+    return (by_freshness(chain) or chain)[0]
+
+
 def generate(client, contents, config=None, model=None, on_event=None,
              wait: float = RETRY_WAIT, rounds: int = ROUNDS, exclude=()):
-    """모델을 불러 응답을 받는다 — 붐비면 다음 모델로 넘어간다.
+    """모델을 불러 응답을 받는다 — 붐비거나 한도를 다 쓰면 다음 모델로 넘어간다.
 
     ⚠️ 한 모델에 매달리지 않는 것이 요점이다. 무료 등급에서 503 은 흔한
        일이고, 그때마다 '설명을 만들지 못했습니다' 를 보여 주면 쓸 수가 없다.
@@ -549,26 +789,49 @@ def generate(client, contents, config=None, model=None, on_event=None,
        그냥 포기하게 되는데, 503 은 몇 초 뒤면 풀리는 일이 많다. 바퀴를
        돌 때마다 조금 더 오래 기다린다.
 
+    ⚠️ 한도를 다 쓴 모델(429)은 **풀릴 때까지 건너뛴다**(note_failure 가 파일에
+       적어 둔다). 무료 한도는 모델마다 따로라, 하나를 다 쓰면 기다리지 않고
+       곧바로 다음 모델로 넘어간다. 하루 한도는 태평양 자정까지 다시 부르지
+       않는다.
+
     모두 실패하면 마지막 오류를 그대로 올린다(부르는 쪽이 이미 감싸고 있다).
+    모두 한도에 걸려 부를 모델이 없으면 QuotaSpent 를 올린다.
     exclude 에 든 모델은 건너뛴다(다 빠지면 원래 차례를 쓴다).
     """
-    chain = ([m for m in model_chain(model) if m not in set(exclude or ())]
-             or model_chain(model))
-    plan = [(r, m) for r in range(max(1, int(rounds))) for m in chain]
+    chain = _chain(model, exclude)
+    rounds = max(1, int(rounds))
     last = None
-    for i, (r, name) in enumerate(plan):
-        try:
-            return client.models.generate_content(
-                model=name, contents=contents, config=config)
-        except Exception as e:  # noqa: BLE001 - 다음 모델로 넘어가 본다
-            last = e
-            if not busy_error(e) or i == len(plan) - 1:
-                raise
-            nxt = plan[i + 1][1]
-            if on_event:
-                on_event(f"   {name} 이 붐빕니다 → {nxt} 로 바꿔 봅니다")
-            if wait:
-                time.sleep(float(wait) * (r + 1))
+    for r in range(rounds):
+        names = by_freshness(chain)
+        if not names and wait:
+            # 분당 한도라면 곧 풀린다 — 그 정도는 기다렸다가 부른다
+            soon = min(rest_until(m) for m in chain) - time.time()
+            if 0 < soon <= SHORT_REST_WAIT:
+                time.sleep(soon + 1)
+                names = by_freshness(chain)
+        if not names:
+            break
+        for i, name in enumerate(names):
+            if i and rest_until(name):
+                continue  # 그사이 다른 작업이 한도를 다 썼다고 적어 두었다
+            try:
+                return client.models.generate_content(
+                    model=name, contents=contents, config=config)
+            except Exception as e:  # noqa: BLE001 - 다음 모델로 넘어가 본다
+                last = e
+                if not busy_error(e):
+                    raise
+                kind = note_failure(name, e)
+                rest = ([m for m in names[i + 1:] if not rest_until(m)]
+                        or (by_freshness(chain) if r + 1 < rounds else []))
+                if not rest:
+                    continue
+                if on_event:
+                    on_event(handover_text(name, kind, rest[0]))
+                if kind == "busy" and wait:
+                    time.sleep(float(wait) * (r + 1))
+    if not by_freshness(chain):
+        raise QuotaSpent(spent_message(chain)) from last
     raise last if last else RuntimeError("부를 모델이 없습니다")
 
 
@@ -654,7 +917,8 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
                             on_event=log, wait=wait, rounds=rounds,
                             exclude=exclude)
 
-        log(f"{label}요약 생성 중(model={model}, max_tokens={MAX_OUTPUT_TOKENS}, "
+        log(f"{label}요약 생성 중(model={first_model(model, exclude)}, "
+            f"max_tokens={MAX_OUTPUT_TOKENS}, "
             f"thinking={THINKING_BUDGET})…")
         resp = _generate(THINKING_BUDGET)
         text = _resp_text(resp)
@@ -698,11 +962,18 @@ def summarize_lecture(client, subject, seq, name, mp3_path=None, pdf_path=None,
     # (실측: 2강 69분을 flash-lite 가 35분까지 3천 자로). 가벼운 모델을 빼고
     # 조금 기다렸다가 한 번 더 쓰게 하고, 더 많이 다룬 쪽을 고른다.
     cov = note_coverage(text, duration if has_audio else None)
-    if text and cov is not None and cov < COVER_MIN:
+    thin = bool(text) and cov is not None and cov < COVER_MIN
+    lite = light_models(model)
+    heavier = [m for m in by_freshness(model_chain(model)) if m not in lite]
+    if thin and not heavier:
+        # 큰 모델이 모두 한도에 걸렸다면 다시 써도 또 가벼운 모델이 받는다
+        log(f"⚠️ 노트가 음성의 {cov:.0%}까지만 다루지만, 더 큰 모델이 모두 "
+            "한도에 걸려 있어 그대로 둡니다")
+    elif thin:
         log(f"⚠️ 노트가 음성의 {cov:.0%}까지만 다룹니다 → 가벼운 모델을 빼고 "
             "다시 씁니다")
         try:
-            again = compose(exclude=light_models(model), wait=RETRY_SLOW_WAIT,
+            again = compose(exclude=lite, wait=RETRY_SLOW_WAIT,
                             rounds=ROUNDS + 1)
         except Exception as e:  # noqa: BLE001 - 첫 노트라도 남긴다
             log(f"   다시 쓰지 못했습니다: {str(e)[:80]}")

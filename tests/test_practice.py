@@ -235,6 +235,34 @@ def test_a_thin_note_is_written_again_without_the_light_model(monkeypatch,
     assert calls[1] and all("lite" in m for m in calls[1])
 
 
+def test_a_thin_note_is_kept_when_the_bigger_models_are_spent(monkeypatch,
+                                                              tmp_path):
+    """큰 모델이 모두 한도에 걸렸다면 다시 써도 또 가벼운 모델이 받는다."""
+    import time
+    for m in summarize.model_chain():
+        if "lite" not in m:
+            summarize.rest_model(m, time.time() + 3600)
+    thin = "# 2강\n### a\n🎬 [00:10:00]"
+    calls, said = [], []
+
+    def fake_generate(client, contents, config=None, model=None,
+                      on_event=None, wait=0, rounds=0, exclude=()):
+        calls.append(tuple(exclude))
+        return thin
+    monkeypatch.setattr(summarize, "generate", fake_generate)
+    monkeypatch.setattr(summarize, "_resp_text", lambda r: r)
+    monkeypatch.setattr(summarize, "upload_and_wait",
+                        lambda client, path, on_event=None: "uploaded")
+    mp3 = tmp_path / "2강.mp3"
+    mp3.write_bytes(b"ID3")
+    md = summarize.summarize_lecture(object(), "오픈소스기반데이터분석", 2,
+                                     "파이썬 1", mp3_path=mp3,
+                                     duration=69 * 60, on_event=said.append)
+    assert md == thin
+    assert len(calls) == 1
+    assert any("한도" in m for m in said)
+
+
 def test_a_doubled_heading_mark_is_tidied():
     """모델이 지시문의 '## 실습' 을 글자 그대로 제목에 붙여 썼다."""
     md = "## ## 실습: 파이썬 1\n### 2-1 리스트\n```python\n## 주석은 그대로\n```"

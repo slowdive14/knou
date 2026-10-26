@@ -144,6 +144,18 @@ def gemini_client():
         return None
 
 
+def retry_hint(again: str) -> str:
+    """AI 답을 못 받았을 때 덧붙일 말 — 무료 한도를 모두 썼다면 언제 풀리는지.
+
+    한도를 다 쓴 날에 '잠시 뒤 다시' 라고 하면 몇 번이고 눌러 보게 된다.
+    """
+    try:
+        from summarize import spent_note
+        return spent_note() or again
+    except Exception:  # noqa: BLE001 - 문구 하나 때문에 화면을 막지 않는다
+        return again
+
+
 def explanation_scrolls(text) -> bool:
     """이 해설은 자기 상자 안에서 굴려야 하는가.
 
@@ -428,7 +440,8 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
                     qe.store_explanation(quiz_dir, ql.origin_bank(q, _cur_bank()),
                                          qid, text)
             else:
-                q["explanation"] = "설명을 만들지 못했습니다. 잠시 뒤 다시 눌러 주세요."
+                q["explanation"] = ("설명을 만들지 못했습니다. "
+                                    + retry_hint("잠시 뒤 다시 눌러 주세요."))
             st["busy"] = None
             _render_cards()
 
@@ -468,8 +481,9 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
                           if client else "")
             except Exception:  # noqa: BLE001 - 답이 없다고 퀴즈를 막지 않는다
                 answer = ""
-            got = qc.add_turn(asked, qc.ROLE_BOT, answer or
-                              "답을 만들지 못했습니다. 잠시 뒤 다시 물어봐 주세요.")
+            got = qc.add_turn(asked, qc.ROLE_BOT, answer or (
+                "답을 만들지 못했습니다. "
+                + retry_hint("잠시 뒤 다시 물어봐 주세요.")))
             q[qc.CHAT_FIELD] = got
             if quiz_dir and answer:
                 # 모아보기 중이면 지금 은행은 가상이다 — 대화는 **문항이 원래
