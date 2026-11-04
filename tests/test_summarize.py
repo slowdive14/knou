@@ -575,3 +575,20 @@ def test_the_first_model_skips_the_busy_and_the_spent():
     summarize.note_failure(chain[1], DAY_SPENT)
     assert summarize.first_model() == chain[2]
     assert summarize.first_model(exclude=chain[2:3]) == chain[3]
+
+
+def test_config_for_turns_thinking_off_the_way_each_model_accepts():
+    # thinking_budget=0 은 2.x 만 받는다 — 3.5 Flash-Lite 는 400 으로 거절한다
+    from google.genai import types
+    off = types.GenerateContentConfig(
+        max_output_tokens=100, thinking_config=types.ThinkingConfig(thinking_budget=0))
+    lite = summarize.config_for("gemini-3.5-flash-lite", off)
+    assert lite.thinking_config.thinking_budget is None
+    assert str(lite.thinking_config.thinking_level).lower().endswith("minimal")
+    assert lite.max_output_tokens == 100
+    assert off.thinking_config.thinking_budget == 0  # 부른 쪽 설정은 그대로
+    assert summarize.config_for("gemini-2.5-flash-lite", off) is off
+    capped = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=8192))
+    assert summarize.config_for("gemini-3.5-flash-lite", capped) is capped
+    assert summarize.config_for("gemini-3.8-flash", None) is None

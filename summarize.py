@@ -778,6 +778,21 @@ def first_model(model=None, exclude=()) -> str:
     return (by_freshness(chain) or chain)[0]
 
 
+def config_for(name: str, config):
+    """name 모델이 받는 설정으로 — thinking 을 끄는 방법이 모델마다 다르다.
+
+    ⚠️ thinking_budget=0 은 Gemini 2.x 만 받는다. 3.5 Flash-Lite 는 400
+       (INVALID_ARGUMENT)으로 거절한다(2026-11-04 실측). 그래서 2.x 가 아닌
+       모델에는 '가장 적게'(thinking_level=minimal)로 바꿔 보낸다.
+    """
+    tc = getattr(config, "thinking_config", None)
+    if tc is None or tc.thinking_budget != 0 or name.startswith("gemini-2."):
+        return config
+    from google.genai import types
+    return config.model_copy(update={
+        "thinking_config": types.ThinkingConfig(thinking_level="minimal")})
+
+
 def generate(client, contents, config=None, model=None, on_event=None,
              wait: float = RETRY_WAIT, rounds: int = ROUNDS, exclude=()):
     """모델을 불러 응답을 받는다 — 붐비거나 한도를 다 쓰면 다음 모델로 넘어간다.
@@ -816,7 +831,8 @@ def generate(client, contents, config=None, model=None, on_event=None,
                 continue  # 그사이 다른 작업이 한도를 다 썼다고 적어 두었다
             try:
                 return client.models.generate_content(
-                    model=name, contents=contents, config=config)
+                    model=name, contents=contents,
+                    config=config_for(name, config))
             except Exception as e:  # noqa: BLE001 - 다음 모델로 넘어가 본다
                 last = e
                 if not busy_error(e):
