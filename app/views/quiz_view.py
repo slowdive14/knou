@@ -27,9 +27,10 @@ import quiz_chat as qc
 import quiz_explain as qe
 import quiz_intro as qi
 import quiz_lecture as ql
+import quiz_pdf as qpdf
 import quiz_progress as qp
 from quiz_page import collect_banks, default_quiz_paths
-from quizbank import correct_nos, is_correct
+from quizbank import answer_text, correct_nos, is_correct
 from ui_async import make_updater
 
 MINT = "#00a37a"
@@ -285,24 +286,6 @@ def option_tone(sel, no, answer_no, answer_nos=None) -> str:
         return "correct" if int(sel) in nos else "wrong"
     except (TypeError, ValueError):
         return "selected"
-
-
-def answer_text(q: dict) -> str:
-    """정답 줄 문구 — 번호와 보기글이 있으면 함께.
-
-    중복정답이면 번호를 모두 적는다. '정답: 1번' 만 보이면 4를 고르고 맞힌
-    사람이 자기가 틀린 줄 안다.
-    """
-    nos = correct_nos(q)
-    txt = q.get("answer_text")
-    if not nos:
-        return f"정답: {txt}" if txt else "정답 정보 없음"
-    opts = {int(o.get("no") or 0): str(o.get("text") or "")
-            for o in (q.get("options") or [])}
-    if len(nos) == 1:
-        return f"정답: {nos[0]}. {opts.get(nos[0]) or txt or ''}".strip()
-    body = " · ".join(f"{n}. {opts.get(n, '')}".strip() for n in nos)
-    return f"정답(중복정답): {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -1101,6 +1084,77 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
             sub.value = f"HTML 저장 실패: {str(ex)[:120]}"
         _safe_update()
 
+    def _make_pdf(nos, answers: bool):
+        """고른 강의 문항을 PDF 로 — 몇 초 걸리므로 워커 스레드에서 만든다."""
+        course = _real_bank().get("course")
+        sub.value = f"PDF 만드는 중… ({qpdf.lectures_label(nos)})"
+        _safe_update()
+
+        def work():
+            try:
+                p = qpdf.make_quiz_pdf(banks, course, nos, quiz_dir,
+                                       answers=answers)
+            except Exception as ex:  # noqa: BLE001 - 화면에 이유를 남긴다
+                sub.value = f"PDF 저장 실패: {str(ex)[:120]}"
+                _safe_update()
+                return
+            _open_file(p, f"PDF 저장: {p.name} ({p.parent})")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_pdf(_):
+        """어느 강을 PDF 로 뽑을지 고르게 한다 — 지금 모아 보던 강은 미리 체크."""
+        course = _real_bank().get("course")
+        nums = ql.lecture_numbers(banks, course)
+        if not nums:
+            sub.value = "강이 매겨진 문항이 없어 PDF 로 뽑을 수 없습니다."
+            _safe_update()
+            return
+        names = ql.catalog(banks, course)
+        boxes = [ft.Checkbox(
+            label=ql.lecture_label(n) + (f" · {ql.lecture_name(names, n)}"
+                                         if ql.lecture_name(names, n) else ""),
+            value=(n == st["lec"]), data=n) for n in nums]
+        with_ans = ft.Checkbox(label="정답과 해설을 맨 뒤에 붙이기", value=True)
+        note = ft.Text("", size=12, color=ROSE)
+
+        def _all(on):
+            def _h(_e=None):
+                for b in boxes:
+                    b.value = on
+                _safe_update()
+            return _h
+
+        def _go(_e=None):
+            nos = [b.data for b in boxes if b.value]
+            if not nos:
+                note.value = "강을 하나 이상 골라 주세요."
+                _safe_update()
+                return
+            _close_dialog()
+            _make_pdf(nos, bool(with_ans.value))
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"🖨 PDF로 출력 — {course or '과목'}"),
+            content=ft.Column(
+                [ft.Row([ft.TextButton("모두 고르기", on_click=_all(True)),
+                         ft.TextButton("모두 풀기", on_click=_all(False))]),
+                 ft.Column(boxes, spacing=0, scroll=ft.ScrollMode.AUTO,
+                           height=min(360, 40 * len(boxes))),
+                 ft.Divider(height=9),
+                 with_ans, note],
+                tight=True, spacing=6, width=420),
+            actions=[ft.TextButton("취소", on_click=lambda _e: _close_dialog()),
+                     ft.FilledButton("PDF 만들기", icon=ft.Icons.PICTURE_AS_PDF,
+                                     on_click=_go)],
+            actions_alignment=ft.MainAxisAlignment.END)
+        if page is not None:
+            try:
+                page.show_dialog(dlg)
+            except Exception:  # noqa: BLE001
+                pass
+
     picker.options = [ft.DropdownOption(key=str(i), text=bank_title(b))
                       for i, b in enumerate(banks)]
     # ⚠️ Flet 0.85 의 Dropdown 은 on_change 가 아니라 **on_select** 다.
@@ -1149,6 +1203,10 @@ def build_quiz_view(page=None, quiz_dir=None, initial=None,
                           on_click=on_refresh),
             ft.TextButton("HTML로 저장", icon=ft.Icons.SAVE_ALT,
                           on_click=on_save_html),
+            ft.TextButton("PDF로 출력", icon=ft.Icons.PICTURE_AS_PDF,
+                          tooltip="고른 강의 문항을 인쇄용 PDF 로 만듭니다"
+                                  "(정답·해설은 맨 뒤에)",
+                          on_click=on_pdf),
             ft.TextButton("기출 더 가져오기", icon=ft.Icons.CLOUD_DOWNLOAD,
                           tooltip="지금 고른 과목의 자료실에서 아직 안 담은 "
                                   "회차를 찾아 담습니다",

@@ -71,6 +71,24 @@ def is_correct(q, no) -> bool:
         return False
 
 
+def answer_text(q: dict) -> str:
+    """정답 줄 문구 — 번호와 보기글이 있으면 함께.
+
+    중복정답이면 번호를 모두 적는다. '정답: 1번' 만 보이면 4를 고르고 맞힌
+    사람이 자기가 틀린 줄 안다.
+    """
+    nos = correct_nos(q)
+    txt = q.get("answer_text")
+    if not nos:
+        return f"정답: {txt}" if txt else "정답 정보 없음"
+    opts = {int(o.get("no") or 0): str(o.get("text") or "")
+            for o in (q.get("options") or [])}
+    if len(nos) == 1:
+        return f"정답: {nos[0]}. {opts.get(nos[0]) or txt or ''}".strip()
+    body = " · ".join(f"{n}. {opts.get(n, '')}".strip() for n in nos)
+    return f"정답(중복정답): {body}"
+
+
 def normalize_question(raw: dict) -> dict:
     """임의의 스캔/입력 dict → 표준 문항 dict. 이미 표준이면 멱등.
 
