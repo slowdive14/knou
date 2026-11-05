@@ -25,7 +25,7 @@ from pathlib import Path
 import quiz_intro as qi
 import quiz_lecture as ql
 from download import sanitize
-from quizbank import answer_text, correct_nos
+from quizbank import AI_ANSWER_HEAD, answer_text, correct_nos, is_ai_answer
 
 PDF_DIR_NAME = "퀴즈 PDF"   # 퀴즈 폴더 옆에 둔다(퀴즈 폴더는 *.json 만 읽는다)
 NAME_MAX_LECTURES = 6        # 파일 이름에 강 번호를 이만큼까지만 늘어놓는다
@@ -74,7 +74,8 @@ def answer_line(q) -> str:
     opts = {int(o.get("no") or 0): str(o.get("text") or "")
             for o in (q.get("options") or [])}
     body = " · ".join(f"{mark(n)} {opts.get(n, '')}".strip() for n in nos)
-    return ("정답(중복정답) " if len(nos) > 1 else "정답 ") + body
+    head = AI_ANSWER_HEAD if is_ai_answer(q) else "정답"
+    return head + ("(중복정답) " if len(nos) > 1 else " ") + body
 
 
 def sections(banks, course, nos) -> list:

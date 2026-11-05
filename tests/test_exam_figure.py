@@ -230,7 +230,15 @@ def test_sheets_are_found_by_the_course_name(tmp_path):
 # 문항 경계를 찾을 수 없다.
 def test_a_single_question_box_is_read():
     got = ef.parse_boxes('[{"no": 11, "box": [100, 50, 300, 400]}]')
-    assert got == [{"nos": [11], "box": [100.0, 50.0, 300.0, 400.0]}]
+    assert got == [{"nos": [11], "box": [100.0, 50.0, 300.0, 400.0],
+                    "kind": "figure"}]
+
+
+def test_a_code_box_is_told_apart_from_a_picture():
+    """2018-2-60: 힙 그림과 삽입 함수 코드 상자가 한 문항에 함께 있었다."""
+    got = ef.parse_boxes('[{"no": 60, "kind": "figure", "box": [1, 2, 3, 4]},'
+                         ' {"no": 60, "kind": "code", "box": [5, 6, 7, 8]}]')
+    assert [g["kind"] for g in got] == ["figure", "code"]
 
 
 def test_a_shared_range_becomes_every_question_in_it():

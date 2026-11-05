@@ -76,9 +76,13 @@ def parse_scanned(raw) -> list:
 # 보기 텍스트는 `.exam-answer-message` textContent(HWP json 은 HTML 주석이라 자동
 # 제외됨). 정답/해설은 풀이 후 채워지는 `[name=exqsCansCn]`/`.exqsExplCn`.
 _QUIZ_SCAN_JS = r"""
-() => {
+(html) => {
+  // html 을 주면 창 없이 받아 온 페이지 글을 읽는다(DOMParser 는 스크립트를
+  // 돌리지 않는다). 없으면 지금 화면.
+  const doc = html ? new DOMParser().parseFromString(html, 'text/html')
+                   : document;
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-  const boxes = document.querySelectorAll(".exam-content-box, [id^='quiz_']");
+  const boxes = doc.querySelectorAll(".exam-content-box, [id^='quiz_']");
   const qs = [];
   boxes.forEach(box => {
     box.querySelectorAll("form").forEach(f => {
@@ -109,6 +113,22 @@ _QUIZ_SCAN_JS = r"""
   return JSON.stringify({ questions: qs });
 }
 """
+
+
+def scan_quiz_html(page, html, source: str = "") -> list:
+    """창 없이 받아 온 학습 페이지 글에서 문항을 읽는다(실패하면 []).
+
+    서버에 아무것도 보내지 않는다 — 이미 받은 글을 브라우저가 읽기만 한다.
+    정답·해설은 답을 제출해야 내려오므로 보통 비어 있다.
+    """
+    if not html:
+        return []
+    try:
+        raw = json.loads(page.evaluate(_QUIZ_SCAN_JS, str(html)))
+    except Exception:
+        return []
+    raw["source"] = source
+    return parse_scanned(raw)
 
 
 def scan_quiz(frame, source: str = "") -> list:

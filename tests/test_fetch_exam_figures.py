@@ -201,3 +201,61 @@ def test_a_failed_conversion_is_told_not_counted(tmp_path, monkeypatch):
     said = []
     assert fx.convert_hwp(tmp_path, "컴퓨터구조", said.append) == 0
     assert any("한글이 없습니다" in m for m in said)
+
+
+# --- 코드와 그림이 함께 있는 문항 ------------------------------------------
+# 2018-2-60: 힙 그림 + 삽입 함수. 코드만 글로 옮겨지고 그림이 빠져 풀 수 없었다.
+HEAP_Q = {"qid": "2018-2-60", "code": "int insertHeap(...) {}",
+          "question": "아래 그림은 최소 힙에 새 노드를 삽입하기 위해 ..."}
+
+
+def test_a_coded_question_gets_the_picture_beside_its_code():
+    assert fx.wants_figure(HEAP_Q, kind="figure")
+
+
+def test_a_coded_question_never_gets_its_code_box_again():
+    assert not fx.wants_figure(HEAP_Q, kind="code")
+    assert not fx.wants_figure(HEAP_Q)               # 글줄 시험지는 가리지 못한다
+
+
+def test_a_coded_question_without_a_picture_word_is_left_alone():
+    q = {"qid": "2016-2-57", "code": "printf(...)",
+         "question": "다음 10과 3.14를 출력하기 위해 [가]와 [나]에 알맞은 것은?"}
+    assert not fx.wants_figure(q, kind="figure")
+
+
+def test_the_picture_wins_over_the_code_box_of_the_same_question(monkeypatch):
+    monkeypatch.setattr(fx.ef, "ai_page_figures", lambda *a, **k: [
+        {"nos": [60], "box": (0, 0, 9, 9), "kind": "code"},
+        {"nos": [60], "box": (1, 1, 8, 8), "kind": "figure"}])
+
+    class _Doc:
+        page_count = 1
+
+        def __getitem__(self, i):
+            return type("P", (), {"rect": type("R", (), {"width": 1,
+                                                         "height": 1})()})()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fx.ef, "_fitz", lambda: type(
+        "F", (), {"open": staticmethod(lambda p: _Doc())}))
+    got = fx.ef.ai_pdf_figures(object(), __file__)
+    assert got[60] == (0, (1, 1, 8, 8), "figure")
+
+
+def test_an_expression_already_written_out_is_not_pictured_again():
+    """'후위 표기식'·'수식으로 표현' 의 '표' 를 그림 표시로 읽었다."""
+    for text in ("다음 수식을 후위 표기식으로 바르게 나타낸 것은?",
+                 "아래의 문장을 수식으로 표현한 것으로 알맞은 것은?"):
+        q = {"qid": "2014-2-05", "code": "A * (B + C) * D", "question": text}
+        assert not fx.wants_figure(q, kind="figure")
+    q = {"qid": "x", "code": "...", "question": "다음 표에서 (가)에 알맞은 것은?"}
+    assert fx.wants_figure(q, kind="figure")
+
+
+def test_a_question_pointing_at_a_picture_gets_it_even_if_sketched_in_text():
+    q = {"qid": "2019-2-54",
+         "question": "연결리스트 그림에 대한 설명으로 틀린 것은?\n\nhead ⟶ [30][ ] ⟶ [ ][ ] ⟶ [50][ ]"}
+    assert fx.wants_figure(q)

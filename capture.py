@@ -334,13 +334,21 @@ def fetch_clips(page, lec) -> list[dict]:
 
     '나의 학습' 페이지에서 보내야 학교 쿠키·출처가 플레이어 창을 열 때와 같다.
     """
+    return parse_clip_data(fetch_study_html(page, lec))
+
+
+def fetch_study_html(page, lec) -> str:
+    """플레이어 창 없이 이 차시의 학습 페이지 글을 받는다(못 받으면 '').
+
+    '나의 학습' 페이지에서 보내야 학교 쿠키·출처가 플레이어 창을 열 때와 같다.
+    클립 주소와 형성평가 문항이 모두 이 글 안에 있다.
+    """
     from auth import back_to_my_study
 
     back_to_my_study(page)
-    html = page.evaluate(_FETCH_STUDY_JS, {
+    return page.evaluate(_FETCH_STUDY_JS, {
         "s": lec.enc_sbjt_id, "t": lec.enc_toc_no, "atlc": lec.enc_atlc_no,
-        "path": STUDY_PATH})
-    return parse_clip_data(html)
+        "path": STUDY_PATH}) or ""
 
 
 def _timed(clips) -> list[dict]:

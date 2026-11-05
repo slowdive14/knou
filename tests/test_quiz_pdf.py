@@ -81,3 +81,8 @@ def test_no_questions_means_no_pdf(tmp_path):
     import pytest
     with pytest.raises(ValueError):
         qp.make_quiz_pdf(BANKS, "C프로그래밍", [9], tmp_path / "퀴즈")
+
+
+def test_an_ai_answer_is_labelled_in_the_pdf():
+    assert qp.answer_line(_q("a", 1, answer_by="AI")).startswith(
+        "AI 풀이 답(공식 정답 아님) ②")

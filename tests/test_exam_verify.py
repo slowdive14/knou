@@ -235,7 +235,16 @@ def test_when_both_are_wrong_the_page_version_is_used():
     plan = vx.decide(_pairs([_q(code="ADD X")], [_q(code="AND R1,R2,R")]),
                      {}, {3: _j("neither", "보기 4 가 다르다", fixed)})
     assert plan[3][0] == "fix"
-    assert plan[3][2] is fixed
+    assert plan[3][2] == fixed
+
+
+def test_a_judged_fix_loses_the_number_it_was_written_with():
+    """판정하며 고쳐 적은 물음 앞에 '37.' 이 붙어 왔다(2016-2-37)."""
+    fixed = {"question": "37. 다음 컴퓨터 명령어에 관한 설명으로 적절한 것은?",
+             "options": [{"no": i + 1, "text": t} for i, t in enumerate(OPTS)]}
+    plan = vx.decide(_pairs([_q(code="ADD X")], [_q(code="AND R1,R2,R")]),
+                     {}, {3: _j("neither", "", fixed)})
+    assert plan[3][2]["question"].startswith("다음 컴퓨터")
 
 
 def test_when_the_page_sides_with_the_old_one_nothing_changes():
@@ -369,3 +378,23 @@ def test_a_numeric_option_is_not_cut():
     q = ev.tidy(_q(options=[{"no": 1, "text": "1.5"}, {"no": 2, "text": "2.0"},
                             {"no": 3, "text": "3"}]))
     assert [o["text"] for o in q["options"]] == ["1.5", "2.0", "3"]
+
+
+# --- 시험지에는 있는데 은행에 없던 문항 ------------------------------------
+# 자료구조 2017-2 는 46·56·57번이 아예 빠져 있었다.
+def test_missing_questions_are_slotted_in_by_number():
+    have = [{"qid": "2017-2-45", "answer_no": 1},
+            {"qid": "2017-2-47", "answer_no": 2}]
+    merged, added = ev.add_missing(have, [{"qid": "2017-2-46"},
+                                          {"qid": "2017-2-45"}])
+    assert [q["qid"] for q in merged] == ["2017-2-45", "2017-2-46",
+                                         "2017-2-47"]
+    assert [q["qid"] for q in added] == ["2017-2-46"]     # 있던 것은 그대로
+
+
+def test_a_missing_question_gets_its_answer_from_the_table():
+    have = [{"qid": f"2017-2-{n}", "answer_no": 1} for n in (36, 38)]
+    merged, added = ev.add_missing(have, [{"qid": "2017-2-37"}],
+                                   answers=[[1], [4], [1]])
+    assert added[0]["answer_no"] == 4
+    assert merged[0]["answer_no"] == 1

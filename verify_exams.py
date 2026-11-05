@@ -38,6 +38,8 @@ try:
 except Exception:  # noqa: BLE001 - 콘솔이 없어도 돈다
     pass
 
+import exam_bank as eb
+import exam_files as xf
 import exam_verify as ev
 import fetch_exam_figures as fx
 import quiz_progress as qp
@@ -94,7 +96,9 @@ def decide(pairs, new_pages, judged) -> dict:
         elif pick in ("old", "both"):
             out[n] = ("keep", why, None)
         elif pick == "neither" and j.get("fixed"):
-            out[n] = ("fix", why or "지면대로 고쳐 적었습니다", j["fixed"])
+            # 판정하며 고쳐 적은 것에도 '37.' 같은 번호가 붙어 온다
+            out[n] = ("fix", why or "지면대로 고쳐 적었습니다",
+                      ev.tidy(j["fixed"]))
         elif pick == "neither":
             out[n] = ("flag", why or "두 쪽 모두 지면과 다릅니다", None)
         else:
@@ -220,7 +224,9 @@ def main(argv=None) -> int:
 
         fixed_ids = []
         other_ids = []          # 아예 다른 문제로 바뀐 것
-        if a.fix and counts["fix"]:
+        extras = [new_by_no[n] for n, (act, _w, _p) in plan.items()
+                  if act == "extra" and new_by_no.get(n)]
+        if a.fix and (counts["fix"] or extras):
             if backup_dir is None:
                 backup_dir = backup([p for p, _b in banks] + [prog_path],
                                     quiz_dir)
@@ -239,6 +245,16 @@ def main(argv=None) -> int:
                         other_ids.append(q.get("qid"))
                 else:
                     qs.append(q)
+            if extras:
+                # 빠진 문항은 다시 읽은 것으로 채우고, 정답표가 있으면 붙인다
+                spot = xf.answer_spots(work, course).get((year, term))
+                answers = (eb.answers_from_hwp(
+                    spot["file"], course, eb.expected_count(
+                        list(qs) + extras)) if spot else [])
+                qs, added = ev.add_missing(qs, extras, answers)
+                for q in added:
+                    _log(f"   {ev.q_no(q):>2}번 채움  {short(q)}"
+                         + ("" if q.get("answer_no") else " (정답 없음)"))
             bank["questions"] = qs
             p.write_text(json.dumps(bank, ensure_ascii=False, indent=1),
                          encoding="utf-8")

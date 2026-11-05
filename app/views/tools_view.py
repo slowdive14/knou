@@ -192,6 +192,27 @@ TOOLS: tuple = (
                  Field("seq", "차시", "text", "--seq", hint="비우면 전부"),
                  Field("dry", "어디가 비었는지만 보기", "check", "--dry-run")),
          tags=(TAG_LOGIN,)),
+    Tool("harvest", GROUP_QUIZ, "모든 강의 형성평가 모으기",
+         when="퀴즈 탭에 형성평가가 없는 강의가 있을 때 · 브라우저에서 직접 "
+              "풀었거나 예전에 이수한 강의",
+         does="강의마다 학습 페이지를 창 없이 받아 형성평가 문항·보기·지문을 "
+              "읽어 퀴즈에 담습니다. 답은 제출하지 않습니다. 학교 정답은 답을 "
+              "내야 내려오므로, 'AI 로 풀기' 를 켜면 AI 가 푼 답을 "
+              "'AI 풀이 답(공식 정답 아님)' 으로 적습니다.",
+         script="harvest_quiz.py",
+         fields=(_course(),
+                 Field("ai", "모은 뒤 정답 없는 문항을 AI 로 풀기", "check",
+                       "--ai")),
+         tags=(TAG_LOGIN, TAG_AI),
+         after="나중에 그 강의를 이수(형성평가)로 풀면 학교 정답으로 "
+               "바뀝니다."),
+    Tool("ai_answers", GROUP_QUIZ, "정답 없는 문항 AI 로 풀기",
+         when="정답표가 없는 기출(예: 자료구조 2012·2013)이나 정답 없이 "
+              "모은 형성평가가 있을 때",
+         does="로그인하지 않고, 퀴즈에 담긴 문항 중 정답이 없는 것만 AI 가 "
+              "풀어 'AI 풀이 답(공식 정답 아님)' 으로 적습니다.",
+         script="fill_answers.py", fields=(_course(),),
+         tags=(TAG_AI,)),
     # --- 예습 노트 -----------------------------------------------------------
     Tool("import_docs", GROUP_NOTE, "손에 있는 강의록 들여오기",
          when="강의자료실 다운로드가 실패해 강의록 PDF 를 따로 모아 두었을 때",

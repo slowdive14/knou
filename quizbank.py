@@ -29,7 +29,7 @@ _EMPTY = (None, "", [], {})
 
 # 표준 칸 말고 **있으면 지키는** 칸들(지문·지문그림·걸러낸 사유). 문제를 풀려면
 # 있어야 하는 것이라 한 번 채우면 다시 담아도 남아야 한다.
-EXTRA_KEYS = ("intro", "code", "intro_image", "suspect")
+EXTRA_KEYS = ("intro", "code", "intro_image", "suspect", "answer_by")
 
 # 글이 아니라 **목록**으로 지키는 칸(문항별 후속 질문 대화). 위의 칸들처럼
 # str() 로 다루면 목록이 통째로 글자가 되어 버린다.
@@ -83,10 +83,47 @@ def answer_text(q: dict) -> str:
         return f"정답: {txt}" if txt else "정답 정보 없음"
     opts = {int(o.get("no") or 0): str(o.get("text") or "")
             for o in (q.get("options") or [])}
+    head = AI_ANSWER_HEAD if is_ai_answer(q) else "정답"
     if len(nos) == 1:
-        return f"정답: {nos[0]}. {opts.get(nos[0]) or txt or ''}".strip()
+        return f"{head}: {nos[0]}. {opts.get(nos[0]) or txt or ''}".strip()
     body = " · ".join(f"{n}. {opts.get(n, '')}".strip() for n in nos)
-    return f"정답(중복정답): {body}"
+    return f"{head}(중복정답): {body}"
+
+
+AI_ANSWER_HEAD = "AI 풀이 답(공식 정답 아님)"
+
+
+def is_ai_answer(q) -> bool:
+    """학교 정답이 아니라 AI 가 풀어 적은 답인가.
+
+    정답표가 없는 기출(2012·2013)과, 답을 내지 않고 읽어 온 형성평가는
+    학교 정답이 없다. 그래도 맞춰 볼 수는 있게 AI 가 풀어 두되, 틀릴 수
+    있으니 화면과 PDF 에 그렇다고 적는다.
+    """
+    return str((q or {}).get("answer_by") or "") == "AI"
+
+
+def _squash(text) -> str:
+    return "".join(str(text or "").split())
+
+
+def drop_echoed_options(question, options) -> str:
+    """물음 글 끝에 보기(①②…)가 한 번 더 붙어 있으면 떼어 낸다.
+
+    기출을 AI 가 옮길 때 보기를 물음 글에도 적고 보기 칸에도 적은 문항이
+    있었다(자료구조 2017-2-47 등). 화면에 보기가 두 번 나오고, 글이 길어져
+    '자료가 이미 글로 들어왔다' 로 잘못 읽혀 그림도 붙지 않았다. 떼어 낸
+    부분에 **첫 보기의 글이 그대로** 있을 때만 뗀다.
+    """
+    q = str(question or "")
+    first = next((o for o in (options or []) if str(o.get("no")) == "1"), None)
+    at = q.find("①")
+    if first is None or at < 0:
+        return q
+    head = _squash(first.get("text"))[:12]
+    if not head or head not in _squash(q[at + 1:])[:len(head) + 2]:
+        return q
+    return q[:at].rstrip()
 
 
 def normalize_question(raw: dict) -> dict:
@@ -120,7 +157,8 @@ def normalize_question(raw: dict) -> dict:
         "qid": str(qid),
         "source": str(raw.get("source") or ""),
         "qtype": str(raw.get("qtype") or ""),
-        "question": str(raw.get("question") or raw.get("stem") or "").strip(),
+        "question": drop_echoed_options(
+            str(raw.get("question") or raw.get("stem") or "").strip(), options),
         "options": options,
         "answer_no": answer_no,
         "answer_text": str(raw.get("answer_text") or "").strip(),
@@ -171,6 +209,9 @@ def _merge_one(old: dict, new: dict) -> dict:
         v = _prefer(new.get(k), old.get(k))
         if v:
             merged[k] = v
+    # 학교가 준 정답이 들어오면 AI 가 짐작한 답이라는 표시는 뗀다
+    if new["answer_no"] is not None and not new.get("answer_by"):
+        merged.pop("answer_by", None)
     return merged
 
 

@@ -152,3 +152,28 @@ def test_bank_path_uses_summary_dir_and_quiz_folder(tmp_path):
     assert p.parent.name == "퀴즈"
     assert p.name.endswith("14강.json")
     assert "데이터베이스시스템" in p.name
+
+
+# --- 물음 글에 한 번 더 적힌 보기 -------------------------------------------
+# 자료구조 2017-2-47: 보기가 물음 글에도, 보기 칸에도 있어 화면에 두 번 나왔다.
+from quizbank import drop_echoed_options  # noqa: E402
+
+_OPTS = [{"no": 1, "text": "이진 트리"}, {"no": 2, "text": "1-2 트리"}]
+
+
+def test_options_echoed_in_the_question_are_dropped():
+    q = "다음과 같은 트리를 무엇인가? (3점)\n① 이진 트리\n② 1-2 트리"
+    assert drop_echoed_options(q, _OPTS) == "다음과 같은 트리를 무엇인가? (3점)"
+
+
+def test_a_circled_number_that_is_not_the_options_stays():
+    q = "다음 중 ①번 식을 계산한 값은?"
+    assert drop_echoed_options(q, _OPTS) == q
+    assert drop_echoed_options("① 이진 트리", []) == "① 이진 트리"
+
+
+def test_normalizing_drops_the_echo_too():
+    from quizbank import normalize_question
+    got = normalize_question({"qid": "x", "question": "물음?\n① 이진 트리",
+                              "options": _OPTS})
+    assert got["question"] == "물음?"

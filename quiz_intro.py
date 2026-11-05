@@ -200,7 +200,10 @@ def data_uri(path) -> str:
 # ⚠️ 입력칸 중에서는 **문항 번호(exqsId)만** 읽는다. 같은 form 에 학번이
 #    들어 있는 칸이 섞여 있어 통째로 훑으면 안 된다.
 INTRO_SCAN_JS = r"""
-() => {
+(html) => {
+  // html 을 주면 창 없이 받아 온 페이지 글을 읽는다(스크립트는 돌지 않는다)
+  const doc = html ? new DOMParser().parseFromString(html, 'text/html')
+                   : document;
   // 줄바꿈을 살려 읽는다. 코드가 한 줄로 뭉치면 읽을 수가 없다.
   // ⚠️ LMS 에는 줄바꿈을 **글자 그대로** '<br>' 이라 적어 둔 지문도 있다.
   const lines = el => {
@@ -217,25 +220,31 @@ INTRO_SCAN_JS = r"""
       .split('\n').map(s => s.trim()).filter(s => s.length).join('\n');
   };
   const out = [];
-  document.querySelectorAll(".exam-content-box form, [id^='quiz_'] form")
+  doc.querySelectorAll(".exam-content-box form, [id^='quiz_'] form")
     .forEach(f => {
       const idEl = f.querySelector('input[name="exqsId"]');
       const print = f.querySelector('.exam-print');
       if (!idEl || !print) return;
       const sent = print.querySelector('.exam-sentence');
       const img = print.querySelector('img');
-      out.push({qid: idEl.value, text: lines(sent),
-                src: img ? img.src : ''});
+      // 받아 온 글의 그림 주소는 상대 경로라 지금 페이지 기준으로 푼다
+      const src = img ? new URL(img.getAttribute('src') || '',
+                                location.href).href : '';
+      out.push({qid: idEl.value, text: lines(sent), src: src});
     });
   return JSON.stringify(out);
 }
 """
 
 
-def scan_intros(frame) -> dict:
-    """화면에서 {문항번호: {"text","src"}} 를 읽는다. 실패하면 빈 표."""
+def scan_intros(frame, html=None) -> dict:
+    """화면(또는 받아 온 글 html)에서 {문항번호: {"text","src"}} 를 읽는다.
+
+    실패하면 빈 표.
+    """
     try:
-        rows = json.loads(frame.evaluate(INTRO_SCAN_JS))
+        rows = json.loads(frame.evaluate(INTRO_SCAN_JS, html)
+                          if html else frame.evaluate(INTRO_SCAN_JS))
     except Exception:  # noqa: BLE001 - 지문을 못 읽어도 이수를 막지 않는다
         return {}
     return {str(r.get("qid")): {"text": str(r.get("text") or ""),
@@ -261,7 +270,7 @@ def fetch_image(requester, src) -> bytes:
 
 
 def download_intros(frame, questions, quiz_dir, course, seq,
-                    requester=None, on_event=None) -> int:
+                    requester=None, on_event=None, html=None) -> int:
     """화면의 지문을 문항에 담고 그림은 파일로 남긴다 → 채운 문항 수.
 
     questions 는 제자리에서 고쳐진다(캡처 직후 저장되는 목록이라 그 편이 맞다).
@@ -270,7 +279,7 @@ def download_intros(frame, questions, quiz_dir, course, seq,
         if on_event:
             on_event(m)
 
-    found = scan_intros(frame)
+    found = scan_intros(frame, html)
     if not found:
         return 0
     req = requester if requester is not None else getattr(frame, "request", None)

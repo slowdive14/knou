@@ -29,9 +29,9 @@ IO(PyMuPDF):
   - render(pdf, 쪽, 네모): PNG bytes
 
 글줄이 없는 시험지용(지면을 보여 주고 묻는다):
-  - parse_boxes(raw)     : 모델 응답 → [{nos, box}]
+  - parse_boxes(raw)     : 모델 응답 → [{nos, box, kind}]
   - scale_box(box, w, h) : 0~1000 좌표 → 쪽 좌표
-  - ai_pdf_figures(client, pdf) : {문항번호: (쪽, 네모)}
+  - ai_pdf_figures(client, pdf) : {문항번호: (쪽, 네모, 종류)}
   - ai_pdf_key(client, pdf)     : (연도, 학기)
 """
 from __future__ import annotations
@@ -46,6 +46,7 @@ QID_RE = re.compile(r"(\d{1,3})\s*$")
 KEY_RE = re.compile(r"(\d{4})\s*학년도\s*(\d)\s*학기")
 
 PAD = 5.0           # 잘라낸 그림 둘레에 두는 여백(pt)
+AI_PAD = 16.0       # AI 가 어림한 네모일 때의 여백(pt) — 가장자리가 잘리지 않게
 ZOOM = 2.2          # 그림을 몇 배로 그릴지(글자가 또렷하게 보이는 정도)
 MIN_H = 16.0        # 이보다 납작하면 밑줄 같은 것이다 — 그림이 아니다
 MIN_W = 40.0        # 이보다 좁으면 괄호·기호다
@@ -334,8 +335,12 @@ FIGURE_PROMPT = """이것은 한국방송통신대학교 기말시험 문제지 
 그 범위의 모든 문항에 딸린 것이다. 반드시 찾아서 lo·hi 로 적어라.
 
 자료마다 이렇게 적는다:
-  · 한 문항의 것   : {{"no": 11, "box": [y0, x0, y1, x1]}}
-  · 여러 문항의 것 : {{"lo": 7, "hi": 9, "box": [y0, x0, y1, x1]}}
+  · 한 문항의 것   : {{"no": 11, "kind": "figure", "box": [y0, x0, y1, x1]}}
+  · 여러 문항의 것 : {{"lo": 7, "hi": 9, "kind": "code", "box": [y0, x0, y1, x1]}}
+
+kind 는 상자에 담긴 **프로그램 코드·의사코드**면 "code", 그 밖의 그림·트리·
+그래프·표·식이면 "figure" 다. **한 문항에 그림과 코드 상자가 함께 있으면
+반드시 따로따로 적어라**(예: 힙 그림 아래에 삽입 함수 코드가 있는 문항).
 
 box 는 그 자료만 감싸는 네모다. 쪽 전체를 0~1000 으로 본 값으로,
 [위, 왼쪽, 아래, 오른쪽] 차례다. **문항 글과 보기(①②③④)는 빼라.**
@@ -394,7 +399,8 @@ def parse_boxes(raw) -> list:
             continue
         nos = [n for n in nos if 1 <= n <= MAX_NO]
         if nos:
-            out.append({"nos": nos, "box": box})
+            kind = "code" if str(item.get("kind") or "") == "code" else "figure"
+            out.append({"nos": nos, "box": box, "kind": kind})
     return out
 
 
@@ -435,12 +441,18 @@ def ai_page_figures(client, pdf, page_no, width, height,
     for item in parse_boxes(_resp_text(resp)):
         box = scale_box(item["box"], width, height)
         if box and big_enough(box):
-            out.append({"nos": item["nos"], "box": box})
+            out.append({"nos": item["nos"], "box": box,
+                        "kind": item.get("kind", "figure")})
     return out
 
 
 def ai_pdf_figures(client, pdf, on_event=None) -> dict:
-    """시험지 한 벌을 보여 주고 {문항번호: (쪽, 네모)} 를 받는다."""
+    """시험지 한 벌을 보여 주고 {문항번호: (쪽, 네모, 종류)} 를 받는다.
+
+    종류는 'code'(코드 상자) 또는 'figure'(그림·표 등). 한 문항에 둘 다
+    있으면 **그림** 쪽을 고른다 — 코드는 이미 글로 옮겨져 있다(2018-2-60 은
+    힙 그림 없이 코드만 있어서 풀 수가 없었다).
+    """
     fitz = _fitz()
     if fitz is None or client is None or not Path(pdf).exists():
         return {}
@@ -455,7 +467,10 @@ def ai_pdf_figures(client, pdf, on_event=None) -> dict:
             for item in ai_page_figures(client, pdf, i, page.rect.width,
                                         page.rect.height, on_event):
                 for n in item["nos"]:
-                    out.setdefault(n, (i, item["box"]))
+                    kind = item.get("kind", "figure")
+                    if n not in out or (out[n][2] == "code"
+                                        and kind == "figure"):
+                        out[n] = (i, item["box"], kind)
         return out
     finally:
         doc.close()

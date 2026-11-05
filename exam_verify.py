@@ -426,6 +426,31 @@ def judge(client, pdf, page_no, pairs, course: str, on_event=None) -> dict:
     return parse_judge(_resp_text(resp))
 
 
+def add_missing(questions, extras, answers=None) -> tuple[list, list]:
+    """시험지에는 있는데 은행에 없던 문항을 번호 자리에 끼워 넣는다.
+
+    → (번호순으로 합친 문항, 새로 넣은 문항). 정답표(answers)가 있으면 새 문항
+    에만 정답을 붙인다 — 이미 있던 문항의 정답·풀이 기록은 건드리지 않는다.
+    (자료구조 2017-2 는 46·56·57번이 아예 빠져 있었다.)
+    """
+    from exam_bank import attach_answers
+
+    have = {q_no(q) for q in questions or []}
+    add = [dict(q) for q in extras or [] if q_no(q) not in have]
+    if not add:
+        return list(questions or []), []
+    merged = sorted(list(questions or []) + add, key=lambda q: q_no(q) or 0)
+    if answers:
+        scored, _warn = attach_answers([dict(q) for q in merged], answers)
+        got = {q_no(q): q for q in scored}
+        for q in add:
+            a = got.get(q_no(q)) or {}
+            for k in ("answer_no", "answer_nos", "answer_text"):
+                if a.get(k) not in (None, "", []):
+                    q[k] = a[k]
+    return merged, add
+
+
 def solve(client, questions, course: str, on_event=None,
           chunk: int = 12) -> dict:
     """정답을 모르는 채로 풀게 한다 → {번호: 고른 답}."""

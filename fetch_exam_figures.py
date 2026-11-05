@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -159,19 +160,42 @@ def written_out(text) -> bool:
     return len("\n".join(lines[1:]).strip()) >= BODY_CHARS
 
 
-def wants_figure(q, force: bool = False) -> bool:
+# 코드가 있는 문항이라도 이런 말이 있으면 그림이 따로 딸려 있다.
+# ⚠️ 맨 '표' 는 안 된다 — '후위 표기식'('위 표'!)·'수식으로 표현' 에 걸려, 이미 글로
+#    옮긴 수식·문장을 그림으로 한 번 더 붙였다.
+PICTURE_RE = re.compile(r"그림|그래프|트리|힙|행렬|(?:다음|아래)의? 표(?![기현시])|\[표")
+
+
+def wants_figure(q, force: bool = False, kind=None) -> bool:
     """이 문항에 그림을 붙여야 하는가.
 
     ⚠️ 시험지의 상자를 그림으로 또 얹으면 같은 내용이 두 번 나온다. 글이
        그림보다 읽기 좋으므로, **글로 이미 들어온 자료는 건드리지 않는다**
        (C프로그래밍 기출은 20문항이 모두 이런 경우였다).
+
+    ⚠️ 다만 코드와 **그림이 함께** 있는 문항이 있다(2018-2-60: 힙 그림 +
+       삽입 함수). 코드만 글로 옮겨지고 그림이 빠져 풀 수가 없었다. AI 가
+       코드 상자가 아닌 그림(kind='figure')을 찾았고 물음이 그림을 가리키면
+       붙인다.
     """
     q = q or {}
     if q.get(qi.INTRO_FIELD) and not force:
         return False                    # 이미 있는 그림을 덮지 않는다
+    text = " ".join(str(q.get(k) or "") for k in ("intro", "question"))
     if str(q.get("code") or "").strip():
+        return kind == "figure" and bool(PICTURE_RE.search(text))
+    if written_out(q.get("intro")):
         return False
-    return not (written_out(q.get("intro")) or written_out(q.get("question")))
+    if "그림" in str(q.get("question") or ""):
+        # 물음이 '아래 그림을 …' 하고 그림을 가리키면, 물음 글에 옮겨 적은
+        # 것은 어림값이다(2019-2-54: 연결 리스트를 'head ⟶ [30][ ]' 로 적었다)
+        return True
+    return not written_out(q.get("question"))
+
+
+def _kind(got):
+    """figures 값의 종류 — AI 가 가린 것만 3번째 칸이 있다(없으면 None)."""
+    return got[2] if isinstance(got, (list, tuple)) and len(got) > 2 else None
 
 
 def strip_figures(bank) -> int:
@@ -192,13 +216,13 @@ def attach(bank, figures, pdf, quiz_dir: Path, force: bool) -> int:
     course, seq = bank.get("course"), bank.get("seq")
     n = 0
     for q in bank.get("questions") or []:
-        if not wants_figure(q, force):
-            continue
         no = ef.q_no(q.get("qid"))
         got = figures.get(no) if no else None
-        if not got:
+        if not got or not wants_figure(q, force, _kind(got)):
             continue
-        data = ef.render(pdf, got[0], got[1])
+        # AI 가 준 네모는 어림값이라 둘레를 넉넉히 둔다(그래프 왼쪽이 잘렸다)
+        data = ef.render(pdf, got[0], got[1],
+                         pad=ef.AI_PAD if _kind(got) else ef.PAD)
         if not data:
             continue
         name = qi.image_name(course, seq, q.get("qid"))
@@ -272,7 +296,8 @@ def main(argv=None) -> int:
         if a.dry:
             hit = sum(1 for q in bank.get("questions") or []
                       if ef.q_no(q.get("qid")) in figures
-                      and wants_figure(q, a.force))
+                      and wants_figure(q, a.force,
+                                       _kind(figures[ef.q_no(q.get("qid"))])))
             _log(f"   {bank.get('name')} — {pdf.name} 에서 그림 "
                  f"{len(figures)}개 · 붙일 문항 {hit}개")
             total += hit
