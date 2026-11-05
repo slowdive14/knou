@@ -398,3 +398,21 @@ def test_a_missing_question_gets_its_answer_from_the_table():
                                    answers=[[1], [4], [1]])
     assert added[0]["answer_no"] == 4
     assert merged[0]["answer_no"] == 1
+
+
+def test_html_entities_from_the_model_are_turned_back():
+    """2017-2-57: 인접 리스트 코드의 '->' 가 '-&gt;' 로 들어왔다."""
+    got = ev.tidy({"question": "a &lt; b ?", "code": "0 [ ] -&gt; 1",
+                   "options": [{"no": 1, "text": "x &amp; y"}]})
+    assert got["code"] == "0 [ ] -> 1"
+    assert got["question"] == "a < b ?"
+    assert got["options"][0]["text"] == "x & y"
+
+
+def test_a_placeholder_instead_of_the_content_is_caught():
+    """2019-2-49: 행렬 대신 '표 내용 그대로' 만 적어 와 행렬이 지워졌다."""
+    assert ev.placeholder({"code": "표 내용 그대로"})
+    assert ev.placeholder({"code": "그림 지면과 동일"})
+    assert not ev.placeholder({"code": "int x = 1;"})
+    long_code = "// 그대로 복사한다\n" + "x = x + 1;\n" * 10
+    assert not ev.placeholder({"code": long_code})

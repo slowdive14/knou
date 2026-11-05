@@ -204,6 +204,15 @@ def main(argv=None) -> int:
             judged.update(got)
 
         plan = decide(pairs, new_pages, judged)
+        # 내용 대신 '표 내용 그대로' 같은 말만 적어 온 것으로는 고치지도,
+        # 채우지도 않는다 — 있던 행렬·코드를 지워 버린다.
+        for n, (act, _why, put) in list(plan.items()):
+            if act == "fix" and ev.placeholder(put):
+                plan[n] = ("flag", "다시 읽은 쪽이 상자 내용을 옮기지 않았습니다",
+                           None)
+        for n, q in list(new_by_no.items()):
+            if plan.get(n, ("",))[0] == "extra" and ev.placeholder(q):
+                new_by_no.pop(n)
         counts = {k: sum(1 for v in plan.values() if v[0] == k)
                   for k in total}
         for k in total:

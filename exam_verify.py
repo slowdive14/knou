@@ -63,12 +63,34 @@ def tidy(q) -> dict:
     잦았다. 내용은 맞아도 화면에 '3  ③ A' 처럼 번호가 두 번 보이고, 견줄 때
     멀쩡한 문항을 '다르다' 고 하게 만든다.
     """
+    from html import unescape
+
+    # 모델이 '->' 를 '-&gt;' 로 적어 오기도 한다(2017-2-57 인접 리스트)
     q = dict(q or {})
-    q["question"] = _STEM_NO.sub("", str(q.get("question") or ""), count=1)
-    q["options"] = [dict(o, text=_OPT_MARK.sub("", str(o.get("text") or ""),
-                                                count=1))
+    q["question"] = _STEM_NO.sub("", unescape(str(q.get("question") or "")),
+                                 count=1)
+    for k in ("code", "intro"):
+        if q.get(k):
+            q[k] = unescape(str(q[k]))
+    q["options"] = [dict(o, text=_OPT_MARK.sub(
+                        "", unescape(str(o.get("text") or "")), count=1))
                     for o in (q.get("options") or [])]
     return q
+
+
+# 모델이 내용을 옮기지 않고 자리만 적어 온 말(2019-2-49: '표 내용 그대로',
+# 2014-2-13: '그림 지면과 동일'). 이것으로 행렬·코드를 덮으면 문제를 못 푼다.
+_PLACEHOLDER = re.compile(r"그대로|동일|생략|지면|참조|\(그림\)|\[그림\]")
+PLACEHOLDER_MAX = 40     # 이보다 길면 실제 내용을 옮겨 적은 것으로 본다
+
+
+def placeholder(q) -> bool:
+    """상자·지문 자리에 내용 대신 '그대로' 같은 말만 적혀 있는가."""
+    for k in ("code", "intro"):
+        v = str((q or {}).get(k) or "").strip()
+        if v and len(v) < PLACEHOLDER_MAX and _PLACEHOLDER.search(v):
+            return True
+    return False
 
 
 def norm(text) -> str:
