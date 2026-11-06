@@ -29,7 +29,8 @@ _EMPTY = (None, "", [], {})
 
 # 표준 칸 말고 **있으면 지키는** 칸들(지문·지문그림·걸러낸 사유). 문제를 풀려면
 # 있어야 하는 것이라 한 번 채우면 다시 담아도 남아야 한다.
-EXTRA_KEYS = ("intro", "code", "intro_image", "suspect", "answer_by")
+EXTRA_KEYS = ("intro", "code", "intro_image", "suspect", "answer_by",
+              "no_figure")
 
 # 글이 아니라 **목록**으로 지키는 칸(문항별 후속 질문 대화). 위의 칸들처럼
 # str() 로 다루면 목록이 통째로 글자가 되어 버린다.

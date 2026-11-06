@@ -259,3 +259,46 @@ def test_a_question_pointing_at_a_picture_gets_it_even_if_sketched_in_text():
     q = {"qid": "2019-2-54",
          "question": "연결리스트 그림에 대한 설명으로 틀린 것은?\n\nhead ⟶ [30][ ] ⟶ [ ][ ] ⟶ [50][ ]"}
     assert fx.wants_figure(q)
+
+
+# --- 글자로 흉내 낸 그림 ----------------------------------------------------
+# 그림을 붙였는데 코드 칸에 '(N) / \ (R)' 같은 흉내가 남아 두 번 나왔다.
+def test_a_drawn_tree_is_dropped_once_the_picture_is_attached():
+    q = {"code": "(N)\n     /   \\n   (R)   (C)\n   /\n (K)"}
+    fx.tidy_drawn(q)
+    assert "code" not in q
+
+
+def test_the_matrix_after_a_drawn_graph_stays():
+    """2012-2-25: 그래프 흉내 뒤에 빈칸을 채울 인접행렬이 이어진다."""
+    code = ("(T) ----> (G)\n  ^       |\n  |       v\n (N) <---- (Q)\n\n"
+            "    T G N Q\n  T 0 1 1 0\n  G (       )")
+    got = fx.strip_drawings(code)
+    assert got.startswith("T G N Q")
+    assert "---->" not in got
+
+
+def test_a_described_picture_is_dropped_but_the_program_stays():
+    """2018-2-60: '<최소힙그림>(이미지 내용: 루트 5 …)' 뒤에 진짜 코드가 있다."""
+    code = ("<최소힙그림>\n(이미지 내용: 루트 5, 왼쪽 15\n15의 자식 20)\n\n"
+            "int insertHeap(HeapType *h, int item) {\n    int i;\n}")
+    got = fx.strip_drawings(code)
+    assert got.startswith("int insertHeap")
+    assert "이미지 내용" not in got and "최소힙그림" not in got
+
+
+def test_a_program_with_slashes_is_not_taken_for_a_drawing():
+    assert not fx.drawn("x = a / b;\nprintf(\"%d\", x);")
+
+
+def test_a_sketch_in_the_question_is_dropped_too():
+    q = {"question": "연결리스트 그림에 대한 설명으로 틀린 것은?\n\n"
+                     "head ⟶ [30][ ] ⟶ [ ][ ] ⟶ [50][ ]"}
+    fx.tidy_drawn(q)
+    assert q["question"] == "연결리스트 그림에 대한 설명으로 틀린 것은?"
+
+
+def test_a_question_marked_without_figure_never_gets_one():
+    """글 조각만 잘려 붙어 사람이 뗀 문항(2014-2-03)은 --force 로도 다시 안 붙는다."""
+    q = {"qid": "2014-2-03", "question": "다음 그림 …", "no_figure": "Y"}
+    assert not fx.wants_figure(q, force=True, kind="figure")

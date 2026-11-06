@@ -285,3 +285,72 @@ def test_asking_without_a_client_gives_nothing(tmp_path):
     """API 키가 없어도 글줄 있는 시험지는 계속 된다."""
     assert ef.ai_pdf_figures(None, _sheet(tmp_path / "s.pdf")) == {}
     assert ef.ai_pdf_key(None, _sheet(tmp_path / "s.pdf")) is None
+
+
+# --- 잉크로 경계 찾기 ------------------------------------------------------
+# AI 네모는 어림값이라, 넓으면 물음 끝·보기 줄이 잘려 들어오고(2012-2-19)
+# 좁으면 노드가 잘렸다(2012-2-20). 네모는 출발점으로만 쓴다.
+def test_ink_runs_join_short_gaps():
+    assert ef.runs([0, 1, 1, 0, 0, 0, 1, 0, 1], 1) == [(1, 3), (6, 7), (8, 9)]
+    assert ef.runs([0, 1, 0, 1, 0], 2) == [(1, 4)]
+    assert ef.runs([0, 0], 1) == []
+
+
+def test_question_and_option_lines_around_the_figure_are_dropped():
+    # 물음 끝(10) · 그림(100) · 보기 두 줄(10, 10)
+    bands = [(0, 10), (20, 120), (130, 140), (148, 158)]
+    seed = (0, 160)                      # 어림 네모가 모두를 덮었다
+    assert ef.pick_bands(bands, seed, line=15) == [(20, 120)]
+
+
+def test_a_too_tight_seed_still_gets_the_whole_figure():
+    """네모가 그림 반만 덮어도 그 띠 전체를 쓴다(노드가 잘리지 않게)."""
+    bands = [(0, 10), (20, 120), (130, 140)]
+    assert ef.pick_bands(bands, (60, 90), line=15) == [(20, 120)]
+
+
+def test_a_one_line_figure_is_kept():
+    """식 한 줄짜리 자료만 있으면 그것을 버리지 않는다."""
+    assert ef.pick_bands([(0, 12)], (0, 12), line=15) == [(0, 12)]
+    assert ef.pick_bands([(0, 12)], (50, 60), line=15) == []
+
+
+def test_the_other_column_is_left_out():
+    pieces = [(0, 100), (140, 300)]      # 옆 단 글이 오른쪽에 걸렸다
+    assert ef.pick_span(pieces, (10, 90)) == (0, 100)
+    assert ef.pick_span(pieces, (400, 500)) is None
+
+
+def test_a_long_vertical_rule_is_not_counted():
+    """단 구분선 때문에 모든 줄에 잉크가 있어 위아래 글이 한 덩어리로 묶였다."""
+    w, h = 4, 5
+    px = bytearray([255] * (w * h))
+    for y in range(h):
+        px[y * w + 3] = 0                  # 오른쪽 끝 세로줄
+    px[1 * w + 0] = 0                      # 글 한 점
+    rows, cols = ef.ink_profile(bytes(px), w, h, w)
+    assert rows == [0, 1, 0, 0, 0]
+    assert cols[3] == 0
+
+
+def test_the_column_holding_the_seed_is_used():
+    assert ef.column_of((50, 0, 200, 10), 600, inset=4) == (4, 296)
+    assert ef.column_of((350, 0, 500, 10), 600, inset=4) == (304, 596)
+    assert ef.column_of((100, 0, 500, 10), 600, inset=4) == (4, 596)
+
+
+def test_a_lone_low_node_at_the_edge_is_kept():
+    """2012-2-20: 가지가 끊겨 따로 떨어진 K 노드를 글줄로 보고 떼어 냈다."""
+    bands = [(0, 60), (64, 76)]          # 트리 · 낮은 띠(K)
+    narrow = lambda b: False             # noqa: E731 - 좁으면 글줄이 아니다
+    assert ef.pick_bands(bands, (0, 76), line=15, is_text=narrow) == bands
+    wide = lambda b: b == (64, 76)       # noqa: E731
+    assert ef.pick_bands(bands, (0, 76), line=15, is_text=wide) == [(0, 60)]
+
+
+def test_ink_extent_measures_the_spread():
+    w = 6
+    px = bytearray([255] * (w * 2))
+    px[1] = px[4] = 0
+    assert ef.ink_extent(bytes(px), w, w, 0, 1) == 4
+    assert ef.ink_extent(bytes(px), w, w, 1, 2) == 0

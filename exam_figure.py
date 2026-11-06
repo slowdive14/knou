@@ -46,7 +46,7 @@ QID_RE = re.compile(r"(\d{1,3})\s*$")
 KEY_RE = re.compile(r"(\d{4})\s*학년도\s*(\d)\s*학기")
 
 PAD = 5.0           # 잘라낸 그림 둘레에 두는 여백(pt)
-AI_PAD = 16.0       # AI 가 어림한 네모일 때의 여백(pt) — 가장자리가 잘리지 않게
+TIGHT_PAD = 1.5     # 잉크로 경계를 찾은 그림의 여백(pt) — 위아래 글이 걸리지 않게
 ZOOM = 2.2          # 그림을 몇 배로 그릴지(글자가 또렷하게 보이는 정도)
 MIN_H = 16.0        # 이보다 납작하면 밑줄 같은 것이다 — 그림이 아니다
 MIN_W = 40.0        # 이보다 좁으면 괄호·기호다
@@ -444,6 +444,184 @@ def ai_page_figures(client, pdf, page_no, width, height,
             out.append({"nos": item["nos"], "box": box,
                         "kind": item.get("kind", "figure")})
     return out
+
+
+# --- 잉크로 경계 찾기 ------------------------------------------------------
+# AI 가 준 네모는 다듬게 해도 어림값이었다 — 넓으면 물음 끝·보기 줄이 함께
+# 잘리고(2012-2-19), 좁으면 노드가 잘렸다(2012-2-20 의 C). 그래서 네모는
+# 출발점으로만 쓰고, 둘레를 넉넉히 그려 **실제 잉크**를 본다.
+#   · 가로로 빈 줄이 이어지는 곳에서 덩어리(띠)를 나눈다
+#   · 출발 네모와 반 넘게 겹치는 띠를 고른다(그 사이 띠도 함께)
+#   · 맨 위·아래에 붙은 글 한 줄짜리 띠(물음 끝·보기 줄)는 떼어 낸다
+#   · 남은 띠 안에서 세로로 넓게 빈 곳으로 나눠 출발 네모와 겹치는 조각만
+#   · 좌우는 그 네모가 든 **단 전체**를 본다(트리가 네모 밖으로 퍼져 있었다)
+#   · 단 구분선·테두리처럼 위아래로 길게 이어진 선은 세지 않는다 — 그 선
+#     때문에 모든 줄에 잉크가 있어 위아래 글이 한 덩어리로 묶였다
+TIGHT_MARGIN_Y = 40.0   # 위아래로 더 볼 폭(pt) — 잘린 노드까지 닿게
+COLUMN_INSET = 4.0      # 단 경계에서 이만큼 안쪽까지만 본다(pt)
+TIGHT_ZOOM = 2.0
+# 이보다 어두운 화소를 잉크로 본다(0 검정 ~ 255 흰색). 연한 파란 선(트리
+# 가지)도 잡아야 한다 — 170 으로 두니 가지가 끊겨 K 노드가 따로 떨어졌다.
+INK = 225
+TEXT_WIDE = 0.4         # 단 너비의 이 비율 넘게 퍼진 낮은 띠만 글줄로 본다
+RULE_FRAC = 0.8         # 이 비율 넘게 위아래로 이어진 칸은 구분선으로 본다
+ROW_GAP = 1.0           # 이보다 짧은 빈 줄은 띠를 끊지 않는다(pt)
+COL_GAP = 22.0          # 이보다 넓은 빈 칸에서 가로로 나눈다(pt)
+TEXT_LINE = 15.0        # 이보다 낮은 띠는 글 한 줄로 본다(pt)
+
+
+def ink_profile(gray: bytes, width: int, height: int, stride: int,
+                ink: int = INK, rule_frac: float = RULE_FRAC):
+    """흑백 화소 → (줄마다 잉크 수, 칸마다 잉크 수).
+
+    위아래로 거의 끊김 없이 이어진 칸(단 구분선·상자 테두리)은 둘 다에서
+    뺀다.
+    """
+    cols = [0] * width
+    for y in range(height):
+        line = gray[y * stride:y * stride + width]
+        for x, v in enumerate(line):
+            if v < ink:
+                cols[x] += 1
+    rule = {x for x, n in enumerate(cols) if height and n >= rule_frac * height}
+    rows = [0] * height
+    for y in range(height):
+        line = gray[y * stride:y * stride + width]
+        rows[y] = sum(1 for x, v in enumerate(line)
+                      if v < ink and x not in rule)
+    return rows, [0 if x in rule else n for x, n in enumerate(cols)]
+
+
+def ink_extent(gray: bytes, width: int, stride: int, y0: int, y1: int,
+               skip=(), ink: int = INK) -> int:
+    """그 줄들에서 잉크가 퍼진 너비(화소) — 맨 왼쪽부터 맨 오른쪽까지."""
+    lo, hi = width, -1
+    for y in range(y0, y1):
+        line = gray[y * stride:y * stride + width]
+        for x, v in enumerate(line):
+            if v < ink and x not in skip:
+                lo, hi = min(lo, x), max(hi, x)
+    return hi - lo + 1 if hi >= lo else 0
+
+
+def column_of(seed, page_width: float, inset: float = COLUMN_INSET):
+    """출발 네모가 든 단의 좌우 (x0, x1) — 시험지는 2단 조판이다.
+
+    네모가 가운데를 크게 걸치면(1단 그림) 쪽 전체를 쓴다.
+    """
+    mid = float(page_width) / 2
+    x0, x1 = float(seed[0]), float(seed[2])
+    if x0 < mid - 30 and x1 > mid + 30:
+        return (inset, float(page_width) - inset)
+    if (x0 + x1) / 2 < mid:
+        return (inset, mid - inset)
+    return (mid + inset, float(page_width) - inset)
+
+
+def runs(counts, gap: int) -> list:
+    """잉크가 있는 구간들 [(시작, 끝)] — gap 보다 짧은 빈 곳은 잇는다."""
+    out = []
+    start = last = None
+    for i, n in enumerate(counts):
+        if n <= 0:
+            continue
+        if start is None:
+            start = last = i
+        elif i - last > gap:
+            out.append((start, last + 1))
+            start = i
+        last = i
+    if start is not None:
+        out.append((start, last + 1))
+    return out
+
+
+def _overlap(a, b) -> float:
+    return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+
+
+def pick_bands(bands, seed, line: float, is_text=None) -> list:
+    """출발 구간(seed)에 해당하는 띠들 → 이어진 띠 목록(빈 목록이면 못 고름).
+
+    반 넘게 겹치는 띠를 고르고, 그 사이의 띠도 함께 넣는다. 맨 위·아래의
+    글 한 줄짜리 띠는 더 큰 띠가 남아 있을 때만 떼어 낸다. is_text 를 주면
+    그것이 글줄이라고 한 띠만 뗀다 — 낮기만 한 띠는 따로 떨어진 노드일 수
+    있다(2012-2-20 의 K).
+    """
+    hit = [i for i, b in enumerate(bands)
+           if _overlap(b, seed) >= 0.5 * (b[1] - b[0])]
+    if not hit:
+        best = max(range(len(bands)), key=lambda i: _overlap(bands[i], seed),
+                   default=None)
+        if best is None or _overlap(bands[best], seed) <= 0:
+            return []
+        hit = [best]
+    got = list(bands[min(hit):max(hit) + 1])
+
+    def tall(b):
+        return b[1] - b[0] >= line or (is_text is not None and not is_text(b))
+
+    while len(got) > 1 and not tall(got[0]) and any(tall(b) for b in got[1:]):
+        got.pop(0)
+    while len(got) > 1 and not tall(got[-1]) and any(tall(b) for b in got[:-1]):
+        got.pop()
+    return got
+
+
+def pick_span(pieces, seed) -> tuple | None:
+    """세로로 나뉜 조각 중 출발 구간과 겹치는 것들을 감싸는 (시작, 끝)."""
+    hit = [p for p in pieces if _overlap(p, seed) > 0]
+    if not hit:
+        return None
+    return (min(p[0] for p in hit), max(p[1] for p in hit))
+
+
+def tighten_box(pdf, page_no, seed, zoom: float = TIGHT_ZOOM):
+    """출발 네모 둘레의 잉크로 그림 경계를 찾는다 → 쪽 좌표 네모(못 찾으면 None)."""
+    fitz = _fitz()
+    if fitz is None or not seed:
+        return None
+    try:
+        doc = fitz.open(pdf)
+    except Exception:  # noqa: BLE001 - 손상 파일
+        return None
+    try:
+        page = doc[int(page_no)]
+        cx0, cx1 = column_of(seed, page.rect.width)
+        rect = fitz.Rect(cx0, seed[1] - TIGHT_MARGIN_Y,
+                         cx1, seed[3] + TIGHT_MARGIN_Y) & page.rect
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=rect,
+                              colorspace=fitz.csGRAY, alpha=False)
+        rows, cols = ink_profile(pix.samples, pix.width, pix.height,
+                                 pix.stride)
+        raw_cols = ink_profile(pix.samples, pix.width, pix.height,
+                               pix.stride, rule_frac=2.0)[1]
+        rule = {x for x, n in enumerate(cols) if n == 0 and raw_cols[x]}
+
+        def is_text(b):
+            # 단 너비만큼 퍼진 낮은 띠가 글줄이다(물음 끝·보기 줄)
+            return ink_extent(pix.samples, pix.width, pix.stride, b[0], b[1],
+                              rule) >= TEXT_WIDE * pix.width
+        to_px = lambda v, o: (v - o) * zoom  # noqa: E731
+        sy = (to_px(seed[1], rect.y0), to_px(seed[3], rect.y0))
+        sx = (to_px(seed[0], rect.x0), to_px(seed[2], rect.x0))
+        bands = pick_bands(runs(rows, int(ROW_GAP * zoom)), sy,
+                           TEXT_LINE * zoom, is_text)
+        if not bands:
+            return None
+        top, bottom = bands[0][0], bands[-1][1]
+        # 고른 띠 안에서만 칸별 잉크를 다시 센다
+        sub = pix.samples[top * pix.stride:bottom * pix.stride]
+        _r, cols = ink_profile(sub, pix.width, bottom - top, pix.stride)
+        span = pick_span(runs(cols, int(COL_GAP * zoom)), sx)
+        if span is None:
+            return None
+        return (rect.x0 + span[0] / zoom, rect.y0 + top / zoom,
+                rect.x0 + span[1] / zoom, rect.y0 + bottom / zoom)
+    except Exception:  # noqa: BLE001 - 못 찾으면 출발 네모를 쓴다
+        return None
+    finally:
+        doc.close()
 
 
 def ai_pdf_figures(client, pdf, on_event=None) -> dict:

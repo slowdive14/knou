@@ -136,10 +136,64 @@ def usable_pdfs(work: Path, course: str, client=None, on_event=None) -> dict:
     return out
 
 
-def figures_of(pdf: Path, how: str, client=None, on_event=None) -> dict:
-    """그 시험지의 {문항번호: (쪽, 네모)} — 읽는 길에 맞는 방법으로."""
+FIGURE_CACHE = "그림자리.json"   # AI 가 찾은 그림 자리(시험지 옆에 둔다)
+
+
+def _load_cache(pdf: Path) -> dict:
+    try:
+        data = json.loads((Path(pdf).parent / FIGURE_CACHE).read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def cached_figures(pdf: Path) -> dict | None:
+    """전에 AI 가 찾아 둔 그 시험지의 그림 자리(파일이 바뀌었으면 None)."""
+    got = _load_cache(pdf).get(Path(pdf).name) or {}
+    try:
+        if int(got.get("size")) != Path(pdf).stat().st_size:
+            return None
+    except (TypeError, ValueError, OSError):
+        return None
+    out = {}
+    for no, (page, box, kind) in (got.get("figures") or {}).items():
+        out[int(no)] = (int(page), tuple(box), str(kind))
+    return out
+
+
+def remember_figures(pdf: Path, figures: dict) -> None:
+    """AI 가 찾은 그림 자리를 적어 둔다 — 자르는 방법만 고쳐 다시 돌릴 때
+    시험지를 또 읽히지 않으려고."""
+    data = _load_cache(pdf)
+    try:
+        size = Path(pdf).stat().st_size
+    except OSError:
+        return
+    data[Path(pdf).name] = {
+        "size": size,
+        "figures": {str(n): [v[0], list(v[1]), v[2] if len(v) > 2 else "figure"]
+                    for n, v in figures.items()}}
+    try:
+        (Path(pdf).parent / FIGURE_CACHE).write_text(
+            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def figures_of(pdf: Path, how: str, client=None, on_event=None,
+               fresh: bool = False) -> dict:
+    """그 시험지의 {문항번호: (쪽, 네모[, 종류])} — 읽는 길에 맞는 방법으로.
+
+    AI 로 읽은 결과는 적어 두고 다음에 다시 쓴다(fresh 면 새로 읽는다).
+    """
     if how == "ai":
-        return ef.ai_pdf_figures(client, pdf, on_event)
+        got = None if fresh else cached_figures(pdf)
+        if got is None:
+            got = ef.ai_pdf_figures(client, pdf, on_event)
+            if got:
+                remember_figures(pdf, got)
+        return got
     return ef.pdf_figures(pdf)
 
 
@@ -160,6 +214,11 @@ def written_out(text) -> bool:
     return len("\n".join(lines[1:]).strip()) >= BODY_CHARS
 
 
+# 그림을 붙이지 않을 문항 — AI 가 글 상자나 물음 글을 그림으로 잘못 짚어
+# 글 조각만 잘려 붙었던 것(2014-2-03 '반환한다.' 등). --force 로도 다시 붙이지
+# 않는다.
+NO_FIGURE = "no_figure"
+
 # 코드가 있는 문항이라도 이런 말이 있으면 그림이 따로 딸려 있다.
 # ⚠️ 맨 '표' 는 안 된다 — '후위 표기식'('위 표'!)·'수식으로 표현' 에 걸려, 이미 글로
 #    옮긴 수식·문장을 그림으로 한 번 더 붙였다.
@@ -179,6 +238,8 @@ def wants_figure(q, force: bool = False, kind=None) -> bool:
        붙인다.
     """
     q = q or {}
+    if q.get(NO_FIGURE):
+        return False                    # 사람이 보고 그림이 아니라고 뗀 문항
     if q.get(qi.INTRO_FIELD) and not force:
         return False                    # 이미 있는 그림을 덮지 않는다
     text = " ".join(str(q.get(k) or "") for k in ("intro", "question"))
@@ -211,8 +272,60 @@ def strip_figures(bank) -> int:
     return n
 
 
-def attach(bank, figures, pdf, quiz_dir: Path, force: bool) -> int:
-    """문항에 그림을 붙인다 → 새로 붙인 개수(파일도 함께 남긴다)."""
+# 그림을 글자로 흉내 낸 것 — 진짜 그림을 붙이면 같은 것이 두 번 나온다.
+# 연결선(/ \ -> ⟶ ^ ㅗ)이 있고 코드의 표시(; { } =, 예약어)가 없는 문단.
+_LINK_RE = re.compile(r"[/\\^]|-+>|<-+|[⟶→←↑↓]|ㅗ|\|\s*$|^\s*\|", re.M)
+_CODE_RE = re.compile(r"[;{}=]|\b(?:int|void|char|return|printf|while|for|"
+                      r"if|struct|typedef)\b")
+# AI 가 그림 대신 적어 넣은 설명 — '(이미지 내용: 루트 5, …)' · '<최소힙그림>'
+_DESCRIBED_RE = re.compile(r"\((?:이미지|그림)\s*내용\s*:.*?\)", re.S)
+_CAPTION_RE = re.compile(r"^\s*<[^<>\n]*그림[^<>\n]*>\s*$", re.M)
+
+
+def drawn(block) -> bool:
+    """이 문단은 그림을 글자로 흉내 낸 것인가(트리·그래프 따라 그리기)."""
+    b = str(block or "").strip()
+    if not b or _CODE_RE.search(b):
+        return False
+    return bool(_LINK_RE.search(b)) or b.startswith("트리 구조:")
+
+
+def strip_drawings(text) -> str:
+    """그림을 붙인 문항의 글에서 흉내 낸 그림·그림 설명을 걷어 낸다.
+
+    문단(빈 줄로 나뉜 덩어리) 단위로 본다 — 2012-2-25 는 그래프를 흉내 낸
+    문단 뒤에 빈칸을 채울 인접행렬이 이어져 있다. 그것은 남긴다.
+    """
+    t = _DESCRIBED_RE.sub("", str(text or ""))
+    t = _CAPTION_RE.sub("", t)
+    blocks = re.split(r"\n\s*\n", t)
+    keep = [b.strip("\n") for b in blocks if b.strip() and not drawn(b)]
+    return "\n\n".join(keep).strip()
+
+
+def tidy_drawn(q) -> None:
+    """그림을 붙인 문항의 코드 칸·물음 둘째 줄부터에서 흉내 낸 그림을 뗀다."""
+    code = str(q.get("code") or "")
+    if code:
+        left = strip_drawings(code)
+        if left:
+            q["code"] = left
+        else:
+            q.pop("code", None)
+    head, sep, rest = str(q.get("question") or "").partition("\n")
+    if sep and rest.strip():
+        left = strip_drawings(rest)
+        q["question"] = head + (f"\n\n{left}" if left else "")
+
+
+def attach(bank, figures, pdf, quiz_dir: Path, force: bool,
+           client=None, on_event=None) -> int:
+    """문항에 그림을 붙인다 → 새로 붙인 개수(파일도 함께 남긴다).
+
+    AI 가 쪽 전체를 보고 준 네모(kind 있음)는 어림값이라, 그 둘레의 잉크로
+    그림 경계를 다시 찾아 자른다(exam_figure.tighten_box). 여백만 넉넉히
+    두면 물음 글과 보기 줄이 함께 잘려 들어왔다(2012-2-19).
+    """
     course, seq = bank.get("course"), bank.get("seq")
     n = 0
     for q in bank.get("questions") or []:
@@ -220,15 +333,19 @@ def attach(bank, figures, pdf, quiz_dir: Path, force: bool) -> int:
         got = figures.get(no) if no else None
         if not got or not wants_figure(q, force, _kind(got)):
             continue
-        # AI 가 준 네모는 어림값이라 둘레를 넉넉히 둔다(그래프 왼쪽이 잘렸다)
-        data = ef.render(pdf, got[0], got[1],
-                         pad=ef.AI_PAD if _kind(got) else ef.PAD)
+        box, pad = got[1], ef.PAD
+        if _kind(got):
+            tight = ef.tighten_box(pdf, got[0], box)
+            if tight:
+                box, pad = tight, ef.TIGHT_PAD
+        data = ef.render(pdf, got[0], box, pad=pad)
         if not data:
             continue
         name = qi.image_name(course, seq, q.get("qid"))
         if qi.save_image(quiz_dir, name, data) is None:
             continue
         q[qi.INTRO_FIELD] = name
+        tidy_drawn(q)
         n += 1
     return n
 
@@ -302,7 +419,7 @@ def main(argv=None) -> int:
                  f"{len(figures)}개 · 붙일 문항 {hit}개")
             total += hit
             continue
-        n = attach(bank, figures, pdf, quiz_dir, a.force)
+        n = attach(bank, figures, pdf, quiz_dir, a.force, client, _log)
         if n:
             p.write_text(json.dumps(bank, ensure_ascii=False, indent=1),
                          encoding="utf-8")
